@@ -18,6 +18,7 @@ import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironmentPowerRuntime } from "../power/environment-power-state";
 import { ConnectionFormField } from "./ConnectionFormField";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 import { environmentStatusText } from "./environmentStatusText";
@@ -53,7 +54,12 @@ export function ConnectionEnvironmentRow(props: {
   );
   const unsupported = props.environment.connectionState === "unsupported";
   const enabled = props.environment.isEnabled && !unsupported;
-  const statusLabel = connectionStatusLabel(props.environment);
+  // Sleep/wake control pauses a sleeping machine's connection, which otherwise reads as "Available".
+  const asleep =
+    useEnvironmentPowerRuntime(props.environment.environmentId).mode === "asleep" &&
+    enabled &&
+    props.environment.connectionState === "available";
+  const statusLabel = asleep ? "Asleep" : connectionStatusLabel(props.environment);
   const statusTraceId = enabled ? props.environment.connectionErrorTraceId : null;
   const hasConnectionFailure = enabled && props.environment.connectionError !== null;
   const isRetrying =

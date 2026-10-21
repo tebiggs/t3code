@@ -87,6 +87,7 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
+import { EnvironmentPowerChips } from "../power/EnvironmentPowerChips";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -772,6 +773,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
+      {Platform.OS === "android" && !hasSearchQuery ? <EnvironmentPowerChips /> : null}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           environments={props.environments}

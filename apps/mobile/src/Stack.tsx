@@ -69,6 +69,8 @@ import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSheet";
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
+import { EnvironmentPowerSheet } from "./features/power/EnvironmentPowerSheet";
+import { useEnvironmentPowerWorker } from "./features/power/environment-power-state";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
@@ -582,6 +584,11 @@ function ThreadOutboxDrainWorker() {
   return null;
 }
 
+function EnvironmentPowerWorker() {
+  useEnvironmentPowerWorker();
+  return null;
+}
+
 function RootStackLayout(props: {
   readonly children: React.ReactNode;
   readonly state: NavigationState;
@@ -614,6 +621,7 @@ function RootStackLayout(props: {
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ThreadOutboxDrainWorker />
+      <EnvironmentPowerWorker />
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ExistingThreadSettingsRouteProvider>
         <AndroidWorkspaceTabsProvider>
@@ -861,6 +869,15 @@ const RootStackConfig = createWorkspaceStackNavigator({
         ...FORM_SHEET_PRESENTATION_OPTIONS,
         headerShown: false,
         sheetAllowedDetents: [0.5, 0.9],
+        sheetGrabberVisible: true,
+      },
+    }),
+    EnvironmentPower: createNativeStackScreen({
+      screen: EnvironmentPowerSheet,
+      options: {
+        ...FORM_SHEET_PRESENTATION_OPTIONS,
+        headerShown: false,
+        sheetAllowedDetents: [0.5],
         sheetGrabberVisible: true,
       },
     }),

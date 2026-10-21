@@ -116,4 +116,25 @@ describe("mobile workspace projection", () => {
     expect(state.hasReadyEnvironment).toBe(false);
     expect(state.connectionState).toBe("reconnecting");
   });
+
+  it("leaves a sleeping power-managed machine out of the reconnecting status until it connects", () => {
+    const desktopId = EnvironmentId.make("environment-2");
+    const quietEnvironmentIds = new Set([desktopId]);
+    const project = (desktopPhase: EnvironmentPresentation["connection"]["phase"]) =>
+      projectWorkspaceState({
+        isReady: true,
+        networkStatus: "online",
+        environments: [projectWorkspaceEnvironment(desktopId, environment(desktopPhase))],
+        quietEnvironmentIds,
+        shellSummary: EMPTY_SHELL_SUMMARY,
+      });
+
+    const asleep = project("reconnecting");
+    expect(asleep.hasConnectingEnvironment).toBe(false);
+    expect(asleep.connectionState).toBe("available");
+
+    const awake = project("connected");
+    expect(awake.hasReadyEnvironment).toBe(true);
+    expect(awake.connectionState).toBe("connected");
+  });
 });

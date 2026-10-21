@@ -47,8 +47,19 @@ const PullRequestListPreferences = Schema.Struct({
 });
 export type PullRequestListPreferences = typeof PullRequestListPreferences.Type;
 
+export const EnvironmentPowerSettings = Schema.Struct({
+  /** Connected environment on the same LAN that runs the wake and sleep commands. */
+  relayEnvironmentId: Schema.NullOr(EnvironmentId),
+  wakeCommand: Schema.String,
+  sleepCommand: Schema.String,
+});
+export type EnvironmentPowerSettings = typeof EnvironmentPowerSettings.Type;
+
+const EnvironmentPowerPreferences = Schema.Record(Schema.String, EnvironmentPowerSettings);
+
 const isThreadListFilters = Schema.is(ThreadListFilters);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
+const isEnvironmentPowerPreferences = Schema.is(EnvironmentPowerPreferences);
 
 export interface Preferences {
   readonly pullRequestHideTestFiles?: boolean;
@@ -84,6 +95,8 @@ export interface Preferences {
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
+  /** Sleep/wake control, keyed by the environment being powered. */
+  readonly environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
@@ -153,6 +166,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
+    environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
   } = {};
 
   if (typeof parsed.pullRequestHideTestFiles === "boolean") {
@@ -277,6 +291,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isPullRequestListPreferences(parsed.pullRequestListFilters)) {
     preferences.pullRequestListFilters = parsed.pullRequestListFilters;
+  }
+  if (isEnvironmentPowerPreferences(parsed.environmentPower)) {
+    preferences.environmentPower = parsed.environmentPower;
   }
   return preferences;
 }
