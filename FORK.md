@@ -5,8 +5,8 @@ the features listed below.
 
 - **Releases.** Every push to `main` builds the Windows x64 desktop app, the
   Linux x64 server and the Android APK. The build runs in
-  `.github/workflows/fork-release.yml`. When typecheck and the tests for
-  fork-changed packages pass, it publishes everything as a prerelease here.
+  `.github/workflows/fork-release.yml`. When typecheck and the tests
+  covering the fork's changes pass, it publishes everything as a prerelease here.
   The fork's apps update from these releases. Pull requests get the same
   checks and builds but publish nothing.
 - **Upstream sync.** A T3 scheduled task on pylon2 follows
