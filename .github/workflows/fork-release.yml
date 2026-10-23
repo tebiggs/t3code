@@ -1,0 +1,420 @@
+name: Fork release
+
+# Fork-only (tebiggs/t3code). Builds what the fork ships: the Windows x64
+# desktop app, the Linux x64 server archive and the Android APK. A push to
+# main publishes them as a nightly-channel prerelease, which the fork's
+# updaters read. Pull requests run the same checks and builds without
+# publishing. Upstream merges reach main through .github/fork/sync.sh on
+# pylon2. The workflow token cannot move main itself, because GitHub refuses
+# that token any ref update that changes workflow files, and upstream merges
+# often do.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    name: Prepare
+    if: github.repository == 'tebiggs/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      ref: ${{ steps.meta.outputs.ref }}
+      upstream_tag: ${{ steps.meta.outputs.upstream_tag }}
+      clerk_publishable_key: ${{ steps.meta.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ steps.meta.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ steps.meta.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ steps.meta.outputs.relay_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: |
+            .github/fork
+            .env.example
+          sparse-checkout-cone-mode: false
+
+      # Fork versions keep upstream's nightly shape (cliRelease.ts and
+      # updateChannels.ts parse it) and sort by build date, then by this
+      # workflow's run number.
+      - id: meta
+        name: Resolve version and public config
+        shell: bash
+        env:
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          upstream_tag="$(tr -d '[:space:]' < .github/fork/upstream-tag)"
+          if [[ ! "$upstream_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-nightly\.[0-9]{8}\.[0-9]+$ ]]; then
+            echo "::error::.github/fork/upstream-tag must hold an upstream nightly tag, got '$upstream_tag'."
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          {
+            echo "version=$version"
+            echo "ref=$REF"
+            echo "upstream_tag=$upstream_tag"
+          } >> "$GITHUB_OUTPUT"
+          # .env.example carries the public T3 Connect identifiers that official builds use.
+          for pair in \
+            clerk_publishable_key=T3CODE_CLERK_PUBLISHABLE_KEY \
+            clerk_jwt_template=T3CODE_CLERK_JWT_TEMPLATE \
+            clerk_cli_oauth_client_id=T3CODE_CLERK_CLI_OAUTH_CLIENT_ID \
+            relay_url=T3CODE_RELAY_URL; do
+            value="$(sed -n "s/^${pair#*=}=//p" .env.example)"
+            if [[ -z "$value" ]]; then
+              echo "::error::.env.example has no ${pair#*=}."
+              exit 1
+            fi
+            echo "${pair%%=*}=$value" >> "$GITHUB_OUTPUT"
+          done
+          echo "Building $version from $REF (upstream $upstream_tag)."
+
+  checks:
+    name: Typecheck and fork tests
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - uses: ./.github/actions/setup-apt-mirrors
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      # Upstream's own CI already passed on the nightly being merged. What can
+      # break here is fork code against upstream's newest APIs.
+      - name: Typecheck
+        run: vp run typecheck
+
+      - id: fork_packages
+        name: Find packages the fork changes
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$UPSTREAM_TAG"
+          packages=()
+          while read -r dir; do
+            [[ -f "$dir/package.json" ]] || continue
+            jq -e '.scripts.test' "$dir/package.json" > /dev/null || continue
+            packages+=("$(jq -r .name "$dir/package.json")")
+          done < <(git diff --name-only FETCH_HEAD HEAD | sed -nE 's#^((apps|packages)/[^/]+)/.*#\1#p' | sort -u)
+          echo "packages=${packages[*]}" >> "$GITHUB_OUTPUT"
+          echo "Fork-changed packages with tests: ${packages[*]:-none}"
+
+      - name: Test fork packages
+        if: steps.fork_packages.outputs.packages != ''
+        shell: bash
+        env:
+          PACKAGES: ${{ steps.fork_packages.outputs.packages }}
+        run: |
+          set -euo pipefail
+          for package in $PACKAGES; do
+            case "$package" in
+              @t3tools/web) node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium ;;
+              t3) node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium ;;
+            esac
+            vp run --filter "$package" test
+          done
+
+  bundle:
+    name: Build JS bundle
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.prepare.outputs.clerk_publishable_key }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.prepare.outputs.clerk_jwt_template }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ needs.prepare.outputs.clerk_cli_oauth_client_id }}
+      T3CODE_RELAY_URL: ${{ needs.prepare.outputs.relay_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
+
+      - uses: ./.github/actions/setup-apt-mirrors
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build JS bundle
+        env:
+          T3CODE_TELEMETRY_CHANNEL: dev
+        run: vp run build:desktop
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  # Upstream's per-platform build, on standard runners and without signing
+  # secrets. The Linux job produces the server archive that pylon2 installs;
+  # the Windows job waits on it for the bundled WSL runtime.
+  linux:
+    name: Linux x64
+    needs: [prepare, bundle]
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.prepare.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.prepare.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.prepare.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.prepare.outputs.relay_url }}
+      label: Linux x64
+      runner: ubuntu-24.04
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+
+  windows:
+    name: Windows x64
+    needs: [prepare, bundle]
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.prepare.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.prepare.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.prepare.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.prepare.outputs.relay_url }}
+      label: Windows x64
+      runner: windows-2025
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      cli_archive: true
+
+  android:
+    name: Android APK
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      APP_VARIANT: preview
+      EXPO_NO_GIT_STATUS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The APK's JavaScript ships inside it; OTA updates would swap in
+      # upstream's preview bundles.
+      - name: Configure the build
+        run: |
+          cp .env.example .env
+          echo "T3CODE_MOBILE_UPDATES_ENABLED=0" >> .env
+
+      - name: Generate the native project
+        working-directory: apps/mobile
+        run: ./node_modules/.bin/expo prebuild --platform android --clean --no-install
+
+      # Release builds sign with the React Native template's debug keystore,
+      # the same key as the APK already installed from earlier fork builds.
+      - name: Build release APK
+        working-directory: apps/mobile/android
+        run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -x lintVitalAnalyzeRelease --no-daemon
+
+      - name: Collect APK
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p release-android
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            "release-android/t3code-android-${VERSION}-arm64-v8a.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: release-android/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # Pull requests stop after assembling the assets, so a renamed build output
+  # fails there rather than on main.
+  publish:
+    name: Release assets
+    needs: [prepare, checks, linux, windows, android]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      REF: ${{ needs.prepare.outputs.ref }}
+      UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+    steps:
+      - name: Download Windows desktop
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-win-x64
+          path: release-assets
+
+      - name: Download CLI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Download APK
+        uses: actions/download-artifact@v8
+        with:
+          name: android-apk
+          path: release-assets
+
+      # electron-updater reads nightly.yml; the build job suffixed it with the arch.
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          rm -f builder-debug.yml
+          mv nightly-win-x64.yml nightly.yml
+          sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
+          ls -l
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="Fork build of [upstream ${UPSTREAM_TAG}](https://github.com/pingdotgg/t3code/releases/tag/${UPSTREAM_TAG}) plus the features in [FORK.md](https://github.com/${GH_REPO}/blob/${REF}/FORK.md), from ${REF}."
+          gh release create "v${VERSION}" release-assets/* \
+            --target "$REF" \
+            --prerelease \
+            --title "T3 Code v${VERSION} (fork)" \
+            --notes "$notes"
+
+      # Keeps the newest few so a client mid-update still finds its files.
+      - name: Prune old releases
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release list --limit 100 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("-nightly\\.")))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+            while read -r tag; do
+              echo "Deleting $tag"
+              gh release delete "$tag" --cleanup-tag --yes
+            done
+
+  # Upstream's workflows wait forever for runners this fork doesn't have. This
+  # re-disables any that an upstream merge adds. release-desktop.yml stays
+  # enabled because this workflow calls it.
+  disable_upstream_workflows:
+    name: Disable upstream workflows
+    if: github.repository == 'tebiggs/t3code' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Disable upstream workflows and cancel their runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.state == "active") | [.id, .path] | @tsv' |
+            while IFS=$'\t' read -r id path; do
+              case "$path" in
+                .github/workflows/fork-release.yml | .github/workflows/release-desktop.yml) continue ;;
+                .github/workflows/*) ;;
+                *) continue ;;
+              esac
+              echo "Disabling $path"
+              gh api -X PUT "repos/$GH_REPO/actions/workflows/$id/disable" --silent
+              gh run list --workflow "$id" --limit 100 --json databaseId,status \
+                --jq '.[] | select(.status != "completed") | .databaseId' |
+                while read -r run; do
+                  gh run cancel "$run" || true
+                done
+            done
