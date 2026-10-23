@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --quiet --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$UPSTREAM_TAG"
-          declare -A tests
+          declare -A tests=()
           while read -r file; do
             [[ "$file" =~ ^((apps|packages)/[^/]+)/(.+)$ ]] || continue
             dir="${BASH_REMATCH[1]}"
