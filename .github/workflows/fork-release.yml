@@ -113,36 +113,48 @@ jobs:
       - name: Typecheck
         run: vp run typecheck
 
-      - id: fork_packages
-        name: Find packages the fork changes
+      # Runs the test files the fork changes and the tests beside source files
+      # it changes, through each package's own test script.
+      - name: Test what the fork changes
         shell: bash
         env:
           UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
         run: |
           set -euo pipefail
           git fetch --quiet --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$UPSTREAM_TAG"
-          packages=()
-          while read -r dir; do
-            [[ -f "$dir/package.json" ]] || continue
-            jq -e '.scripts.test' "$dir/package.json" > /dev/null || continue
-            packages+=("$(jq -r .name "$dir/package.json")")
-          done < <(git diff --name-only FETCH_HEAD HEAD | sed -nE 's#^((apps|packages)/[^/]+)/.*#\1#p' | sort -u)
-          echo "packages=${packages[*]}" >> "$GITHUB_OUTPUT"
-          echo "Fork-changed packages with tests: ${packages[*]:-none}"
+          declare -A tests
+          while read -r file; do
+            [[ "$file" =~ ^((apps|packages)/[^/]+)/(.+)$ ]] || continue
+            dir="${BASH_REMATCH[1]}"
+            rel="${BASH_REMATCH[3]}"
+            if [[ "$rel" =~ \.test\.tsx?$ ]]; then
+              candidates=("$rel")
+            else
+              base="${rel%.*}"
+              candidates=("$base.test.ts" "$base.test.tsx" "$base.browser.test.ts" "$base.browser.test.tsx")
+            fi
+            for candidate in "${candidates[@]}"; do
+              if [[ -f "$dir/$candidate" ]]; then
+                tests[$dir]+=" $candidate"
+              fi
+            done
+          done < <(git diff --name-only FETCH_HEAD HEAD)
 
-      - name: Test fork packages
-        if: steps.fork_packages.outputs.packages != ''
-        shell: bash
-        env:
-          PACKAGES: ${{ steps.fork_packages.outputs.packages }}
-        run: |
-          set -euo pipefail
-          for package in $PACKAGES; do
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "The fork changes no tested files."
+            exit 0
+          fi
+          for dir in "${!tests[@]}"; do
+            package="$(jq -r .name "$dir/package.json")"
+            files="$(tr ' ' '\n' <<< "${tests[$dir]}" | sort -u | xargs)"
+            echo "::group::$package: $files"
             case "$package" in
               @t3tools/web) node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium ;;
               t3) node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium ;;
             esac
-            vp run --filter "$package" test
+            # shellcheck disable=SC2086 # one argument per test file
+            vp run --filter "$package" test $files
+            echo "::endgroup::"
           done
 
   bundle:
