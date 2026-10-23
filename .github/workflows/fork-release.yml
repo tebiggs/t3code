@@ -255,7 +255,11 @@ jobs:
       clerk_cli_oauth_client_id: ${{ needs.prepare.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.prepare.outputs.relay_url }}
       label: Windows x64
-      runner: windows-2025
+      # Built on Linux like upstream's arm64 target: on GitHub's Windows image,
+      # Git Bash's GNU tar shadows the system bsdtar and cannot unpack C:\ paths.
+      # The Windows runner only verifies the natives and smoke-tests the CLI.
+      runner: ubuntu-24.04
+      verify_runner: windows-2025
       platform: win
       target: nsis
       arch: x64
