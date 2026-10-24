@@ -929,9 +929,9 @@ const RootStackConfig = createWorkspaceStackNavigator({
     EnvironmentPower: createNativeStackScreen({
       screen: EnvironmentPowerSheet,
       options: {
-        ...FORM_SHEET_PRESENTATION_OPTIONS,
+        ...HORIZONTAL_FORM_SHEET_OPTIONS,
         headerShown: false,
-        sheetAllowedDetents: [0.5],
+        sheetAllowedDetents: formSheetDetents(0.5),
         sheetGrabberVisible: true,
       },
     }),

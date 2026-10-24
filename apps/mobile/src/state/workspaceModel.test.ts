@@ -105,6 +105,7 @@ describe("mobile workspace projection", () => {
         environments: [projectWorkspaceEnvironment(desktopId, environment(desktopPhase))],
         quietEnvironmentIds,
         shellSummary: EMPTY_SHELL_SUMMARY,
+        hasSyncingConnectedEnvironment: false,
       });
 
     const asleep = project("reconnecting");
