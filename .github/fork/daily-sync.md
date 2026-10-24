@@ -49,7 +49,8 @@ gh run list --repo tebiggs/t3code --workflow fork-release.yml --branch main \
 If that run failed, read `gh run view <id> --repo tebiggs/t3code --log-failed`.
 
 - If the failure looks like runner or network trouble, rerun it once with
-  `gh run rerun <id> --failed`.
+  `gh run rerun <id> --repo tebiggs/t3code --failed`. If the token lacks
+  permission to rerun, report the failure instead.
 - If the code broke, fix it on a `fix/fork-<topic>` branch from `origin/main`
   and open a PR. Skip this if an open PR already fixes it.
 
