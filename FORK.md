@@ -23,3 +23,7 @@ features listed below.
 Give each feature one line: its PR, what it does, and its main paths. The daily
 sync compares upstream changes against this list. Add the line in the PR that
 adds the feature, and remove it in the PR that drops the feature.
+
+- #2 Servers and clients update from this fork's releases instead of
+  upstream's: `packages/shared/src/cliRelease.ts`,
+  `apps/web/src/state/npmRelease.ts`.
