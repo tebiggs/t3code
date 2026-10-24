@@ -14,6 +14,15 @@ export const WAKE_TIMEOUT_MS = 150_000;
 export const WAKE_RETRY_INTERVAL_MS = 5_000;
 /** Upper bound for one relay command, including shell startup. */
 export const RELAY_COMMAND_TIMEOUT_MS = 60_000;
+/** Matches the supervisor's quick probe when the app returns to the foreground. */
+export const LIVE_PROBE_TIMEOUT_MS = 3_000;
+/**
+ * An awake machine counts as asleep only after failing to connect for this long, so a dropped
+ * socket on app resume or a server restart doesn't pause it.
+ */
+export const ASLEEP_AFTER_FAILING_MS = 20_000;
+/** While the app is open, how often a machine believed asleep gets one connection attempt. */
+export const ASLEEP_RECHECK_INTERVAL_MS = 60_000;
 
 /**
  * The command travels in an environment variable so it needs no quoting, and `exec` makes the
@@ -26,7 +35,10 @@ export type PowerMode = "auto" | "asleep" | "waking" | "sleeping";
 
 export interface PowerRuntime {
   readonly mode: PowerMode;
+  /** Set while the machine is believed asleep, including while a check is in flight. */
   readonly asleepSince: number | null;
+  /** When a machine believed awake started failing to connect. */
+  readonly failingSince: number | null;
   readonly wakeDeadline: number | null;
   readonly error: string | null;
 }
@@ -34,6 +46,7 @@ export interface PowerRuntime {
 export const INITIAL_POWER_RUNTIME: PowerRuntime = {
   mode: "auto",
   asleepSince: null,
+  failingSince: null,
   wakeDeadline: null,
   error: null,
 };
@@ -45,17 +58,23 @@ export interface PowerConnection {
 
 export type PowerEvent =
   | { readonly type: "connection"; readonly connection: PowerConnection; readonly now: number }
-  | { readonly type: "foreground" }
+  /** The app came to the foreground, or a periodic check of an asleep machine is due. */
+  | { readonly type: "check" }
   | { readonly type: "wake-started" }
   | { readonly type: "wake-sent"; readonly now: number }
   | { readonly type: "wake-failed"; readonly error: string; readonly now: number }
   | { readonly type: "tick"; readonly now: number }
   | { readonly type: "sleep-started" }
+  /** The machine didn't answer before a sleep, so the "awake" it showed was stale. */
+  | { readonly type: "sleep-unreachable"; readonly now: number }
   | { readonly type: "sleep-succeeded"; readonly now: number }
   | { readonly type: "sleep-failed"; readonly error: string };
 
-/** `pause` stops the environment's reconnect loop; `resume` restarts it. */
-export type PowerEffect = "pause" | "resume" | null;
+/**
+ * `pause` stops the environment's reconnect loop, `resume` restarts it, and `recheck` asks the
+ * supervisor to probe the live session now.
+ */
+export type PowerEffect = "pause" | "resume" | "recheck" | null;
 
 function connectionFailed(connection: PowerConnection): boolean {
   return (
@@ -69,6 +88,7 @@ function fellAsleep(state: PowerRuntime, now: number, error: string | null = nul
     state: {
       mode: "asleep",
       asleepSince: state.asleepSince ?? now,
+      failingSince: null,
       wakeDeadline: null,
       error,
     },
@@ -76,10 +96,14 @@ function fellAsleep(state: PowerRuntime, now: number, error: string | null = nul
   } as const;
 }
 
+function failingTooLong(state: PowerRuntime, now: number): boolean {
+  return state.failingSince !== null && now - state.failingSince >= ASLEEP_AFTER_FAILING_MS;
+}
+
 /**
- * Asleep is inferred from reachability: a power-managed environment that fails to connect is
- * treated as asleep and stops retrying until the app returns to the foreground or the user
- * wakes it.
+ * Asleep is inferred from reachability. A power-managed environment that keeps failing to
+ * connect is treated as asleep and stops retrying, apart from one attempt when the app returns
+ * to the foreground and once a minute while it stays open, until the user wakes it.
  */
 export function reducePower(
   state: PowerRuntime,
@@ -87,39 +111,47 @@ export function reducePower(
 ): { readonly state: PowerRuntime; readonly effect: PowerEffect } {
   const unchanged = { state, effect: null } as const;
   switch (event.type) {
-    case "connection":
-      if (event.connection.phase === "connected") {
-        if (state.mode === "sleeping" || (state.mode === "auto" && state.asleepSince === null)) {
+    case "connection": {
+      const { phase } = event.connection;
+      if (phase === "connected") {
+        if (state.mode === "sleeping") return unchanged;
+        if (state.mode === "auto" && state.asleepSince === null && state.failingSince === null) {
           return unchanged;
         }
         return {
-          state: {
-            mode: "auto",
-            asleepSince: null,
-            wakeDeadline: null,
-            error: state.mode === "waking" ? null : state.error,
-          },
+          state: { ...INITIAL_POWER_RUNTIME, error: state.mode === "waking" ? null : state.error },
           effect: null,
         };
       }
       if (state.mode === "auto" && connectionFailed(event.connection)) {
-        return fellAsleep(state, event.now, state.error);
+        // Checking a machine already believed asleep takes one failure; an awake one needs a run.
+        if (state.asleepSince !== null || failingTooLong(state, event.now)) {
+          return fellAsleep(state, event.now, state.error);
+        }
+        return state.failingSince === null
+          ? { state: { ...state, failingSince: event.now }, effect: null }
+          : unchanged;
+      }
+      // The phone losing its network says nothing about the machine.
+      if (state.mode === "auto" && phase === "offline" && state.failingSince !== null) {
+        return { state: { ...state, failingSince: null }, effect: null };
       }
       // Something else restarted the paused loop, such as switching the environment back on.
       // Treat it as a check so a failure pauses it again.
-      if (
-        state.mode === "asleep" &&
-        (event.connection.phase === "connecting" || event.connection.phase === "reconnecting")
-      ) {
+      if (state.mode === "asleep" && (phase === "connecting" || phase === "reconnecting")) {
         return { state: { ...state, mode: "auto" }, effect: null };
       }
       return unchanged;
-    case "foreground":
+    }
+    case "check":
       return state.mode === "asleep"
         ? { state: { ...state, mode: "auto", error: null }, effect: "resume" }
         : unchanged;
     case "wake-started":
-      return { state: { ...state, mode: "waking", wakeDeadline: null, error: null }, effect: null };
+      return {
+        state: { ...state, mode: "waking", failingSince: null, wakeDeadline: null, error: null },
+        effect: null,
+      };
     case "wake-sent":
       return state.mode === "waking"
         ? {
@@ -130,16 +162,35 @@ export function reducePower(
     case "wake-failed":
       return fellAsleep(state, event.now, event.error);
     case "tick":
-      return state.mode === "waking" &&
+      if (
+        state.mode === "waking" &&
         state.wakeDeadline !== null &&
         event.now >= state.wakeDeadline
-        ? fellAsleep(state, event.now, "It didn't come back online. Try waking it again.")
+      ) {
+        return fellAsleep(state, event.now, "It didn't come back online. Try waking it again.");
+      }
+      // Retries can keep reporting the same failure, so no new connection event arrives.
+      return state.mode === "auto" && failingTooLong(state, event.now)
+        ? fellAsleep(state, event.now, state.error)
         : unchanged;
     case "sleep-started":
       return { state: { ...state, mode: "sleeping", error: null }, effect: null };
+    case "sleep-unreachable":
+      // Nothing was sent. The supervisor's own check ends the dead session, and the failed
+      // reconnect then pauses it through the connection branch above.
+      return {
+        state: {
+          ...state,
+          mode: "auto",
+          asleepSince: state.asleepSince ?? event.now,
+          failingSince: null,
+          error: null,
+        },
+        effect: "recheck",
+      };
     case "sleep-succeeded":
       return {
-        state: { mode: "asleep", asleepSince: event.now, wakeDeadline: null, error: null },
+        state: { ...INITIAL_POWER_RUNTIME, mode: "asleep", asleepSince: event.now },
         effect: "pause",
       };
     case "sleep-failed":
@@ -153,7 +204,8 @@ export function powerStatus(state: PowerRuntime, connection: PowerConnection): P
   if (state.mode === "sleeping") return "sleeping";
   if (state.mode === "waking") return "waking";
   if (connection.phase === "connected") return "awake";
-  if (state.mode === "asleep") return "asleep";
+  // Includes a check in flight, so the periodic check doesn't flicker the chip.
+  if (state.asleepSince !== null) return "asleep";
   return connection.phase === "offline" ? "offline" : "checking";
 }
 

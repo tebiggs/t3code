@@ -7,10 +7,12 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import {
   lastOutputLine,
+  LIVE_PROBE_TIMEOUT_MS,
   RELAY_COMMAND_ENV_KEY,
   RELAY_COMMAND_TIMEOUT_MS,
   RELAY_SHELL_INPUT,
@@ -109,5 +111,27 @@ export const setEnvironmentConnectionDesired = createRuntimeCommand(connectionAt
           ),
         ),
       ),
+    ),
+});
+
+// A machine that fell asleep keeps reading as connected until its socket times out, so the
+// session has to answer a round trip before anything acts on "awake".
+const probeLiveSession = Effect.fn("EnvironmentPower.probeLiveSession")(function* () {
+  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+  const session = yield* SubscriptionRef.get(supervisor.session);
+  if (Option.isNone(session)) return false;
+  return yield* session.value.probe.pipe(
+    Effect.timeout(LIVE_PROBE_TIMEOUT_MS),
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+});
+
+/** Whether the environment answers right now. */
+export const probeEnvironment = createRuntimeCommand(connectionAtomRuntime, {
+  label: "environment-power:probe",
+  execute: (environmentId: EnvironmentId) =>
+    EnvironmentRegistry.EnvironmentRegistry.pipe(
+      Effect.flatMap((registry) => registry.run(environmentId, probeLiveSession())),
     ),
 });

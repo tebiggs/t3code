@@ -11,8 +11,13 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPowerSettingsAtom } from "../../state/environment-power-settings";
 import { updateMobilePreferencesAtom } from "../../state/preferences";
 import { useWorkspaceEnvironments } from "../../state/workspace";
-import { runRelayCommand, setEnvironmentConnectionDesired } from "./environment-power-commands";
 import {
+  probeEnvironment,
+  runRelayCommand,
+  setEnvironmentConnectionDesired,
+} from "./environment-power-commands";
+import {
+  ASLEEP_RECHECK_INTERVAL_MS,
   DEFAULT_SLEEP_COMMAND,
   DEFAULT_WAKE_COMMAND,
   INITIAL_POWER_RUNTIME,
@@ -70,12 +75,19 @@ function setConnectionDesired(environmentId: EnvironmentId, desired: boolean) {
   void runAtomCommand(appAtomRegistry, setEnvironmentConnectionDesired, { environmentId, desired });
 }
 
+function retryConnection(environmentId: EnvironmentId) {
+  void runAtomCommand(appAtomRegistry, environmentCatalog.retryNow, environmentId, {
+    reportFailure: false,
+  });
+}
+
 function dispatch(environmentId: EnvironmentId, event: PowerEvent) {
   const previous =
     appAtomRegistry.get(environmentPowerRuntimeAtom).get(environmentId) ?? INITIAL_POWER_RUNTIME;
   const { state, effect } = reducePower(previous, event);
   if (state !== previous) setRuntime(environmentId, state);
-  if (effect !== null) setConnectionDesired(environmentId, effect === "resume");
+  if (effect === "recheck") retryConnection(environmentId);
+  else if (effect !== null) setConnectionDesired(environmentId, effect === "resume");
 }
 
 async function runPowerCommand(
@@ -110,6 +122,13 @@ export async function wakeEnvironment(environmentId: EnvironmentId) {
 
 export async function sleepEnvironment(environmentId: EnvironmentId) {
   dispatch(environmentId, { type: "sleep-started" });
+  const probe = await runAtomCommand(appAtomRegistry, probeEnvironment, environmentId, {
+    reportFailure: false,
+  });
+  if (!AsyncResult.isSuccess(probe) || !probe.value) {
+    dispatch(environmentId, { type: "sleep-unreachable", now: Date.now() });
+    return;
+  }
   const error = await runPowerCommand(environmentId, (settings) => settings.sleepCommand);
   dispatch(
     environmentId,
@@ -144,35 +163,49 @@ export function useEnvironmentPowerWorker() {
   useEffect(() => {
     let previous = AppState.currentState;
     const subscription = AppState.addEventListener("change", (next) => {
-      if (previous !== "active" && next === "active") {
-        for (const environmentId of appAtomRegistry.get(environmentPowerRuntimeAtom).keys()) {
-          dispatch(environmentId, { type: "foreground" });
-        }
-      }
+      if (previous !== "active" && next === "active") checkAsleepEnvironments();
       previous = next;
     });
     return () => subscription.remove();
   }, []);
 
-  const waking = [...runtime.values()].some(
-    (state) => state.mode === "waking" && state.wakeDeadline !== null,
+  const states = [...runtime.values()];
+  const anyAsleep = states.some((state) => state.mode === "asleep");
+  useEffect(() => {
+    if (!anyAsleep) return;
+    const interval = setInterval(() => {
+      if (AppState.currentState === "active") checkAsleepEnvironments();
+    }, ASLEEP_RECHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [anyAsleep]);
+
+  const ticking = states.some(
+    (state) =>
+      (state.mode === "waking" && state.wakeDeadline !== null) ||
+      (state.mode === "auto" && state.failingSince !== null),
   );
   useEffect(() => {
-    if (!waking) return;
+    if (!ticking) return;
     const interval = setInterval(() => {
       const now = Date.now();
       for (const [environmentId, state] of appAtomRegistry.get(environmentPowerRuntimeAtom)) {
-        if (state.mode !== "waking" || state.wakeDeadline === null) continue;
+        const waking = state.mode === "waking" && state.wakeDeadline !== null;
+        if (!waking && !(state.mode === "auto" && state.failingSince !== null)) continue;
         dispatch(environmentId, { type: "tick", now });
         if (
+          waking &&
           appAtomRegistry.get(environmentPowerRuntimeAtom).get(environmentId)?.mode === "waking"
         ) {
-          void runAtomCommand(appAtomRegistry, environmentCatalog.retryNow, environmentId, {
-            reportFailure: false,
-          });
+          retryConnection(environmentId);
         }
       }
     }, WAKE_RETRY_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [waking]);
+  }, [ticking]);
+}
+
+function checkAsleepEnvironments() {
+  for (const environmentId of appAtomRegistry.get(environmentPowerRuntimeAtom).keys()) {
+    dispatch(environmentId, { type: "check" });
+  }
 }
