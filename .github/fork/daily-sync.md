@@ -45,14 +45,18 @@ Note the `previous=` and `latest=` lines it prints.
 
 ```sh
 gh run list --repo tebiggs/t3code --workflow fork-release.yml --branch main \
-  --event push --status completed --limit 1 --json conclusion,headSha,url
+  --event push --status completed --limit 1 \
+  --json databaseId,attempt,conclusion,headSha,url
 ```
 
 If that run failed, read `gh run view <id> --repo tebiggs/t3code --log-failed`.
 
-- If the failure looks like runner or network trouble, rerun it once with
-  `gh run rerun <id> --repo tebiggs/t3code --failed`. If the token lacks
-  permission to rerun, report the failure instead.
+- If the failure looks like runner or network trouble, rerun the whole run with
+  `gh run rerun <id> --repo tebiggs/t3code`, but only when `attempt` is 1 and
+  `headSha` is still `origin/main`. A newer build replaces an older one.
+  Don't use `--failed`: build artifacts expire after a day, so the retried jobs
+  couldn't download what the passing jobs built. If the token lacks permission
+  to rerun, report the failure instead.
 - If the code broke, fix it on a `fix/fork-<topic>` branch from `origin/main`
   and open a PR. Skip this if an open PR already fixes it.
 

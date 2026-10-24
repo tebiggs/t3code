@@ -12,7 +12,9 @@
 # Prints `previous=<tag>` and `latest=<tag>` so the caller can review the
 # upstream range.
 
-set -euo pipefail
+set -Eeuo pipefail
+# The quiet git commands would otherwise fail without saying which one did.
+trap 'echo "sync: failed: $BASH_COMMAND" >&2' ERR
 
 FORK_REPO=tebiggs/t3code
 TAG_FILE=.github/fork/upstream-tag
@@ -26,7 +28,7 @@ main() {
 
   # A later merge on top of an unmerged resolution would conflict the same way.
   local open_pr
-  open_pr="$(gh pr list --repo "$FORK_REPO" --state open --json number,headRefName \
+  open_pr="$(gh pr list --repo "$FORK_REPO" --state open --limit 1000 --json number,headRefName \
     --jq '[.[] | select(.headRefName | startswith("sync-conflict/")) | .number] | first // empty')"
   if [[ -n "$open_pr" ]]; then
     echo "sync: waiting on sync-conflict PR #$open_pr"
@@ -55,6 +57,13 @@ main() {
 
   # --no-ff even when main has no fork commits, so the tag file lands in a merge commit.
   if ! git merge --quiet --no-ff --no-commit "$latest"; then
+    # Exit 3 promises a merge stopped on conflicts. Any other refusal, such as
+    # unrelated histories, leaves nothing to resolve.
+    if [[ -z "$(git ls-files --unmerged)" ]]; then
+      echo "sync: merging $latest failed without conflicts" >&2
+      git merge --abort 2>/dev/null || true
+      exit 1
+    fi
     printf '%s\n' "$latest" > "$TAG_FILE"
     git add "$TAG_FILE"
     echo "sync: merging $latest conflicts in:"

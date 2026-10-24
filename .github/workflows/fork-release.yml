@@ -124,7 +124,7 @@ jobs:
           git fetch --quiet --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$UPSTREAM_TAG"
           declare -A tests=()
           while read -r file; do
-            [[ "$file" =~ ^((apps|packages)/[^/]+)/(.+)$ ]] || continue
+            [[ "$file" =~ ^((apps|packages)/[^/]+|scripts)/(.+)$ ]] || continue
             dir="${BASH_REMATCH[1]}"
             rel="${BASH_REMATCH[3]}"
             if [[ "$rel" =~ \.test\.tsx?$ ]]; then
