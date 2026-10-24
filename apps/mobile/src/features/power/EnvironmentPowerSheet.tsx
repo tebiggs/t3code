@@ -84,7 +84,9 @@ export function EnvironmentPowerSheet({
       case "waking":
         return "Wake sent. Waiting for it to connect…";
       case "sleeping":
-        return "Asking it to sleep…";
+        return runtime.deadline === null
+          ? "Asking it to sleep…"
+          : "Sleep sent. Waiting for it to stop answering…";
       case "checking":
         return "Checking whether it's awake…";
       case "offline":

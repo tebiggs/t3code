@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { WS_METHODS, type EnvironmentId, type TerminalAttachStreamEvent } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -16,11 +17,13 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import {
   lastOutputLine,
   LIVE_PROBE_TIMEOUT_MS,
+  needsInput,
   RELAY_COMMAND_ENV_KEY,
   RELAY_COMMAND_TIMEOUT_MS,
   resolvePowerCommand,
   shellInputFor,
-  TERMINAL_CLOSE_TIMEOUT_MS,
+  SLEEP_SETTLE_MS,
+  TERMINAL_REQUEST_TIMEOUT_MS,
   type PowerCommand,
 } from "./environment-power";
 
@@ -85,10 +88,20 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
     rows: 24,
     env: { ...resolved.env, [RELAY_COMMAND_ENV_KEY]: resolved.command },
   };
+  // Completes once the shell has the input: the write was acknowledged or the shell echoed it.
+  const delivered = yield* Deferred.make<void>();
+  const markDelivered = Deferred.succeed(delivered, undefined);
+  // A lost reply doesn't mean the write was lost, so a failed write doesn't fail the action.
+  // The reattach snapshot after a dropped connection shows whether it landed.
+  const writeInput = request(WS_METHODS.terminalWrite, { ...target, data: shellInputFor(os) }).pipe(
+    Effect.timeout(TERMINAL_REQUEST_TIMEOUT_MS),
+    Effect.andThen(markDelivered),
+    Effect.ignore,
+  );
   let output = "";
-  let written = false;
+  let writes = 0;
   let replied = false;
-  const outcome = yield* subscribeDynamic(WS_METHODS.terminalAttach, () =>
+  const exit = subscribeDynamic(WS_METHODS.terminalAttach, () =>
     // A resubscribe after a dropped connection must not open a second shell.
     Effect.sync(() => (replied ? { ...attachInput, resume: true } : attachInput)),
   ).pipe(
@@ -100,24 +113,39 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
     Stream.tap((event) => {
       if (event.type === "output") {
         output = (output + event.data).slice(-OUTPUT_TAIL_LENGTH);
+        return output.includes(RELAY_COMMAND_ENV_KEY) ? markDelivered : Effect.void;
       }
-      if (event.type !== "snapshot" || written) return Effect.void;
-      written = true;
-      return request(WS_METHODS.terminalWrite, { ...target, data: shellInputFor(os) });
+      if (event.type !== "snapshot") return Effect.void;
+      if (needsInput(event.snapshot, writes)) {
+        writes += 1;
+        return writeInput;
+      }
+      return event.snapshot.history.includes(RELAY_COMMAND_ENV_KEY) ? markDelivered : Effect.void;
     }),
-    Stream.map((event) => terminalOutcome(event, written)),
+    Stream.map((event) => terminalOutcome(event, writes > 0)),
     Stream.takeUntil((result) => result !== null),
     Stream.runLast,
+    Effect.map(Option.getOrNull),
+  );
+  // An OS sleep call can return only after the machine wakes again, and the connection drops
+  // before then, so a built-in sleep that is still running after the settle window counts as sent.
+  const settled =
+    command.kind === "sleep"
+      ? Deferred.await(delivered).pipe(
+          Effect.andThen(Effect.sleep(SLEEP_SETTLE_MS)),
+          Effect.as("settled" as const),
+        )
+      : Effect.never;
+  const result = yield* Effect.raceFirst(exit, settled).pipe(
     Effect.timeout(RELAY_COMMAND_TIMEOUT_MS),
     Effect.ensuring(
       request(WS_METHODS.terminalClose, { ...target, deleteHistory: true }).pipe(
-        Effect.timeout(TERMINAL_CLOSE_TIMEOUT_MS),
+        Effect.timeout(TERMINAL_REQUEST_TIMEOUT_MS),
         Effect.ignore,
       ),
     ),
   );
-  const result = Option.getOrNull(outcome);
-  if (result?.exitCode === 0) return;
+  if (result === "settled" || result?.exitCode === 0) return;
   const detail =
     result?.message ??
     lastOutputLine(output) ??
@@ -138,6 +166,29 @@ export const runPowerCommand = createRuntimeCommand(connectionAtomRuntime, {
     ),
 });
 
+const setConnectionDesired = Effect.fn("EnvironmentPower.setConnectionDesired")(function* (
+  environmentId: EnvironmentId,
+  desired: boolean,
+) {
+  const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+  const isEnabled = SubscriptionRef.get(registry.entries).pipe(
+    Effect.map((entries) => entries.get(environmentId)?.enabled === true),
+  );
+  yield* registry.run(
+    environmentId,
+    Effect.gen(function* () {
+      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+      if (!desired) return yield* supervisor.disconnect;
+      // A queued resume can run after the user switched the environment off.
+      if (!(yield* isEnabled)) return;
+      yield* supervisor.connect;
+      // setEnabled updates the entry before it disconnects, so a switch-off that landed during
+      // the connect is visible here.
+      if (!(yield* isEnabled)) yield* supervisor.disconnect;
+    }),
+  );
+});
+
 /**
  * Pauses or resumes one environment's reconnect loop without switching the environment off,
  * so its threads stay listed while the machine sleeps. Serial per environment, so the last
@@ -151,18 +202,7 @@ export const setEnvironmentConnectionDesired = createRuntimeCommand(connectionAt
     key: (input: { readonly environmentId: EnvironmentId }) => input.environmentId,
   },
   execute: (input: { readonly environmentId: EnvironmentId; readonly desired: boolean }) =>
-    EnvironmentRegistry.EnvironmentRegistry.pipe(
-      Effect.flatMap((registry) =>
-        registry.run(
-          input.environmentId,
-          EnvironmentSupervisor.EnvironmentSupervisor.pipe(
-            Effect.flatMap((supervisor) =>
-              input.desired ? supervisor.connect : supervisor.disconnect,
-            ),
-          ),
-        ),
-      ),
-    ),
+    setConnectionDesired(input.environmentId, input.desired),
 });
 
 // A retry signal interrupts an attempt that is still connecting, so only cut a backoff wait short.

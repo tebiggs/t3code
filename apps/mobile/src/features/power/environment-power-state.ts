@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
+import * as Equal from "effect/Equal";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 import { AppState } from "react-native";
@@ -18,11 +19,11 @@ import {
   setEnvironmentConnectionDesired,
 } from "./environment-power-commands";
 import {
+  ACTION_CHECK_INTERVAL_MS,
   ASLEEP_RECHECK_INTERVAL_MS,
   INITIAL_POWER_RUNTIME,
   reducePower,
   sleepTarget,
-  WAKE_RETRY_INTERVAL_MS,
   wakeTarget,
   type PowerEvent,
   type PowerTarget,
@@ -123,19 +124,33 @@ export async function wakeEnvironment(environmentId: EnvironmentId) {
   );
 }
 
-export async function sleepEnvironment(environmentId: EnvironmentId) {
-  dispatch(environmentId, { type: "sleep-started" });
+async function isAnswering(environmentId: EnvironmentId): Promise<boolean> {
   const probe = await runAtomCommand(appAtomRegistry, probeEnvironment, environmentId, {
     reportFailure: false,
   });
-  if (!AsyncResult.isSuccess(probe) || !probe.value) {
+  return AsyncResult.isSuccess(probe) && probe.value;
+}
+
+export async function sleepEnvironment(environmentId: EnvironmentId) {
+  // Resolved before the probe, so what runs is what the user saw when they asked.
+  const settings = settingsFor(environmentId);
+  const target = sleepTarget(environmentId, settings);
+  dispatch(environmentId, { type: "sleep-started" });
+  if (!(await isAnswering(environmentId))) {
     dispatch(environmentId, { type: "sleep-unreachable" });
     return;
   }
-  const error = await runOn(sleepTarget(environmentId, settingsFor(environmentId)));
+  if (!isEnabledEnvironment(environmentId) || !Equal.equals(settingsFor(environmentId), settings)) {
+    dispatch(environmentId, {
+      type: "sleep-failed",
+      error: "Power settings changed while checking the machine, so nothing was sent.",
+    });
+    return;
+  }
+  const error = await runOn(target);
   dispatch(
     environmentId,
-    error === null ? { type: "sleep-succeeded", now: Date.now() } : { type: "sleep-failed", error },
+    error === null ? { type: "sleep-sent", now: Date.now() } : { type: "sleep-failed", error },
   );
 }
 
@@ -187,31 +202,40 @@ export function useEnvironmentPowerWorker() {
     return () => clearInterval(interval);
   }, [anyAsleep]);
 
-  const ticking = states.some(
-    (state) =>
-      (state.mode === "waking" && state.wakeDeadline !== null) ||
-      (state.mode === "auto" && state.failingSince !== null),
-  );
+  const ticking = states.some(needsTicks);
   useEffect(() => {
     if (!ticking) return;
     const interval = setInterval(() => {
       const now = Date.now();
       for (const [environmentId, state] of appAtomRegistry.get(environmentPowerRuntimeAtom)) {
-        const waking = state.mode === "waking" && state.wakeDeadline !== null;
-        if (!waking && !(state.mode === "auto" && state.failingSince !== null)) continue;
+        if (!needsTicks(state)) continue;
         dispatch(environmentId, { type: "tick", now });
-        if (
-          waking &&
-          appAtomRegistry.get(environmentPowerRuntimeAtom).get(environmentId)?.mode === "waking"
-        ) {
+        const next = appAtomRegistry.get(environmentPowerRuntimeAtom).get(environmentId);
+        if (next?.mode === "waking") {
           void runAtomCommand(appAtomRegistry, retryEnvironmentIfWaiting, environmentId, {
             reportFailure: false,
           });
+        } else if (next?.mode === "sleeping" && next.deadline !== null) {
+          // A machine that just fell asleep keeps reading as connected until its socket times out.
+          void confirmAsleep(environmentId);
         }
       }
-    }, WAKE_RETRY_INTERVAL_MS);
+    }, ACTION_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [ticking]);
+}
+
+function needsTicks(state: PowerRuntime): boolean {
+  return (
+    ((state.mode === "waking" || state.mode === "sleeping") && state.deadline !== null) ||
+    (state.mode === "auto" && state.failingSince !== null)
+  );
+}
+
+async function confirmAsleep(environmentId: EnvironmentId) {
+  if (!(await isAnswering(environmentId))) {
+    dispatch(environmentId, { type: "probe-failed", now: Date.now() });
+  }
 }
 
 function checkAsleepEnvironments() {

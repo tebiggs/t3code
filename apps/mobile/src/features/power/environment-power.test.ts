@@ -6,12 +6,15 @@ import {
   ASLEEP_AFTER_FAILING_MS,
   INITIAL_POWER_RUNTIME,
   lastOutputLine,
+  MAX_INPUT_WRITES,
+  needsInput,
   normalizeMacAddress,
   POWER_MAC_ENV_KEY,
   powerStatus,
   reducePower,
   resolvePowerCommand,
   shellInputFor,
+  SLEEP_CONFIRM_TIMEOUT_MS,
   sleepTarget,
   WAKE_TIMEOUT_MS,
   wakeTarget,
@@ -123,11 +126,54 @@ describe("reducePower", () => {
     expect(state).toMatchObject({ mode: "asleep", error: "pc-power: command not found" });
   });
 
-  it("pauses after a successful sleep and ignores the dropped connection", () => {
+  it("marks a sent sleep asleep only once the connection fails", () => {
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "connection", connection: connected, now: 1 },
+      { type: "sleep-started" },
+      { type: "sleep-sent", now: 3 },
+      { type: "connection", connection: connected, now: 4 },
+      { type: "tick", now: 8 },
+      { type: "connection", connection: failed, now: 12 },
+    ]);
+    expect(effects).toEqual([null, null, null, null, null, "pause"]);
+    expect(state).toMatchObject({ mode: "asleep", asleepSince: 12, error: null });
+  });
+
+  it("reports a sent sleep that didn't take and keeps reconnecting", () => {
+    const sent = run(INITIAL_POWER_RUNTIME, [
+      { type: "sleep-started" },
+      { type: "sleep-sent", now: 3 },
+      { type: "tick", now: 3 + SLEEP_CONFIRM_TIMEOUT_MS - 1 },
+    ]);
+    expect(sent.state.mode).toBe("sleeping");
+    const { state, effects } = run(sent.state, [
+      { type: "tick", now: 3 + SLEEP_CONFIRM_TIMEOUT_MS },
+    ]);
+    expect(effects).toEqual([null]);
+    expect(state).toMatchObject({
+      mode: "auto",
+      asleepSince: null,
+      error: "It didn't go to sleep.",
+    });
+    expect(powerStatus(state, connected)).toBe("awake");
+  });
+
+  it("marks a sent sleep asleep when a live probe goes unanswered", () => {
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "sleep-started" },
+      { type: "probe-failed", now: 2 },
+      { type: "sleep-sent", now: 3 },
+      { type: "probe-failed", now: 8 },
+    ]);
+    expect(effects).toEqual([null, null, null, "pause"]);
+    expect(state).toMatchObject({ mode: "asleep", asleepSince: 8 });
+  });
+
+  it("counts a connection lost while the sleep command finished", () => {
     const { state, effects } = run(INITIAL_POWER_RUNTIME, [
       { type: "sleep-started" },
       { type: "connection", connection: failed, now: 2 },
-      { type: "sleep-succeeded", now: 3 },
+      { type: "sleep-sent", now: 3 },
     ]);
     expect(effects).toEqual([null, null, "pause"]);
     expect(state).toMatchObject({ mode: "asleep", asleepSince: 3 });
@@ -159,11 +205,12 @@ describe("reducePower", () => {
   it("undoes a pause that landed after a late connected update", () => {
     const { state, effects } = run(INITIAL_POWER_RUNTIME, [
       { type: "sleep-started" },
-      { type: "sleep-succeeded", now: 3 },
-      { type: "connection", connection: connected, now: 4 },
-      { type: "connection", connection: { phase: "available", error: null }, now: 5 },
+      { type: "sleep-sent", now: 3 },
+      { type: "probe-failed", now: 4 },
+      { type: "connection", connection: connected, now: 5 },
+      { type: "connection", connection: { phase: "available", error: null }, now: 6 },
     ]);
-    expect(effects).toEqual([null, "pause", null, "resume"]);
+    expect(effects).toEqual([null, null, "pause", null, "resume"]);
     expect(state.mode).toBe("auto");
   });
 
@@ -236,9 +283,12 @@ describe("resolvePowerCommand", () => {
     expect(windows?.command).toContain("UdpClient");
   });
 
-  it("has no built-in sleep for an unknown OS", () => {
+  it("runs the built-in sleep in the foreground and has none for an unknown OS", () => {
     expect(resolvePowerCommand({ kind: "sleep" }, "unknown")).toBeNull();
-    expect(resolvePowerCommand({ kind: "sleep" }, "windows")?.command).toContain("SetSuspendState");
+    expect(resolvePowerCommand({ kind: "sleep" }, "linux")?.command).toBe("systemctl suspend");
+    expect(resolvePowerCommand({ kind: "sleep" }, "windows")?.command).not.toContain(
+      "Start-Process",
+    );
   });
 
   it("runs custom commands as given", () => {
@@ -246,6 +296,22 @@ describe("resolvePowerCommand", () => {
       command: "pc-power wake",
       env: {},
     });
+  });
+});
+
+describe("needsInput", () => {
+  const running = { status: "running", history: "" } as const;
+  const echoed = { status: "running", history: 'exec sh -c "$T3_POWER_COMMAND"\r\n' } as const;
+
+  it("writes to a new shell and again after a reattach that never saw the input", () => {
+    expect(needsInput(running, 0)).toBe(true);
+    expect(needsInput(running, 1)).toBe(true);
+    expect(needsInput(running, MAX_INPUT_WRITES)).toBe(false);
+  });
+
+  it("leaves a shell alone once it echoed the input or exited", () => {
+    expect(needsInput(echoed, 1)).toBe(false);
+    expect(needsInput({ status: "exited", history: "" }, 1)).toBe(false);
   });
 });
 
@@ -291,6 +357,10 @@ describe("power targets", () => {
       environmentId: relay,
       command: { kind: "custom", command: "pc-power sleep --force" },
     });
+  });
+
+  it("never falls back to the built-in sleep without settings", () => {
+    expect(sleepTarget(desktop, undefined)).toHaveProperty("error");
   });
 
   it("explains what's missing before a built-in wake can run", () => {

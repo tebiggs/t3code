@@ -3,14 +3,21 @@ import {
   threadRuntimeIsActive,
   type ThreadRuntimeSummary,
 } from "@t3tools/client-runtime/state/models";
-import type { EnvironmentId, ExecutionEnvironmentPlatformOs } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ExecutionEnvironmentPlatformOs,
+  TerminalSessionSnapshot,
+} from "@t3tools/contracts";
 
 import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferences";
 
 /** How long a woken machine has to reconnect before it counts as asleep again. */
 export const WAKE_TIMEOUT_MS = 150_000;
-/** The supervisor's backoff doubles from 1 s, which is too slow for a machine that answers in ~10 s. */
-export const WAKE_RETRY_INTERVAL_MS = 5_000;
+/**
+ * How often a wake or sleep in flight is checked. The supervisor's backoff doubles from 1 s,
+ * which is too slow for a machine that answers in ~10 s.
+ */
+export const ACTION_CHECK_INTERVAL_MS = 5_000;
 /** Upper bound for one relay command, including shell startup. */
 export const RELAY_COMMAND_TIMEOUT_MS = 60_000;
 /** Matches the supervisor's quick probe when the app returns to the foreground. */
@@ -23,8 +30,17 @@ export const ASLEEP_AFTER_FAILING_MS = 20_000;
 /** While the app is open, how often a machine believed asleep gets one connection attempt. */
 export const ASLEEP_RECHECK_INTERVAL_MS = 60_000;
 
-/** Upper bound for closing the throwaway terminal, so a lost reply can't hold the action open. */
-export const TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
+/** Upper bound for writing to or closing the throwaway terminal, so a lost reply can't hold the action open. */
+export const TERMINAL_REQUEST_TIMEOUT_MS = 5_000;
+/**
+ * A built-in sleep that hasn't exited this long after its input reached the shell counts as
+ * sent. Some OS sleep calls only return after the machine wakes up again.
+ */
+export const SLEEP_SETTLE_MS = 5_000;
+/** How long a sent sleep has to make the machine stop answering before it counts as refused. */
+export const SLEEP_CONFIRM_TIMEOUT_MS = 45_000;
+/** The first write plus retries after a reattach shows the input never arrived. */
+export const MAX_INPUT_WRITES = 3;
 
 export const RELAY_COMMAND_ENV_KEY = "T3_POWER_COMMAND";
 export const POWER_MAC_ENV_KEY = "T3_POWER_MAC";
@@ -53,12 +69,12 @@ export type PowerCommand =
 const POSIX_WAKE = `python3 -c 'import os,socket;m=bytes.fromhex(os.environ["${POWER_MAC_ENV_KEY}"]);s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);s.sendto(b"\\xff"*6+m*16,("255.255.255.255",9))'`;
 const WINDOWS_WAKE = `$m=[byte[]]($env:${POWER_MAC_ENV_KEY} -split '(..)' -ne '' | ForEach-Object { [Convert]::ToByte($_,16) }); $p=[byte[]](@(0xFF)*6 + $m*16); $u=New-Object Net.Sockets.UdpClient; $u.EnableBroadcast=$true; [void]$u.Send($p,$p.Length,'255.255.255.255',9); $u.Close()`;
 
-// Each sleep starts after a short delay in a detached process, so the command exits and its
-// status reaches the phone before the machine stops answering.
+// Each sleep runs in the foreground so a refusal reaches the phone as a failed exit. A call that
+// hasn't returned by SLEEP_SETTLE_MS counts as sent.
 const SLEEP_BY_OS: Partial<Record<ExecutionEnvironmentPlatformOs, string>> = {
-  linux: `nohup sh -c 'sleep 2; systemctl suspend' >/dev/null 2>&1 &`,
-  darwin: `nohup sh -c 'sleep 2; pmset sleepnow' >/dev/null 2>&1 &`,
-  windows: `Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)'`,
+  linux: "systemctl suspend",
+  darwin: "pmset sleepnow",
+  windows: `Add-Type -AssemblyName System.Windows.Forms; if (-not [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)) { throw 'Windows refused to sleep.' }`,
 };
 
 export function resolvePowerCommand(
@@ -106,9 +122,10 @@ export function sleepTarget(
   environmentId: EnvironmentId,
   settings: EnvironmentPowerSettings | undefined,
 ): PowerTarget {
-  const custom = settings?.sleepCommand.trim() ?? "";
+  if (settings === undefined) return { error: "Sleep and wake is turned off for this machine." };
+  const custom = settings.sleepCommand.trim();
   if (custom.length === 0) return { environmentId, command: { kind: "sleep" } };
-  return settings?.relayEnvironmentId
+  return settings.relayEnvironmentId
     ? { environmentId: settings.relayEnvironmentId, command: { kind: "custom", command: custom } }
     : { error: "Choose a machine to send the custom sleep command through." };
 }
@@ -125,9 +142,10 @@ export interface PowerRuntime {
   readonly mode: PowerMode;
   /** Set while the machine is believed asleep, including while a check is in flight. */
   readonly asleepSince: number | null;
-  /** When a machine believed awake started failing to connect. */
+  /** When a machine believed awake, or being put to sleep, started failing to connect. */
   readonly failingSince: number | null;
-  readonly wakeDeadline: number | null;
+  /** When a sent wake or sleep gives up. Null while its command is still running. */
+  readonly deadline: number | null;
   readonly error: string | null;
 }
 
@@ -135,7 +153,7 @@ export const INITIAL_POWER_RUNTIME: PowerRuntime = {
   mode: "auto",
   asleepSince: null,
   failingSince: null,
-  wakeDeadline: null,
+  deadline: null,
   error: null,
 };
 
@@ -155,8 +173,11 @@ export type PowerEvent =
   | { readonly type: "sleep-started" }
   /** The machine didn't answer before a sleep, so the "awake" it showed may be stale. */
   | { readonly type: "sleep-unreachable" }
-  | { readonly type: "sleep-succeeded"; readonly now: number }
-  | { readonly type: "sleep-failed"; readonly error: string };
+  /** The sleep was handed over; the machine still has to stop answering. */
+  | { readonly type: "sleep-sent"; readonly now: number }
+  | { readonly type: "sleep-failed"; readonly error: string }
+  /** A live-session probe after a sent sleep got no answer. */
+  | { readonly type: "probe-failed"; readonly now: number };
 
 /**
  * `pause` stops the environment's reconnect loop, `resume` restarts it, and `recheck` asks the
@@ -177,7 +198,7 @@ function fellAsleep(state: PowerRuntime, now: number, error: string | null = nul
       mode: "asleep",
       asleepSince: state.asleepSince ?? now,
       failingSince: null,
-      wakeDeadline: null,
+      deadline: null,
       error,
     },
     effect: "pause",
@@ -188,10 +209,15 @@ function failingTooLong(state: PowerRuntime, now: number): boolean {
   return state.failingSince !== null && now - state.failingSince >= ASLEEP_AFTER_FAILING_MS;
 }
 
+function confirmingSleep(state: PowerRuntime): boolean {
+  return state.mode === "sleeping" && state.deadline !== null;
+}
+
 /**
  * Asleep is inferred from reachability. A power-managed environment that keeps failing to
  * connect is treated as asleep and stops retrying, apart from one attempt when the app returns
- * to the foreground and once a minute while it stays open, until the user wakes it.
+ * to the foreground and once a minute while it stays open, until the user wakes it. A sent sleep
+ * only counts once the machine stops answering.
  */
 export function reducePower(
   state: PowerRuntime,
@@ -201,8 +227,19 @@ export function reducePower(
   switch (event.type) {
     case "connection": {
       const { phase } = event.connection;
+      if (state.mode === "sleeping") {
+        if (connectionFailed(event.connection)) {
+          if (confirmingSleep(state)) return fellAsleep(state, event.now);
+          // The command may still report back, so only remember the failure for now.
+          return state.failingSince === null
+            ? { state: { ...state, failingSince: event.now }, effect: null }
+            : unchanged;
+        }
+        return phase === "connected" && state.failingSince !== null
+          ? { state: { ...state, failingSince: null }, effect: null }
+          : unchanged;
+      }
       if (phase === "connected") {
-        if (state.mode === "sleeping") return unchanged;
         if (state.mode === "auto" && state.asleepSince === null && state.failingSince === null) {
           return unchanged;
         }
@@ -242,44 +279,60 @@ export function reducePower(
         : unchanged;
     case "wake-started":
       return {
-        state: { ...state, mode: "waking", failingSince: null, wakeDeadline: null, error: null },
+        state: { ...state, mode: "waking", failingSince: null, deadline: null, error: null },
         effect: null,
       };
     case "wake-sent":
       return state.mode === "waking"
         ? {
-            state: { ...state, wakeDeadline: event.now + WAKE_TIMEOUT_MS },
+            state: { ...state, deadline: event.now + WAKE_TIMEOUT_MS },
             effect: "resume",
           }
         : unchanged;
     case "wake-failed":
       return fellAsleep(state, event.now, event.error);
-    case "tick":
-      if (
-        state.mode === "waking" &&
-        state.wakeDeadline !== null &&
-        event.now >= state.wakeDeadline
-      ) {
+    case "tick": {
+      const expired = state.deadline !== null && event.now >= state.deadline;
+      if (expired && state.mode === "waking") {
         return fellAsleep(state, event.now, "It didn't come back online. Try waking it again.");
+      }
+      // Still answering, so the reconnect loop keeps running and the machine shows as awake.
+      if (expired && state.mode === "sleeping") {
+        return {
+          state: { ...INITIAL_POWER_RUNTIME, error: "It didn't go to sleep." },
+          effect: null,
+        };
       }
       // Retries can keep reporting the same failure, so no new connection event arrives.
       return state.mode === "auto" && failingTooLong(state, event.now)
         ? fellAsleep(state, event.now, state.error)
         : unchanged;
+    }
     case "sleep-started":
-      return { state: { ...state, mode: "sleeping", error: null }, effect: null };
+      return {
+        state: { ...state, mode: "sleeping", failingSince: null, deadline: null, error: null },
+        effect: null,
+      };
     case "sleep-unreachable":
       // Nothing was sent. The supervisor's own check ends a dead session, and the failed
       // reconnects then pause it through the connection branch above. One missed probe isn't
       // proof of sleep, so a session that answers the recheck stays plainly awake.
       return { state: { ...state, mode: "auto", error: null }, effect: "recheck" };
-    case "sleep-succeeded":
+    case "sleep-sent":
+      if (state.mode !== "sleeping") return unchanged;
+      // The connection already dropped while the command was finishing.
+      if (state.failingSince !== null) return fellAsleep(state, event.now);
       return {
-        state: { ...INITIAL_POWER_RUNTIME, mode: "asleep", asleepSince: event.now },
-        effect: "pause",
+        state: { ...state, deadline: event.now + SLEEP_CONFIRM_TIMEOUT_MS },
+        effect: null,
       };
     case "sleep-failed":
-      return { state: { ...state, mode: "auto", error: event.error }, effect: null };
+      return {
+        state: { ...state, mode: "auto", deadline: null, error: event.error },
+        effect: null,
+      };
+    case "probe-failed":
+      return confirmingSleep(state) ? fellAsleep(state, event.now) : unchanged;
   }
 }
 
@@ -318,6 +371,22 @@ export function countActiveThreads(
 
 // eslint-disable-next-line no-control-regex -- ANSI escape sequences start with ESC.
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
+
+/**
+ * Whether a terminal (re)attach snapshot needs the command input written. A reattach after a
+ * dropped connection can't tell whether the last write landed, but the shell echoes the input
+ * line, which names the variable.
+ */
+export function needsInput(
+  snapshot: Pick<TerminalSessionSnapshot, "status" | "history">,
+  writes: number,
+): boolean {
+  return (
+    writes < MAX_INPUT_WRITES &&
+    (snapshot.status === "starting" || snapshot.status === "running") &&
+    !snapshot.history.includes(RELAY_COMMAND_ENV_KEY)
+  );
+}
 
 /** The last line the command printed, for showing why it failed. */
 export function lastOutputLine(output: string): string | null {
