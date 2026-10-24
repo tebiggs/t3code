@@ -48,8 +48,11 @@ const PullRequestListPreferences = Schema.Struct({
 export type PullRequestListPreferences = typeof PullRequestListPreferences.Type;
 
 export const EnvironmentPowerSettings = Schema.Struct({
-  /** Connected environment on the same LAN that runs the wake and sleep commands. */
+  /** Connected environment on the same LAN that sends the wake and runs custom commands. */
   relayEnvironmentId: Schema.NullOr(EnvironmentId),
+  /** Target for the built-in Wake-on-LAN. Optional so settings saved before it still decode. */
+  macAddress: Schema.optional(Schema.String),
+  /** Custom commands replace the built-in wake or sleep; empty means built-in. */
   wakeCommand: Schema.String,
   sleepCommand: Schema.String,
 });

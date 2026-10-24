@@ -10,20 +10,22 @@ import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferen
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPowerSettingsAtom } from "../../state/environment-power-settings";
 import { updateMobilePreferencesAtom } from "../../state/preferences";
-import { useWorkspaceEnvironments } from "../../state/workspace";
+import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
 import {
   probeEnvironment,
-  runRelayCommand,
+  retryEnvironmentIfWaiting,
+  runPowerCommand,
   setEnvironmentConnectionDesired,
 } from "./environment-power-commands";
 import {
   ASLEEP_RECHECK_INTERVAL_MS,
-  DEFAULT_SLEEP_COMMAND,
-  DEFAULT_WAKE_COMMAND,
   INITIAL_POWER_RUNTIME,
   reducePower,
+  sleepTarget,
   WAKE_RETRY_INTERVAL_MS,
+  wakeTarget,
   type PowerEvent,
+  type PowerTarget,
   type PowerRuntime,
 } from "./environment-power";
 
@@ -56,11 +58,14 @@ export function setEnvironmentPowerSettings(
 export function defaultEnvironmentPowerSettings(
   relayEnvironmentId: EnvironmentId | null,
 ): EnvironmentPowerSettings {
-  return {
-    relayEnvironmentId,
-    wakeCommand: DEFAULT_WAKE_COMMAND,
-    sleepCommand: DEFAULT_SLEEP_COMMAND,
-  };
+  return { relayEnvironmentId, macAddress: "", wakeCommand: "", sleepCommand: "" };
+}
+
+/** Switched-off and removed environments are left alone, so nothing here reconnects them. */
+function isEnabledEnvironment(environmentId: EnvironmentId): boolean {
+  return appAtomRegistry
+    .get(workspaceConnections.environmentsAtom)
+    .some((environment) => environment.environmentId === environmentId && environment.isEnabled);
 }
 
 function setRuntime(environmentId: EnvironmentId, next: PowerRuntime | null) {
@@ -72,6 +77,7 @@ function setRuntime(environmentId: EnvironmentId, next: PowerRuntime | null) {
 }
 
 function setConnectionDesired(environmentId: EnvironmentId, desired: boolean) {
+  if (desired && !isEnabledEnvironment(environmentId)) return;
   void runAtomCommand(appAtomRegistry, setEnvironmentConnectionDesired, { environmentId, desired });
 }
 
@@ -90,18 +96,11 @@ function dispatch(environmentId: EnvironmentId, event: PowerEvent) {
   else if (effect !== null) setConnectionDesired(environmentId, effect === "resume");
 }
 
-async function runPowerCommand(
-  environmentId: EnvironmentId,
-  pick: (settings: EnvironmentPowerSettings) => string,
-): Promise<string | null> {
-  const settings = appAtomRegistry.get(environmentPowerSettingsAtom)[environmentId];
-  if (!settings?.relayEnvironmentId) return "Choose a machine to send the command through.";
-  const result = await runAtomCommand(
-    appAtomRegistry,
-    runRelayCommand,
-    { relayEnvironmentId: settings.relayEnvironmentId, command: pick(settings) },
-    { reportFailure: false },
-  );
+async function runOn(target: PowerTarget): Promise<string | null> {
+  if ("error" in target) return target.error;
+  const result = await runAtomCommand(appAtomRegistry, runPowerCommand, target, {
+    reportFailure: false,
+  });
   if (AsyncResult.isSuccess(result)) return null;
   const cause = squashAtomCommandFailure(result);
   return cause instanceof Error && cause.message.length > 0
@@ -109,9 +108,13 @@ async function runPowerCommand(
     : "The command could not be run.";
 }
 
+function settingsFor(environmentId: EnvironmentId) {
+  return appAtomRegistry.get(environmentPowerSettingsAtom)[environmentId];
+}
+
 export async function wakeEnvironment(environmentId: EnvironmentId) {
   dispatch(environmentId, { type: "wake-started" });
-  const error = await runPowerCommand(environmentId, (settings) => settings.wakeCommand);
+  const error = await runOn(wakeTarget(settingsFor(environmentId)));
   dispatch(
     environmentId,
     error === null
@@ -126,10 +129,10 @@ export async function sleepEnvironment(environmentId: EnvironmentId) {
     reportFailure: false,
   });
   if (!AsyncResult.isSuccess(probe) || !probe.value) {
-    dispatch(environmentId, { type: "sleep-unreachable", now: Date.now() });
+    dispatch(environmentId, { type: "sleep-unreachable" });
     return;
   }
-  const error = await runPowerCommand(environmentId, (settings) => settings.sleepCommand);
+  const error = await runOn(sleepTarget(environmentId, settingsFor(environmentId)));
   dispatch(
     environmentId,
     error === null ? { type: "sleep-succeeded", now: Date.now() } : { type: "sleep-failed", error },
@@ -152,8 +155,13 @@ export function useEnvironmentPowerWorker() {
         now,
       });
     }
-    // Power control was turned off: hand the environment back to the normal reconnect loop.
     for (const [environmentId, state] of appAtomRegistry.get(environmentPowerRuntimeAtom)) {
+      // Switched off or removed: the catalog owns it now, so drop it without reconnecting.
+      if (!isEnabledEnvironment(environmentId)) {
+        setRuntime(environmentId, null);
+        continue;
+      }
+      // Power control was turned off: hand the environment back to the normal reconnect loop.
       if (settings[environmentId] !== undefined) continue;
       if (state.mode === "asleep") setConnectionDesired(environmentId, true);
       setRuntime(environmentId, null);
@@ -196,7 +204,9 @@ export function useEnvironmentPowerWorker() {
           waking &&
           appAtomRegistry.get(environmentPowerRuntimeAtom).get(environmentId)?.mode === "waking"
         ) {
-          retryConnection(environmentId);
+          void runAtomCommand(appAtomRegistry, retryEnvironmentIfWaiting, environmentId, {
+            reportFailure: false,
+          });
         }
       }
     }, WAKE_RETRY_INTERVAL_MS);
@@ -206,6 +216,6 @@ export function useEnvironmentPowerWorker() {
 
 function checkAsleepEnvironments() {
   for (const environmentId of appAtomRegistry.get(environmentPowerRuntimeAtom).keys()) {
-    dispatch(environmentId, { type: "check" });
+    if (isEnabledEnvironment(environmentId)) dispatch(environmentId, { type: "check" });
   }
 }

@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { EnvironmentId } from "@t3tools/contracts";
+
 import {
   ASLEEP_AFTER_FAILING_MS,
   INITIAL_POWER_RUNTIME,
   lastOutputLine,
+  normalizeMacAddress,
+  POWER_MAC_ENV_KEY,
   powerStatus,
   reducePower,
+  resolvePowerCommand,
+  shellInputFor,
+  sleepTarget,
   WAKE_TIMEOUT_MS,
+  wakeTarget,
   type PowerEvent,
   type PowerRuntime,
 } from "./environment-power";
@@ -129,12 +137,34 @@ describe("reducePower", () => {
     const { state, effects } = run(INITIAL_POWER_RUNTIME, [
       { type: "connection", connection: connected, now: 1 },
       { type: "sleep-started" },
-      { type: "sleep-unreachable", now: 3 },
+      { type: "sleep-unreachable" },
       { type: "connection", connection: { phase: "connecting", error: null }, now: 4 },
       { type: "connection", connection: failed, now: 9 },
+      { type: "tick", now: 9 + ASLEEP_AFTER_FAILING_MS },
     ]);
-    expect(effects).toEqual([null, null, "recheck", null, "pause"]);
-    expect(state).toMatchObject({ mode: "asleep", asleepSince: 3, error: null });
+    expect(effects).toEqual([null, null, "recheck", null, null, "pause"]);
+    expect(state).toMatchObject({ mode: "asleep", error: null });
+  });
+
+  it("keeps the grace period after a missed probe whose recheck succeeds", () => {
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "sleep-started" },
+      { type: "sleep-unreachable" },
+      { type: "connection", connection: failed, now: 30 },
+    ]);
+    expect(effects).toEqual([null, "recheck", null]);
+    expect(state).toMatchObject({ mode: "auto", asleepSince: null, failingSince: 30 });
+  });
+
+  it("undoes a pause that landed after a late connected update", () => {
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "sleep-started" },
+      { type: "sleep-succeeded", now: 3 },
+      { type: "connection", connection: connected, now: 4 },
+      { type: "connection", connection: { phase: "available", error: null }, now: 5 },
+    ]);
+    expect(effects).toEqual([null, "pause", null, "resume"]);
+    expect(state.mode).toBe("auto");
   });
 
   it("stays awake with an error when the sleep command fails", () => {
@@ -179,5 +209,92 @@ describe("lastOutputLine", () => {
 
   it("returns null when nothing was printed", () => {
     expect(lastOutputLine('exec sh -c "$T3_POWER_COMMAND"\r\n')).toBeNull();
+  });
+});
+
+describe("normalizeMacAddress", () => {
+  it("accepts common separators and casing", () => {
+    expect(normalizeMacAddress("1A-2B-3C-4D-5E-6F")).toBe("1a:2b:3c:4d:5e:6f");
+    expect(normalizeMacAddress(" 1a2b.3c4d.5e6f ")).toBe("1a:2b:3c:4d:5e:6f");
+  });
+
+  it("rejects anything that isn't 12 hex digits", () => {
+    expect(normalizeMacAddress("1a:2b:3c:4d:5e")).toBeNull();
+    expect(normalizeMacAddress("1a:2b:3c:4d:5e:6g")).toBeNull();
+  });
+});
+
+describe("resolvePowerCommand", () => {
+  it("passes the MAC without separators and picks the sender for the relay's OS", () => {
+    const posix = resolvePowerCommand({ kind: "wake", macAddress: "1a:2b:3c:4d:5e:6f" }, "linux");
+    const windows = resolvePowerCommand(
+      { kind: "wake", macAddress: "1a:2b:3c:4d:5e:6f" },
+      "windows",
+    );
+    expect(posix?.env).toEqual({ [POWER_MAC_ENV_KEY]: "1a2b3c4d5e6f" });
+    expect(posix?.command).toContain("python3");
+    expect(windows?.command).toContain("UdpClient");
+  });
+
+  it("has no built-in sleep for an unknown OS", () => {
+    expect(resolvePowerCommand({ kind: "sleep" }, "unknown")).toBeNull();
+    expect(resolvePowerCommand({ kind: "sleep" }, "windows")?.command).toContain("SetSuspendState");
+  });
+
+  it("runs custom commands as given", () => {
+    expect(resolvePowerCommand({ kind: "custom", command: "pc-power wake" }, "linux")).toEqual({
+      command: "pc-power wake",
+      env: {},
+    });
+  });
+});
+
+describe("shellInputFor", () => {
+  it("uses PowerShell on Windows and a POSIX shell elsewhere", () => {
+    expect(shellInputFor("windows")).toContain("$env:T3_POWER_COMMAND");
+    expect(shellInputFor("darwin")).toBe('exec sh -c "$T3_POWER_COMMAND"\r');
+  });
+});
+
+describe("power targets", () => {
+  const desktop = EnvironmentId.make("desktop");
+  const relay = EnvironmentId.make("relay");
+  const builtIn = {
+    relayEnvironmentId: relay,
+    macAddress: "1A2B3C4D5E6F",
+    wakeCommand: "",
+    sleepCommand: "",
+  };
+
+  it("wakes through the relay and sleeps on the machine itself by default", () => {
+    expect(wakeTarget(builtIn)).toEqual({
+      environmentId: relay,
+      command: { kind: "wake", macAddress: "1a:2b:3c:4d:5e:6f" },
+    });
+    expect(sleepTarget(desktop, builtIn)).toEqual({
+      environmentId: desktop,
+      command: { kind: "sleep" },
+    });
+  });
+
+  it("runs custom commands on the relay", () => {
+    const custom = {
+      ...builtIn,
+      wakeCommand: "pc-power wake",
+      sleepCommand: "pc-power sleep --force",
+    };
+    expect(wakeTarget(custom)).toEqual({
+      environmentId: relay,
+      command: { kind: "custom", command: "pc-power wake" },
+    });
+    expect(sleepTarget(desktop, custom)).toEqual({
+      environmentId: relay,
+      command: { kind: "custom", command: "pc-power sleep --force" },
+    });
+  });
+
+  it("explains what's missing before a built-in wake can run", () => {
+    expect(wakeTarget({ ...builtIn, macAddress: "" })).toHaveProperty("error");
+    expect(wakeTarget({ ...builtIn, relayEnvironmentId: null })).toHaveProperty("error");
   });
 });

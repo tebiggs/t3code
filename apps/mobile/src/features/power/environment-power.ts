@@ -3,10 +3,9 @@ import {
   threadRuntimeIsActive,
   type ThreadRuntimeSummary,
 } from "@t3tools/client-runtime/state/models";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ExecutionEnvironmentPlatformOs } from "@t3tools/contracts";
 
-export const DEFAULT_WAKE_COMMAND = "pc-power wake";
-export const DEFAULT_SLEEP_COMMAND = "pc-power sleep --force";
+import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferences";
 
 /** How long a woken machine has to reconnect before it counts as asleep again. */
 export const WAKE_TIMEOUT_MS = 150_000;
@@ -24,12 +23,101 @@ export const ASLEEP_AFTER_FAILING_MS = 20_000;
 /** While the app is open, how often a machine believed asleep gets one connection attempt. */
 export const ASLEEP_RECHECK_INTERVAL_MS = 60_000;
 
-/**
- * The command travels in an environment variable so it needs no quoting, and `exec` makes the
- * shell's exit status the command's. Works in bash, zsh, and fish.
- */
+/** Upper bound for closing the throwaway terminal, so a lost reply can't hold the action open. */
+export const TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
+
 export const RELAY_COMMAND_ENV_KEY = "T3_POWER_COMMAND";
-export const RELAY_SHELL_INPUT = `exec sh -c "$${RELAY_COMMAND_ENV_KEY}"\r`;
+export const POWER_MAC_ENV_KEY = "T3_POWER_MAC";
+
+/**
+ * The command travels in an environment variable so it needs no quoting, and the shell ends with
+ * the command's exit status. POSIX input works in bash, zsh and fish; Windows terminals open
+ * PowerShell.
+ */
+export function shellInputFor(os: ExecutionEnvironmentPlatformOs): string {
+  return os === "windows"
+    ? `$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try { & ([scriptblock]::Create($env:${RELAY_COMMAND_ENV_KEY})) } catch { Write-Output $_; exit 1 }; exit [int]$LASTEXITCODE\r`
+    : `exec sh -c "$${RELAY_COMMAND_ENV_KEY}"\r`;
+}
+
+/**
+ * What to run: a user-supplied command, or the built-in wake (a Wake-on-LAN broadcast sent from a
+ * relay on the same network) or sleep (run on the machine itself).
+ */
+export type PowerCommand =
+  | { readonly kind: "custom"; readonly command: string }
+  | { readonly kind: "wake"; readonly macAddress: string }
+  | { readonly kind: "sleep" };
+
+// python3 ships with most Linux distributions and macOS developer tools; no extra package needed.
+const POSIX_WAKE = `python3 -c 'import os,socket;m=bytes.fromhex(os.environ["${POWER_MAC_ENV_KEY}"]);s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);s.sendto(b"\\xff"*6+m*16,("255.255.255.255",9))'`;
+const WINDOWS_WAKE = `$m=[byte[]]($env:${POWER_MAC_ENV_KEY} -split '(..)' -ne '' | ForEach-Object { [Convert]::ToByte($_,16) }); $p=[byte[]](@(0xFF)*6 + $m*16); $u=New-Object Net.Sockets.UdpClient; $u.EnableBroadcast=$true; [void]$u.Send($p,$p.Length,'255.255.255.255',9); $u.Close()`;
+
+// Each sleep starts after a short delay in a detached process, so the command exits and its
+// status reaches the phone before the machine stops answering.
+const SLEEP_BY_OS: Partial<Record<ExecutionEnvironmentPlatformOs, string>> = {
+  linux: `nohup sh -c 'sleep 2; systemctl suspend' >/dev/null 2>&1 &`,
+  darwin: `nohup sh -c 'sleep 2; pmset sleepnow' >/dev/null 2>&1 &`,
+  windows: `Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 2; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)'`,
+};
+
+export function resolvePowerCommand(
+  command: PowerCommand,
+  os: ExecutionEnvironmentPlatformOs,
+): { readonly command: string; readonly env: Readonly<Record<string, string>> } | null {
+  switch (command.kind) {
+    case "custom":
+      return { command: command.command, env: {} };
+    case "wake":
+      return {
+        command: os === "windows" ? WINDOWS_WAKE : POSIX_WAKE,
+        env: { [POWER_MAC_ENV_KEY]: command.macAddress.replaceAll(":", "") },
+      };
+    case "sleep": {
+      const sleep = SLEEP_BY_OS[os];
+      return sleep === undefined ? null : { command: sleep, env: {} };
+    }
+  }
+}
+
+export type PowerTarget =
+  | { readonly environmentId: EnvironmentId; readonly command: PowerCommand }
+  | { readonly error: string };
+
+/** Custom commands run on the relay. The built-in wake does too; the built-in sleep runs on the machine itself. */
+export function wakeTarget(settings: EnvironmentPowerSettings | undefined): PowerTarget {
+  if (!settings?.relayEnvironmentId) {
+    return { error: "Choose a machine on the same network to send the wake through." };
+  }
+  const custom = settings.wakeCommand.trim();
+  if (custom.length > 0) {
+    return {
+      environmentId: settings.relayEnvironmentId,
+      command: { kind: "custom", command: custom },
+    };
+  }
+  const macAddress = normalizeMacAddress(settings.macAddress ?? "");
+  return macAddress === null
+    ? { error: "Add this machine's MAC address in Power settings to wake it." }
+    : { environmentId: settings.relayEnvironmentId, command: { kind: "wake", macAddress } };
+}
+
+export function sleepTarget(
+  environmentId: EnvironmentId,
+  settings: EnvironmentPowerSettings | undefined,
+): PowerTarget {
+  const custom = settings?.sleepCommand.trim() ?? "";
+  if (custom.length === 0) return { environmentId, command: { kind: "sleep" } };
+  return settings?.relayEnvironmentId
+    ? { environmentId: settings.relayEnvironmentId, command: { kind: "custom", command: custom } }
+    : { error: "Choose a machine to send the custom sleep command through." };
+}
+
+/** Canonical `aa:bb:cc:dd:ee:ff`, or null when the input isn't a MAC address. */
+export function normalizeMacAddress(input: string): string | null {
+  const hex = input.replace(/[\s:.-]/g, "").toLowerCase();
+  return /^[0-9a-f]{12}$/.test(hex) ? (hex.match(/../g)?.join(":") ?? null) : null;
+}
 
 export type PowerMode = "auto" | "asleep" | "waking" | "sleeping";
 
@@ -65,8 +153,8 @@ export type PowerEvent =
   | { readonly type: "wake-failed"; readonly error: string; readonly now: number }
   | { readonly type: "tick"; readonly now: number }
   | { readonly type: "sleep-started" }
-  /** The machine didn't answer before a sleep, so the "awake" it showed was stale. */
-  | { readonly type: "sleep-unreachable"; readonly now: number }
+  /** The machine didn't answer before a sleep, so the "awake" it showed may be stale. */
+  | { readonly type: "sleep-unreachable" }
   | { readonly type: "sleep-succeeded"; readonly now: number }
   | { readonly type: "sleep-failed"; readonly error: string };
 
@@ -136,6 +224,11 @@ export function reducePower(
       if (state.mode === "auto" && phase === "offline" && state.failingSince !== null) {
         return { state: { ...state, failingSince: null }, effect: null };
       }
+      // "available" means the loop is paused. Outside asleep or an action in flight that is a
+      // leftover pause, for example one that landed after a late connected update, so undo it.
+      if (state.mode === "auto" && phase === "available") {
+        return { state, effect: "resume" };
+      }
       // Something else restarted the paused loop, such as switching the environment back on.
       // Treat it as a check so a failure pauses it again.
       if (state.mode === "asleep" && (phase === "connecting" || phase === "reconnecting")) {
@@ -176,18 +269,10 @@ export function reducePower(
     case "sleep-started":
       return { state: { ...state, mode: "sleeping", error: null }, effect: null };
     case "sleep-unreachable":
-      // Nothing was sent. The supervisor's own check ends the dead session, and the failed
-      // reconnect then pauses it through the connection branch above.
-      return {
-        state: {
-          ...state,
-          mode: "auto",
-          asleepSince: state.asleepSince ?? event.now,
-          failingSince: null,
-          error: null,
-        },
-        effect: "recheck",
-      };
+      // Nothing was sent. The supervisor's own check ends a dead session, and the failed
+      // reconnects then pause it through the connection branch above. One missed probe isn't
+      // proof of sleep, so a session that answers the recheck stays plainly awake.
+      return { state: { ...state, mode: "auto", error: null }, effect: "recheck" };
     case "sleep-succeeded":
       return {
         state: { ...INITIAL_POWER_RUNTIME, mode: "asleep", asleepSince: event.now },
@@ -240,6 +325,7 @@ export function lastOutputLine(output: string): string | null {
     .replace(ANSI_PATTERN, "")
     .split(/\r?\n|\r/)
     .map((line) => line.trim())
+    // The terminal echoes the input line, which names the variable.
     .filter((line) => line.length > 0 && !line.includes(RELAY_COMMAND_ENV_KEY));
   return lines.at(-1) ?? null;
 }

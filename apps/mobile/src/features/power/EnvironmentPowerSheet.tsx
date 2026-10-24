@@ -15,7 +15,10 @@ import {
   POWER_STATUS_LABELS,
   countActiveThreads,
   powerStatus,
+  sleepTarget,
+  wakeTarget,
   type PowerStatus,
+  type PowerTarget,
 } from "./environment-power";
 import {
   sleepEnvironment,
@@ -39,7 +42,6 @@ export function EnvironmentPowerSheet({
   const settings = useEnvironmentPowerSettings()[environmentId];
   const runtime = useEnvironmentPowerRuntime(environmentId);
   const environment = environments.find((entry) => entry.environmentId === environmentId);
-  const relay = environments.find((entry) => entry.environmentId === settings?.relayEnvironmentId);
   const label = environment?.environmentLabel ?? "Environment";
   const status: PowerStatus = environment
     ? powerStatus(runtime, {
@@ -48,10 +50,28 @@ export function EnvironmentPowerSheet({
       })
     : "checking";
 
-  const relayReady = relay?.isEnabled === true && relay.connectionState === "connected";
+  // Why the next action can't run right now, or null when it can.
+  const blocker = (target: PowerTarget): string | null => {
+    if ("error" in target) return target.error;
+    const runner = environments.find((entry) => entry.environmentId === target.environmentId);
+    return runner?.isEnabled === true && runner.connectionState === "connected"
+      ? null
+      : `${runner?.environmentLabel ?? "The machine that sends it"} isn't connected.`;
+  };
   const busy = status === "waking" || status === "sleeping";
+  const notice =
+    settings === undefined
+      ? null
+      : status === "asleep"
+        ? blocker(wakeTarget(settings))
+        : status === "awake"
+          ? blocker(sleepTarget(environmentId, settings))
+          : null;
   const canToggle =
-    settings !== undefined && relayReady && !busy && (status === "awake" || status === "asleep");
+    settings !== undefined &&
+    !busy &&
+    (status === "awake" || status === "asleep") &&
+    notice === null;
 
   const detail = (() => {
     switch (status) {
@@ -62,22 +82,15 @@ export function EnvironmentPowerSheet({
           ? "Not reachable"
           : `Not reachable since ${formatTime(runtime.asleepSince)}`;
       case "waking":
-        return `Sent through ${relay?.environmentLabel ?? "the relay"}. Waiting for it to connect…`;
+        return "Wake sent. Waiting for it to connect…";
       case "sleeping":
-        return `Sending through ${relay?.environmentLabel ?? "the relay"}…`;
+        return "Asking it to sleep…";
       case "checking":
         return "Checking whether it's awake…";
       case "offline":
         return "Your phone is offline.";
     }
   })();
-
-  const relayNotice =
-    settings?.relayEnvironmentId == null
-      ? "Choose a machine to send wake and sleep commands through."
-      : !relayReady
-        ? `${relay?.environmentLabel ?? "The relay machine"} isn't connected, so commands can't be sent.`
-        : null;
 
   const requestSleep = () => {
     const active = countActiveThreads(
@@ -142,9 +155,9 @@ export function EnvironmentPowerSheet({
             {runtime.error}
           </Text>
         ) : null}
-        {relayNotice ? (
+        {notice ? (
           <Text textRole="label" className="px-1 text-warning-foreground">
-            {relayNotice}
+            {notice}
           </Text>
         ) : null}
         <Text textRole="label" className="px-1 text-foreground-muted">

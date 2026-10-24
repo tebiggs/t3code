@@ -1,7 +1,10 @@
 import { EnvironmentRegistry, EnvironmentSupervisor } from "@t3tools/client-runtime/connection";
-import { getInitialServerConfig, request, subscribe } from "@t3tools/client-runtime/rpc";
-import { createRuntimeCommand } from "@t3tools/client-runtime/state/runtime";
-import { WS_METHODS, type EnvironmentId } from "@t3tools/contracts";
+import { getInitialServerConfig, request, subscribeDynamic } from "@t3tools/client-runtime/rpc";
+import {
+  createAtomCommandScheduler,
+  createRuntimeCommand,
+} from "@t3tools/client-runtime/state/runtime";
+import { WS_METHODS, type EnvironmentId, type TerminalAttachStreamEvent } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -15,11 +18,14 @@ import {
   LIVE_PROBE_TIMEOUT_MS,
   RELAY_COMMAND_ENV_KEY,
   RELAY_COMMAND_TIMEOUT_MS,
-  RELAY_SHELL_INPUT,
+  resolvePowerCommand,
+  shellInputFor,
+  TERMINAL_CLOSE_TIMEOUT_MS,
+  type PowerCommand,
 } from "./environment-power";
 
-export class RelayCommandError extends Schema.TaggedError<RelayCommandError>()(
-  "RelayCommandError",
+export class PowerCommandError extends Schema.TaggedError<PowerCommandError>()(
+  "PowerCommandError",
   { message: Schema.String },
 ) {}
 
@@ -35,70 +41,115 @@ function failureMessage(cause: unknown): string {
     : "The command could not be run.";
 }
 
-/** Runs one shell command in a throwaway terminal on the connected environment. */
-const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (command: string) {
+/** The shell's exit, from a live event or from the snapshot a reattach returns after it ended. */
+function terminalOutcome(
+  event: TerminalAttachStreamEvent,
+  written: boolean,
+): { readonly exitCode: number | null; readonly message: string | null } | null {
+  switch (event.type) {
+    case "exited":
+      return { exitCode: event.exitCode, message: null };
+    case "error":
+      return { exitCode: null, message: event.message };
+    case "closed":
+      return { exitCode: null, message: "The terminal closed before the command finished." };
+    case "snapshot":
+      return written && (event.snapshot.status === "exited" || event.snapshot.status === "error")
+        ? { exitCode: event.snapshot.exitCode, message: null }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** Runs one command in a throwaway terminal on the connected environment. */
+const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
+  command: PowerCommand,
+) {
   const config = yield* getInitialServerConfig();
+  const os = config.environment.platform.os;
+  const resolved = resolvePowerCommand(command, os);
+  if (resolved === null) {
+    return yield* new PowerCommandError({
+      message: "T3 Code can't tell which operating system this machine runs.",
+    });
+  }
   const target = {
     threadId: POWER_TERMINAL_THREAD_ID,
     terminalId: `power-${Date.now().toString(36)}`,
   };
-  let output = "";
-  let written = false;
-  const last = yield* subscribe(WS_METHODS.terminalAttach, {
+  const attachInput = {
     ...target,
     cwd: config.cwd,
     cols: 120,
     rows: 24,
-    env: { [RELAY_COMMAND_ENV_KEY]: command },
-  }).pipe(
+    env: { ...resolved.env, [RELAY_COMMAND_ENV_KEY]: resolved.command },
+  };
+  let output = "";
+  let written = false;
+  let replied = false;
+  const outcome = yield* subscribeDynamic(WS_METHODS.terminalAttach, () =>
+    // A resubscribe after a dropped connection must not open a second shell.
+    Effect.sync(() => (replied ? { ...attachInput, resume: true } : attachInput)),
+  ).pipe(
+    Stream.onFirst(() =>
+      Effect.sync(() => {
+        replied = true;
+      }),
+    ),
     Stream.tap((event) => {
       if (event.type === "output") {
         output = (output + event.data).slice(-OUTPUT_TAIL_LENGTH);
       }
       if (event.type !== "snapshot" || written) return Effect.void;
       written = true;
-      return request(WS_METHODS.terminalWrite, { ...target, data: RELAY_SHELL_INPUT });
+      return request(WS_METHODS.terminalWrite, { ...target, data: shellInputFor(os) });
     }),
-    Stream.takeUntil(
-      (event) => event.type === "exited" || event.type === "closed" || event.type === "error",
-    ),
+    Stream.map((event) => terminalOutcome(event, written)),
+    Stream.takeUntil((result) => result !== null),
     Stream.runLast,
     Effect.timeout(RELAY_COMMAND_TIMEOUT_MS),
     Effect.ensuring(
-      request(WS_METHODS.terminalClose, { ...target, deleteHistory: true }).pipe(Effect.ignore),
+      request(WS_METHODS.terminalClose, { ...target, deleteHistory: true }).pipe(
+        Effect.timeout(TERMINAL_CLOSE_TIMEOUT_MS),
+        Effect.ignore,
+      ),
     ),
   );
-  const event = Option.getOrNull(last);
-  if (event?.type === "exited" && event.exitCode === 0) return;
+  const result = Option.getOrNull(outcome);
+  if (result?.exitCode === 0) return;
   const detail =
-    event?.type === "error"
-      ? event.message
-      : (lastOutputLine(output) ??
-        (event?.type === "exited" ? `Exited with code ${event.exitCode}.` : null));
-  return yield* new RelayCommandError({ message: detail ?? "The command did not finish." });
+    result?.message ??
+    lastOutputLine(output) ??
+    (result?.exitCode != null ? `Exited with code ${result.exitCode}.` : null);
+  return yield* new PowerCommandError({ message: detail ?? "The command did not finish." });
 });
 
-export const runRelayCommand = createRuntimeCommand(connectionAtomRuntime, {
-  label: "environment-power:run-relay-command",
-  execute: (input: { readonly relayEnvironmentId: EnvironmentId; readonly command: string }) =>
+export const runPowerCommand = createRuntimeCommand(connectionAtomRuntime, {
+  label: "environment-power:run-command",
+  execute: (input: { readonly environmentId: EnvironmentId; readonly command: PowerCommand }) =>
     EnvironmentRegistry.EnvironmentRegistry.pipe(
-      Effect.flatMap((registry) =>
-        registry.run(input.relayEnvironmentId, runInTerminal(input.command)),
-      ),
+      Effect.flatMap((registry) => registry.run(input.environmentId, runInTerminal(input.command))),
       Effect.mapError((cause) =>
-        cause instanceof RelayCommandError
+        cause instanceof PowerCommandError
           ? cause
-          : new RelayCommandError({ message: failureMessage(cause) }),
+          : new PowerCommandError({ message: failureMessage(cause) }),
       ),
     ),
 });
 
 /**
  * Pauses or resumes one environment's reconnect loop without switching the environment off,
- * so its threads stay listed while the machine sleeps.
+ * so its threads stay listed while the machine sleeps. Serial per environment, so the last
+ * request wins.
  */
 export const setEnvironmentConnectionDesired = createRuntimeCommand(connectionAtomRuntime, {
   label: "environment-power:set-connection-desired",
+  scheduler: createAtomCommandScheduler(),
+  concurrency: {
+    mode: "serial",
+    key: (input: { readonly environmentId: EnvironmentId }) => input.environmentId,
+  },
   execute: (input: { readonly environmentId: EnvironmentId; readonly desired: boolean }) =>
     EnvironmentRegistry.EnvironmentRegistry.pipe(
       Effect.flatMap((registry) =>
@@ -111,6 +162,21 @@ export const setEnvironmentConnectionDesired = createRuntimeCommand(connectionAt
           ),
         ),
       ),
+    ),
+});
+
+// A retry signal interrupts an attempt that is still connecting, so only cut a backoff wait short.
+const retryIfWaiting = Effect.fn("EnvironmentPower.retryIfWaiting")(function* () {
+  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+  const state = yield* SubscriptionRef.get(supervisor.state);
+  if (state.phase === "backoff") yield* supervisor.retryNow;
+});
+
+export const retryEnvironmentIfWaiting = createRuntimeCommand(connectionAtomRuntime, {
+  label: "environment-power:retry-if-waiting",
+  execute: (environmentId: EnvironmentId) =>
+    EnvironmentRegistry.EnvironmentRegistry.pipe(
+      Effect.flatMap((registry) => registry.run(environmentId, retryIfWaiting())),
     ),
 });
 
