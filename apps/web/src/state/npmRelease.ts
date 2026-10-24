@@ -2,22 +2,22 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { cliReleaseTagApiUrl } from "@t3tools/shared/cliRelease";
 
+// Fork (FORK.md): servers install from this fork's GitHub releases, which npm never has.
 export const npmReleasePublishedAtom = Atom.family((version: string) =>
   Atom.make(
     Effect.gen(function* () {
-      const response = yield* HttpClient.get(
-        `https://registry.npmjs.org/t3/${encodeURIComponent(version)}`,
-      );
+      const response = yield* HttpClient.get(cliReleaseTagApiUrl(version));
       if (response.status === 404) return false;
       const body = yield* HttpClientResponse.filterStatusOk(response).pipe(
         Effect.flatMap((ok) => ok.json),
       );
-      return typeof body === "object" && body !== null && "version" in body
-        ? body.version === version
+      return typeof body === "object" && body !== null && "tag_name" in body
+        ? body.tag_name === `v${version}`
         : false;
     }).pipe(
-      // Tracing headers would make the browser send a CORS preflight, which npm rejects.
+      // Tracing headers would make the browser send a CORS preflight for every check.
       Effect.provideService(HttpClient.TracerPropagationEnabled, false),
       Effect.provide(FetchHttpClient.layer),
     ),

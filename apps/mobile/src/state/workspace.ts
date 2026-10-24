@@ -1,7 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useMemo } from "react";
+import { Atom } from "effect/reactivity";
 
-import { environmentShellSummaryAtom } from "./shell";
+import { environmentShell, environmentShellSummaryAtom } from "./shell";
 import { projectWorkspaceState } from "./workspaceModel";
 import { environmentCatalog } from "../connection/catalog";
 import { powerManagedEnvironmentIdsAtom } from "./environment-power-settings";
@@ -14,6 +15,16 @@ export const workspaceConnections = createWorkspaceConnectionAtoms({
   presentationAtom: environmentPresentations.presentationAtom,
   quietEnvironmentIdsAtom: powerManagedEnvironmentIdsAtom,
 });
+
+// A disconnected environment's retries also leave its shell synchronizing.
+const hasSyncingConnectedEnvironmentAtom = Atom.make((get) =>
+  get(workspaceConnections.environmentsAtom).some(
+    (environment) =>
+      environment.isEnabled &&
+      environment.connectionState === "connected" &&
+      get(environmentShell.stateValueAtom(environment.environmentId)).status === "synchronizing",
+  ),
+).pipe(Atom.withLabel("mobile:has-syncing-connected-environment"));
 
 export function useWorkspaceEnvironments() {
   return useAtomValue(workspaceConnections.environmentsAtom);
@@ -33,6 +44,7 @@ export function useWorkspaceState() {
   const projectedEnvironments = useWorkspaceEnvironments();
   const quietEnvironmentIds = useAtomValue(powerManagedEnvironmentIdsAtom);
   const shellSummary = useAtomValue(environmentShellSummaryAtom);
+  const hasSyncingConnectedEnvironment = useAtomValue(hasSyncingConnectedEnvironmentAtom);
   const state = useMemo(
     () =>
       projectWorkspaceState({
@@ -41,8 +53,16 @@ export function useWorkspaceState() {
         environments: projectedEnvironments,
         quietEnvironmentIds,
         shellSummary,
+        hasSyncingConnectedEnvironment,
       }),
-    [isReady, networkStatus, projectedEnvironments, quietEnvironmentIds, shellSummary],
+    [
+      isReady,
+      networkStatus,
+      projectedEnvironments,
+      quietEnvironmentIds,
+      shellSummary,
+      hasSyncingConnectedEnvironment,
+    ],
   );
 
   return {
