@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Merges upstream's newest nightly tag into the fork's main and pushes it.
-# Runs on pylon2 from the sync worktree; .github/fork/daily-sync.md drives it.
+# .github/fork/daily-sync.md drives it. Needs an `upstream` remote for
+# pingdotgg/t3code.
 #
 # Exit codes:
 #   0  main already has the newest tag, or the clean merge was pushed

@@ -1,8 +1,9 @@
 # Daily fork sync
 
-A T3 scheduled task on pylon2 follows these steps once a day. Work only in the
-sync worktree, `~/work/t3code-sync`, a detached worktree of `~/work/t3code`.
-Never touch the main checkout or other worktrees.
+A T3 scheduled task follows these steps once a day. Its prompt names the sync
+worktree: a detached worktree of the fork, with an `upstream` remote for
+`pingdotgg/t3code`, used only for this sync. Work only there, and never touch
+other checkouts or worktrees.
 
 Hard rules:
 
@@ -10,14 +11,15 @@ Hard rules:
   `pingdotgg/t3code`. PRs go to the fork: `gh pr create --repo tebiggs/t3code --base main`.
 - Never force-push, never merge a PR, and never push to `main` except through
   `sync.sh`.
-- pylon2 is small. Run any install, typecheck or test as `heavy <command>`, and
-  only the targeted ones you need. CI on the PR runs the rest.
+- Follow the host's own instructions for installs, typechecks and tests, and
+  run only the targeted ones you need. CI on the PR runs the rest.
 - After opening a PR, register it with `link_pull_request`.
 
 ## 1. Merge upstream
 
+From the sync worktree:
+
 ```sh
-cd ~/work/t3code-sync
 git fetch --quiet origin main && git checkout --quiet --detach origin/main
 .github/fork/sync.sh
 ```

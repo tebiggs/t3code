@@ -4,10 +4,10 @@ name: Fork release
 # desktop app, the Linux x64 server archive and the Android APK. A push to
 # main publishes them as a nightly-channel prerelease, which the fork's
 # updaters read. Pull requests run the same checks and builds without
-# publishing. Upstream merges reach main through .github/fork/sync.sh on
-# pylon2. The workflow token cannot move main itself, because GitHub refuses
-# that token any ref update that changes workflow files, and upstream merges
-# often do.
+# publishing. Upstream merges reach main through .github/fork/sync.sh, run by
+# the daily sync task. The workflow token cannot move main itself, because
+# GitHub refuses that token any ref update that changes workflow files, and
+# upstream merges often do.
 
 on:
   push:
@@ -211,7 +211,7 @@ jobs:
           retention-days: 1
 
   # Upstream's per-platform build, on standard runners and without signing
-  # secrets. The Linux job produces the server archive that pylon2 installs;
+  # secrets. The Linux job produces the server archive that fork servers install;
   # the Windows job waits on it for the bundled WSL runtime.
   linux:
     name: Linux x64
