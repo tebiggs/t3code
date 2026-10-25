@@ -2,18 +2,20 @@ name: Fork release
 
 # Fork-only (tebiggs/t3code). Builds what the fork ships: the Windows x64
 # desktop app, the Linux x64 server archive and the Android APK. A push to
-# main publishes them as a nightly-channel prerelease, which the fork's
-# updaters read. Pull requests run the same checks and builds without
-# publishing. Upstream merges reach main through .github/fork/sync.sh, run by
-# the daily sync task. The workflow token cannot move main itself, because
-# GitHub refuses that token any ref update that changes workflow files, and
-# upstream merges often do.
+# main, or a manual run on main, publishes them as a nightly-channel
+# prerelease, which the fork's updaters read. Pull requests and manual runs on
+# other branches run the same checks and builds without publishing. Upstream
+# merges reach main through .github/fork/sync.sh, run by the daily sync task.
+# The workflow token cannot move main itself, because GitHub refuses that
+# token any ref update that changes workflow files, and upstream merges often
+# do.
 
 on:
   push:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -328,7 +330,8 @@ jobs:
           retention-days: 1
 
   # Pull requests stop after assembling the assets, so a renamed build output
-  # fails there rather than on main.
+  # fails there rather than on main. A pull request's github.ref is
+  # refs/pull/<n>/merge, so the main checks below skip it.
   publish:
     name: Release assets
     needs: [prepare, checks, linux, windows, android]
@@ -374,7 +377,7 @@ jobs:
           ls -l
 
       - name: Publish release
-        if: github.event_name == 'push'
+        if: github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -387,7 +390,7 @@ jobs:
 
       # Keeps the newest few so a client mid-update still finds its files.
       - name: Prune old releases
-        if: github.event_name == 'push'
+        if: github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -403,7 +406,7 @@ jobs:
   # enabled because this workflow calls it.
   disable_upstream_workflows:
     name: Disable upstream workflows
-    if: github.repository == 'tebiggs/t3code' && github.event_name == 'push'
+    if: github.repository == 'tebiggs/t3code' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

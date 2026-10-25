@@ -45,7 +45,7 @@ Note the `previous=` and `latest=` lines it prints.
 
 ```sh
 gh run list --repo tebiggs/t3code --workflow fork-release.yml --branch main \
-  --event push --status completed --limit 1 \
+  --status completed --limit 1 \
   --json databaseId,attempt,conclusion,headSha,url
 ```
 
