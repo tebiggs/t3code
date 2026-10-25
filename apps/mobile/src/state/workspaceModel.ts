@@ -64,8 +64,15 @@ export function projectWorkspaceConnectionState(input: {
   readonly isReady: boolean;
   readonly networkStatus: NetworkStatus;
   readonly environments: ReadonlyArray<WorkspaceEnvironment>;
+  /** Environments that report their own status while disconnected, such as a sleeping machine. */
+  readonly quietEnvironmentIds?: ReadonlySet<EnvironmentId>;
 }): WorkspaceConnectionState {
-  const activeEnvironments = input.environments.filter((environment) => environment.isEnabled);
+  const activeEnvironments = input.environments.filter(
+    (environment) =>
+      environment.isEnabled &&
+      (environment.connectionState === "connected" ||
+        !input.quietEnvironmentIds?.has(environment.environmentId)),
+  );
   const connectingEnvironments = activeEnvironments.filter(
     (environment) =>
       environment.connectionState === "connecting" ||
@@ -92,6 +99,7 @@ export function projectWorkspaceState(input: {
   readonly isReady: boolean;
   readonly networkStatus: NetworkStatus;
   readonly environments: ReadonlyArray<WorkspaceEnvironment>;
+  readonly quietEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly shellSummary: EnvironmentShellSummary;
   readonly hasSyncingConnectedEnvironment: boolean;
 }): WorkspaceState {

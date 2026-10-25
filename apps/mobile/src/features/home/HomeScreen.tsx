@@ -90,6 +90,7 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
+import { EnvironmentPowerChips } from "../power/EnvironmentPowerChips";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -737,41 +738,53 @@ export function HomeScreen(props: HomeScreenProps) {
       <View className={containerClassName}>
         <View
           className={cn(
-            "flex-1 items-center justify-center px-8",
+            "flex-1",
             contentBackground,
             Platform.OS === "android" && "overflow-hidden rounded-t-[28px]",
           )}
           style={{
             paddingBottom: Platform.OS === "ios" ? iosBottomClearance : Math.max(insets.bottom, 24),
             paddingTop: NATIVE_LIQUID_GLASS_SUPPORTED ? insets.top + 72 : 0,
-            paddingLeft: 32 + (contentSideInsets?.left ?? 0),
-            paddingRight: 32 + (contentSideInsets?.right ?? 0),
           }}
         >
-          <View className="w-full max-w-[430px]">
-            <EmptyState
-              title={emptyState.title}
-              detail={emptyState.detail}
-              actionLabel={!props.catalogState.hasReadyEnvironment ? "Add environment" : undefined}
-              onAction={!props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined}
-              action={
-                Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
-                  <FloatingActionButton
-                    label="Add environment"
-                    icon="plus"
-                    variant="extended"
-                    tone="primary"
-                    onPress={props.onAddConnection}
-                  />
-                ) : undefined
-              }
-              variant="plain"
-            />
-            {emptyState.loading ? (
-              <View className="mt-4 items-center">
-                <AppActivityIndicator colorClassName="accent-icon-muted" />
-              </View>
-            ) : null}
+          {/* A sleeping machine's wake switch must stay reachable with no threads listed. */}
+          {Platform.OS === "android" ? <EnvironmentPowerChips className="pt-3" /> : null}
+          <View
+            className="flex-1 items-center justify-center px-8"
+            style={{
+              paddingLeft: 32 + (contentSideInsets?.left ?? 0),
+              paddingRight: 32 + (contentSideInsets?.right ?? 0),
+            }}
+          >
+            <View className="w-full max-w-[430px]">
+              <EmptyState
+                title={emptyState.title}
+                detail={emptyState.detail}
+                actionLabel={
+                  !props.catalogState.hasReadyEnvironment ? "Add environment" : undefined
+                }
+                onAction={
+                  !props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined
+                }
+                action={
+                  Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
+                    <FloatingActionButton
+                      label="Add environment"
+                      icon="plus"
+                      variant="extended"
+                      tone="primary"
+                      onPress={props.onAddConnection}
+                    />
+                  ) : undefined
+                }
+                variant="plain"
+              />
+              {emptyState.loading ? (
+                <View className="mt-4 items-center">
+                  <AppActivityIndicator colorClassName="accent-icon-muted" />
+                </View>
+              ) : null}
+            </View>
           </View>
         </View>
       </View>
@@ -783,6 +796,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
+      {Platform.OS === "android" && !hasSearchQuery ? <EnvironmentPowerChips /> : null}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           environments={props.environments}
@@ -827,10 +841,11 @@ export function HomeScreen(props: HomeScreenProps) {
     return (
       <View className="flex-1 bg-header">
         <View
-          className="flex-1 items-center justify-center overflow-hidden rounded-t-[28px] bg-screen px-4"
+          className="flex-1 overflow-hidden rounded-t-[28px] bg-screen"
           style={{ paddingBottom: insets.bottom }}
         >
-          {v2ListEmpty}
+          {!hasSearchQuery ? <EnvironmentPowerChips className="pt-3" /> : null}
+          <View className="flex-1 items-center justify-center px-4">{v2ListEmpty}</View>
         </View>
       </View>
     );

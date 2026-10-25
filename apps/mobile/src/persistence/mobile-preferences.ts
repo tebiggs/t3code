@@ -47,8 +47,24 @@ const PullRequestListPreferences = Schema.Struct({
 });
 export type PullRequestListPreferences = typeof PullRequestListPreferences.Type;
 
+export const EnvironmentPowerSettings = Schema.Struct({
+  /** Connected environment on the same LAN that sends the wake and runs custom commands. */
+  relayEnvironmentId: Schema.NullOr(EnvironmentId),
+  /** Target for the built-in Wake-on-LAN. Optional so settings saved before it still decode. */
+  macAddress: Schema.optional(Schema.String),
+  /** `host` or `host:port` where the relay can reach this machine's T3 server. Empty skips the launch check. */
+  localAddress: Schema.optional(Schema.String),
+  /** Custom commands replace the built-in wake or sleep; empty means built-in. */
+  wakeCommand: Schema.String,
+  sleepCommand: Schema.String,
+});
+export type EnvironmentPowerSettings = typeof EnvironmentPowerSettings.Type;
+
+const EnvironmentPowerPreferences = Schema.Record(Schema.String, EnvironmentPowerSettings);
+
 const isThreadListFilters = Schema.is(ThreadListFilters);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
+const isEnvironmentPowerPreferences = Schema.is(EnvironmentPowerPreferences);
 
 export interface Preferences {
   readonly navigationTabOrder?: readonly string[];
@@ -87,6 +103,8 @@ export interface Preferences {
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
+  /** Sleep/wake control, keyed by the environment being powered. */
+  readonly environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
@@ -159,6 +177,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
+    environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
   } = {};
 
   if (Array.isArray(parsed.hiddenNavigationTabs)) {
@@ -297,6 +316,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isPullRequestListPreferences(parsed.pullRequestListFilters)) {
     preferences.pullRequestListFilters = parsed.pullRequestListFilters;
+  }
+  if (isEnvironmentPowerPreferences(parsed.environmentPower)) {
+    preferences.environmentPower = parsed.environmentPower;
   }
   return preferences;
 }
