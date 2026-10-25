@@ -62,7 +62,35 @@ export type EnvironmentPowerSettings = typeof EnvironmentPowerSettings.Type;
 
 const EnvironmentPowerPreferences = Schema.Record(Schema.String, EnvironmentPowerSettings);
 
+/**
+ * The page each workspace tab last showed, reopened when the tab returns with columns. `key` is
+ * that page's route key: reopening under the same key reuses the screen a tab kept mounted.
+ */
+const WorkspaceSelections = Schema.Struct({
+  threads: Schema.optional(
+    Schema.Struct({
+      environmentId: Schema.String,
+      threadId: Schema.String,
+      key: Schema.optional(Schema.String),
+    }),
+  ),
+  pullRequests: Schema.optional(
+    Schema.Struct({
+      environmentId: Schema.String,
+      projectId: Schema.String,
+      repository: Schema.String,
+      number: Schema.Number,
+      host: Schema.optional(Schema.String),
+      key: Schema.optional(Schema.String),
+    }),
+  ),
+  settings: Schema.optional(Schema.String),
+  settingsKey: Schema.optional(Schema.String),
+});
+export type WorkspaceSelections = typeof WorkspaceSelections.Type;
+
 const isThreadListFilters = Schema.is(ThreadListFilters);
+const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const isEnvironmentPowerPreferences = Schema.is(EnvironmentPowerPreferences);
 
@@ -84,9 +112,8 @@ export interface Preferences {
   readonly mathRenderingEnabled?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
   readonly collapsedProjectGroups?: readonly string[];
-  /** Environments whose "reclaim database space" notice was dismissed. */
   readonly dismissedDatabaseStorageNotices?: readonly string[];
-  /** What the Return key does in the composer on a hardware keyboard. iOS only. */
+  /** Hardware Return behavior is iOS-only. */
   readonly composerEnterBehavior?: ComposerEnterBehavior;
   readonly followUpBehavior?: FollowUpBehavior;
   readonly microphones?: ReadonlyArray<MicrophoneEntry>;
@@ -105,6 +132,7 @@ export interface Preferences {
   readonly pullRequestListFilters?: PullRequestListPreferences;
   /** Sleep/wake control, keyed by the environment being powered. */
   readonly environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
+  readonly workspaceSelections?: WorkspaceSelections;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
@@ -178,6 +206,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
     environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
+    workspaceSelections?: WorkspaceSelections;
   } = {};
 
   if (Array.isArray(parsed.hiddenNavigationTabs)) {
@@ -319,6 +348,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isEnvironmentPowerPreferences(parsed.environmentPower)) {
     preferences.environmentPower = parsed.environmentPower;
+  }
+  if (isWorkspaceSelections(parsed.workspaceSelections)) {
+    preferences.workspaceSelections = parsed.workspaceSelections;
   }
   return preferences;
 }
