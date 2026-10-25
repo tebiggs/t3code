@@ -257,12 +257,12 @@ function startLaunchCheck(
   environments: ReadonlyArray<WorkspaceEnvironment>,
 ) {
   const { environmentId } = environment;
-  const previous = launchChecks.get(environmentId);
-  if (previous === "connected" || Equal.equals(previous, settings)) return;
   if (environment.connectionState === "connected") {
     launchChecks.set(environmentId, "connected");
     return;
   }
+  const previous = launchChecks.get(environmentId);
+  if (previous === "connected" || Equal.equals(previous, settings)) return;
   const target = relayCheckTarget(environmentId, settings);
   if (target === null) return;
   const relay = environments.find((entry) => entry.environmentId === target.environmentId);
@@ -271,13 +271,19 @@ function startLaunchCheck(
   void runAtomCommand(appAtomRegistry, checkThroughRelay, target, { reportFailure: false }).then(
     (result) => {
       if (!AsyncResult.isSuccess(result) || result.value !== "silent") return;
-      // The machine's own connection may have come up while the relay was checking.
+      // Dropped if the machine connected meanwhile, or the user changed the address or relay.
+      if (launchChecks.get(environmentId) !== settings) return;
+      if (!Equal.equals(settingsFor(environmentId), settings)) return;
+      // Only while its own connection is still trying: a blocked one already answered.
       const current = appAtomRegistry
         .get(workspaceConnections.environmentsAtom)
         .find((entry) => entry.environmentId === environmentId);
-      if (current?.isEnabled !== true || current.connectionState === "connected") return;
-      // A result for an address or relay the user has since changed says nothing.
-      if (!Equal.equals(settingsFor(environmentId), settings)) return;
+      if (
+        current?.isEnabled !== true ||
+        (current.connectionState !== "connecting" && current.connectionState !== "reconnecting")
+      ) {
+        return;
+      }
       dispatch(environmentId, { type: "relay-silent", now: Date.now() });
     },
   );

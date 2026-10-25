@@ -341,14 +341,13 @@ export function reducePower(
           ? { state: { ...state, failingSince: event.now }, effect: null }
           : unchanged;
       }
-      // A blocked connection means the machine answered, so earlier failures and an asleep
-      // guess no longer count.
-      if (
-        state.mode === "auto" &&
-        (phase === "error" || phase === "unsupported") &&
-        (state.asleepSince !== null || state.failingSince !== null)
-      ) {
-        return { state: { ...state, asleepSince: null, failingSince: null }, effect: null };
+      // A blocked connection means the machine answered, so a wake is over, and earlier failures
+      // and an asleep guess no longer count.
+      if (phase === "error" || phase === "unsupported") {
+        if (state.mode === "waking") return { state: INITIAL_POWER_RUNTIME, effect: null };
+        if (state.mode === "auto" && (state.asleepSince !== null || state.failingSince !== null)) {
+          return { state: { ...state, asleepSince: null, failingSince: null }, effect: null };
+        }
       }
       // The phone losing its network says nothing about the machine.
       if (state.mode === "auto" && phase === "offline" && state.failingSince !== null) {

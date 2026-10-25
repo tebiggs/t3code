@@ -75,6 +75,18 @@ describe("reducePower", () => {
     expect(powerStatus(state, blocked)).toBe("blocked");
   });
 
+  it("ends a wake whose machine answers with a blocked connection", () => {
+    const blocked = { phase: "error", error: "Pairing expired" } as const;
+    const { state, effects } = run(ASLEEP, [
+      { type: "wake-started" },
+      { type: "wake-sent", now: 100 },
+      { type: "connection", connection: blocked, now: 110 },
+      { type: "tick", now: 100 + WAKE_TIMEOUT_MS },
+    ]);
+    expect(effects).toEqual([null, "resume", null, null]);
+    expect(powerStatus(state, blocked)).toBe("blocked");
+  });
+
   it("doesn't count failures while the phone itself is offline", () => {
     const { state, effects } = run(INITIAL_POWER_RUNTIME, [
       { type: "connection", connection: failed, now: 5 },

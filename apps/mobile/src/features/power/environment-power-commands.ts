@@ -82,6 +82,14 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
       message: "T3 Code has no built-in command for this machine's operating system.",
     });
   }
+  if (command.kind === "sleep") {
+    // A sent sleep's terminal can't be closed once the machine stops answering, so each sleep
+    // first clears what earlier ones left. Sleeping ends anything else running there anyway.
+    yield* request(WS_METHODS.terminalClose, {
+      threadId: POWER_TERMINAL_THREAD_ID,
+      deleteHistory: true,
+    }).pipe(Effect.timeout(TERMINAL_REQUEST_TIMEOUT_MS), Effect.ignore);
+  }
   const target = {
     threadId: POWER_TERMINAL_THREAD_ID,
     // Unique even for commands started in the same millisecond on one relay.
