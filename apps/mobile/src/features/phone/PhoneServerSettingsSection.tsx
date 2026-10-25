@@ -1,0 +1,76 @@
+import { useNavigation } from "@react-navigation/native";
+import type { EnvironmentId } from "@t3tools/contracts";
+import { useState } from "react";
+
+import { ListRow } from "../../components/ui/ListRow";
+import { useWorkspaceEnvironments } from "../../state/workspace";
+import { SettingsSection } from "../settings/components/SettingsSection";
+import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
+import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
+import { startAndReconnectPhoneServer, usePhoneServerRuntime } from "./phone-server";
+import { openTermux, stopPhoneServer } from "./termux";
+
+/** Settings → Environments → <this phone>: the server that phone setup runs in Termux. */
+export function PhoneServerSettingsSection(props: { readonly environmentId: EnvironmentId }) {
+  const navigation = useNavigation();
+  const settings = usePhoneServerSettings();
+  const runtime = usePhoneServerRuntime();
+  const environment = useWorkspaceEnvironments().find(
+    (candidate) => candidate.environmentId === props.environmentId,
+  );
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  if (settings === null || settings.environmentId !== props.environmentId) return null;
+  const connected = environment?.connectionState === "connected";
+
+  return (
+    <SettingsSection
+      title="Phone server"
+      footer={
+        stopError ??
+        runtime.error ??
+        "T3 Code runs in a Termux session on this phone. Closing that session in Termux also stops it."
+      }
+    >
+      <ListRow
+        icon="iphone"
+        label="Setup and checks"
+        description="Install, Claude sign-in and keep-alive settings"
+        onPress={() => navigation.navigate("PhoneSetup")}
+      />
+      <SettingsSwitchRow
+        icon="play"
+        label="Start when T3 Code opens"
+        subtitle="Starts the server in Termux if it isn't running."
+        value={settings.autoStart}
+        onValueChange={(autoStart) => setPhoneServerSettings({ ...settings, autoStart })}
+      />
+      {connected ? (
+        <ListRow
+          icon="stop.fill"
+          label={stopping ? "Stopping…" : "Stop server"}
+          description="Also turns off starting when T3 Code opens."
+          disabled={stopping}
+          onPress={() => {
+            setStopping(true);
+            setStopError(null);
+            setPhoneServerSettings({ ...settings, autoStart: false });
+            stopPhoneServer()
+              .catch((error: unknown) =>
+                setStopError(error instanceof Error ? error.message : "Couldn't stop the server."),
+              )
+              .finally(() => setStopping(false));
+          }}
+        />
+      ) : (
+        <ListRow
+          icon="play"
+          label={runtime.starting ? "Starting…" : "Start server"}
+          disabled={runtime.starting}
+          onPress={() => void startAndReconnectPhoneServer(settings)}
+        />
+      )}
+      <ListRow icon="terminal" label="Open Termux" onPress={() => openTermux()} />
+    </SettingsSection>
+  );
+}

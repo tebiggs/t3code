@@ -16,6 +16,7 @@ import { environmentSession } from "./session";
 import { environmentCatalog } from "../connection/catalog";
 import { createRemoteEnvironmentProjectionAtoms } from "./remote-environment-projections";
 import { serverEnvironment } from "./server";
+import { phoneServerSettingsAtom, setPhoneServerSettings } from "./phone-server-settings";
 
 const connectionPairingUrlAtom = Atom.make("").pipe(
   Atom.keepAlive,
@@ -179,6 +180,34 @@ export function useRemoteConnections() {
               onPress: () => navigation.navigate("SettingsAuth"),
             },
             remove,
+          ],
+        );
+        return;
+      }
+      if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
+        // Removing only the connection would leave the server running in Termux with a wake
+        // lock and nothing in the app pointing at it.
+        const forgetPhone = (stop: boolean) => {
+          setPhoneServerSettings(null);
+          // Loaded on demand: the Termux bridge pulls in the expo runtime.
+          const stopped = stop
+            ? import("../features/phone/termux")
+                .then((termux) => termux.stopPhoneServer())
+                .catch(() => undefined)
+            : Promise.resolve();
+          void stopped.then(() => controller.removeEnvironment(environmentId));
+        };
+        Dialog.alert(
+          "Remove this phone?",
+          `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay in Termux; phone setup can connect them again.`,
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Remove only", onPress: () => forgetPhone(false) },
+            {
+              text: "Remove and stop server",
+              style: "destructive",
+              onPress: () => forgetPhone(true),
+            },
           ],
         );
         return;

@@ -65,6 +65,8 @@ import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSh
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { EnvironmentPowerSheet } from "./features/power/EnvironmentPowerSheet";
 import { useEnvironmentPowerWorker } from "./features/power/environment-power-state";
+import { PhoneSetupRouteScreen } from "./features/phone/PhoneSetupRouteScreen";
+import { usePhoneServerWorker } from "./features/phone/phone-server";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
@@ -493,6 +495,11 @@ function EnvironmentPowerWorker() {
   return null;
 }
 
+function PhoneServerWorker() {
+  usePhoneServerWorker();
+  return null;
+}
+
 function RootStackLayout(props: {
   readonly children: React.ReactNode;
   readonly state: NavigationState;
@@ -544,6 +551,7 @@ function RootStackLayout(props: {
       <HardwareKeyboardCommandProvider pathname={pathname}>
         <ThreadOutboxDrainWorker />
         <EnvironmentPowerWorker />
+        {Platform.OS === "android" ? <PhoneServerWorker /> : null}
         <ShowcaseCaptureCoordinator pathname={pathname} />
         <SettingsEnvironmentFilterProvider open={settingsOpen}>
           <ExistingThreadSettingsRouteProvider>
@@ -913,6 +921,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
         sheetAllowedDetents: formSheetDetents(0.5, 0.9),
         sheetGrabberVisible: true,
       },
+    }),
+    PhoneSetup: createNativeStackScreen({
+      screen: PhoneSetupRouteScreen,
+      linking: "phone-setup",
+      options: { headerShown: false, presentation: "card" as const, gestureEnabled: true },
     }),
     EnvironmentPower: createNativeStackScreen({
       screen: EnvironmentPowerSheet,

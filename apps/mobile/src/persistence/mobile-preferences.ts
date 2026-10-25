@@ -62,6 +62,16 @@ export type EnvironmentPowerSettings = typeof EnvironmentPowerSettings.Type;
 
 const EnvironmentPowerPreferences = Schema.Record(Schema.String, EnvironmentPowerSettings);
 
+/** The T3 server that phone setup runs in Termux on this device. */
+export const PhoneServerSettings = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** Loopback port the server listens on inside Termux. */
+  port: Schema.Number,
+  /** Start the server in Termux when the app opens and it isn't running. Stop turns it off. */
+  autoStart: Schema.Boolean,
+});
+export type PhoneServerSettings = typeof PhoneServerSettings.Type;
+
 /**
  * The page each workspace tab last showed, reopened when the tab returns with columns. `key` is
  * that page's route key: reopening under the same key reuses the screen a tab kept mounted.
@@ -93,6 +103,7 @@ const isThreadListFilters = Schema.is(ThreadListFilters);
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const isEnvironmentPowerPreferences = Schema.is(EnvironmentPowerPreferences);
+const isPhoneServerSettings = Schema.is(PhoneServerSettings);
 
 export interface Preferences {
   readonly navigationTabOrder?: readonly string[];
@@ -132,6 +143,8 @@ export interface Preferences {
   readonly pullRequestListFilters?: PullRequestListPreferences;
   /** Sleep/wake control, keyed by the environment being powered. */
   readonly environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
+  /** Null once the phone environment is removed. */
+  readonly phoneServer?: PhoneServerSettings | null;
   readonly workspaceSelections?: WorkspaceSelections;
 }
 
@@ -206,6 +219,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
     environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
+    phoneServer?: PhoneServerSettings;
     workspaceSelections?: WorkspaceSelections;
   } = {};
 
@@ -348,6 +362,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isEnvironmentPowerPreferences(parsed.environmentPower)) {
     preferences.environmentPower = parsed.environmentPower;
+  }
+  if (isPhoneServerSettings(parsed.phoneServer)) {
+    preferences.phoneServer = parsed.phoneServer;
   }
   if (isWorkspaceSelections(parsed.workspaceSelections)) {
     preferences.workspaceSelections = parsed.workspaceSelections;

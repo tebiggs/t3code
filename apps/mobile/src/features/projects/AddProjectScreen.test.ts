@@ -86,6 +86,7 @@ vi.mock("../../state/presentation", () => ({
   useEnvironmentPresentation: () => ({ isReady: true, presentation: null }),
 }));
 vi.mock("../../state/filesystem", () => ({ filesystemEnvironment: {} }));
+vi.mock("../../state/phone-server-settings", () => ({ usePhoneServerSettings: () => null }));
 vi.mock("../../state/sourceControl", () => ({
   sourceControlEnvironment: {
     cloneRepository: async ({ input }: { input: { destinationPath: string } }) => {

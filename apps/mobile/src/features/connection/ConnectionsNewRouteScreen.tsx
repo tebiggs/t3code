@@ -14,7 +14,7 @@ import {
 import type { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
-import { Linking, Pressable, StyleSheet, View } from "react-native";
+import { Linking, Platform, Pressable, StyleSheet, View } from "react-native";
 import Svg, { Defs, RadialGradient, Rect, Stop } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "../../lib/cn";
@@ -32,6 +32,9 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { CloudEnvironmentRows } from "./CloudEnvironmentRows";
 import { splitEnvironmentSections } from "./environmentSections";
+import { usePhoneServerSettings } from "../../state/phone-server-settings";
+import { getTermuxStatus, supportsPhoneSetup } from "../phone/termux";
+import { useWorkspaceEnvironments } from "../../state/workspace";
 import { openSettings } from "../settings/settings-navigation";
 import { leaveSettingsPage } from "../settings/settings-navigation";
 import { workspaceHasColumns } from "../workspace/workspace-selection-store";
@@ -267,6 +270,7 @@ export function ConnectionsNewRouteScreen({
           </View>
 
           {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
+          {Platform.OS === "android" && supportsPhoneSetup() ? <PhoneSection /> : null}
         </View>
       </ScrollView>
     </SettingsScreen>
@@ -395,6 +399,43 @@ function T3ConnectSection() {
           onPress={() => navigation.navigate("SettingsAuth")}
         />
       )}
+    </View>
+  );
+}
+
+function PhoneSection() {
+  const navigation = useNavigation();
+  const routeName = useRoute().name;
+  const settings = usePhoneServerSettings();
+  const phone = useWorkspaceEnvironments().find(
+    (environment) => environment.environmentId === settings?.environmentId,
+  );
+  const [supported] = useState(() => getTermuxStatus().supportedAbi);
+  return (
+    <View collapsable={false} className="gap-2">
+      <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
+        Or run on this phone
+      </Text>
+      <ListRow
+        icon="iphone"
+        label="Run agents on this phone"
+        description={
+          !supported
+            ? "Needs a 64-bit phone."
+            : phone
+              ? `Set up as ${phone.environmentLabel}.`
+              : "Claude Code in Termux. No other computer needed."
+        }
+        disabled={!supported}
+        onPress={() => {
+          // The root sheet gives way to the setup page instead of stacking under it.
+          if (routeName === "ConnectionsNew") {
+            navigation.dispatch(StackActions.replace("PhoneSetup"));
+          } else {
+            navigation.navigate("PhoneSetup");
+          }
+        }}
+      />
     </View>
   );
 }
