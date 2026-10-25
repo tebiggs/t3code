@@ -34,9 +34,11 @@ export class PowerCommandError extends Schema.TaggedError<PowerCommandError>()(
   { message: Schema.String },
 ) {}
 
-// Terminals are keyed by thread; this id belongs to no real thread, so the
-// session never shows up in a thread's terminal drawer.
+// Terminals are keyed by thread; these ids belong to no real thread, so the
+// sessions never show up in a thread's terminal drawer. Built-in sleeps get
+// their own so clearing earlier ones can't touch other power commands.
 const POWER_TERMINAL_THREAD_ID = "t3-mobile-power";
+const SLEEP_TERMINAL_THREAD_ID = "t3-mobile-power-sleep";
 const OUTPUT_TAIL_LENGTH = 4_096;
 
 function failureMessage(cause: unknown): string {
@@ -82,16 +84,17 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
       message: "T3 Code has no built-in command for this machine's operating system.",
     });
   }
+  const threadId = command.kind === "sleep" ? SLEEP_TERMINAL_THREAD_ID : POWER_TERMINAL_THREAD_ID;
   if (command.kind === "sleep") {
     // A sent sleep's terminal can't be closed once the machine stops answering, so each sleep
-    // first clears what earlier ones left. Sleeping ends anything else running there anyway.
-    yield* request(WS_METHODS.terminalClose, {
-      threadId: POWER_TERMINAL_THREAD_ID,
-      deleteHistory: true,
-    }).pipe(Effect.timeout(TERMINAL_REQUEST_TIMEOUT_MS), Effect.ignore);
+    // first clears the terminals and history that earlier sleeps on this machine left.
+    yield* request(WS_METHODS.terminalClose, { threadId, deleteHistory: true }).pipe(
+      Effect.timeout(TERMINAL_REQUEST_TIMEOUT_MS),
+      Effect.ignore,
+    );
   }
   const target = {
-    threadId: POWER_TERMINAL_THREAD_ID,
+    threadId,
     // Unique even for commands started in the same millisecond on one relay.
     terminalId: `power-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   };

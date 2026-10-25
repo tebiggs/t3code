@@ -241,9 +241,10 @@ function needsTicks(state: PowerRuntime): boolean {
 }
 
 async function confirmAsleep(environmentId: EnvironmentId) {
-  if (!(await isAnswering(environmentId))) {
-    dispatch(environmentId, { type: "probe-failed", now: Date.now() });
-  }
+  if (await isAnswering(environmentId)) return;
+  // A phone without its own network can't tell whether the machine went quiet.
+  if (appAtomRegistry.get(environmentCatalog.networkStatusValueAtom) === "offline") return;
+  dispatch(environmentId, { type: "probe-failed", now: Date.now() });
 }
 
 // At most one check per app launch and settings, and none once the machine has connected. Later
