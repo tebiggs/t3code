@@ -34,3 +34,8 @@ adds the feature, and remove it in the PR that drops the feature.
   on the same LAN: `apps/mobile/src/features/power/`,
   `apps/mobile/src/persistence/mobile-preferences.ts` (`environmentPower`),
   `apps/mobile/src/state/workspaceModel.ts`.
+- #9 The Android app can set the phone up as its own environment: Claude Code
+  and a T3 Code server run in Ubuntu inside Termux, driven through Termux's
+  RUN_COMMAND intent: `apps/mobile/modules/t3-termux/`,
+  `apps/mobile/src/features/phone/`,
+  `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`).
