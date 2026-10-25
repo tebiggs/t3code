@@ -5,6 +5,7 @@ import { Pressable, View } from "react-native";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
+import { cn } from "../../lib/cn";
 import type { WorkspaceEnvironment } from "../../state/workspaceModel";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { ConnectionStatusDot } from "../connection/ConnectionStatusDot";
@@ -12,7 +13,7 @@ import { POWER_STATUS_LABELS, powerStatus, type PowerStatus } from "./environmen
 import { useEnvironmentPowerRuntime, useEnvironmentPowerSettings } from "./environment-power-state";
 
 /** Home-screen chips for environments with sleep/wake control. Renders nothing when none are set up. */
-export function EnvironmentPowerChips() {
+export function EnvironmentPowerChips(props: { readonly className?: string }) {
   const settings = useEnvironmentPowerSettings();
   const environments = useWorkspaceEnvironments();
   const navigation = useNavigation();
@@ -21,7 +22,7 @@ export function EnvironmentPowerChips() {
   );
   if (managed.length === 0) return null;
   return (
-    <View className="flex-row flex-wrap gap-2 px-5 pb-2.5">
+    <View className={cn("flex-row flex-wrap gap-2 px-5 pb-2.5", props.className)}>
       {managed.map((environment) => (
         <EnvironmentPowerChip
           key={environment.environmentId}
