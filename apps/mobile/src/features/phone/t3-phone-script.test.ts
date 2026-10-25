@@ -62,7 +62,7 @@ function makeSandbox(options: { readonly prootDistro: boolean }): Sandbox {
   for (const dir of [NodePath.join(prefix, "bin"), home, guestBin, guestTools]) {
     NodeFS.mkdirSync(dir, { recursive: true });
   }
-  for (const tool of ["cat", "cut", "head", "readlink", "sed", "sh"]) {
+  for (const tool of ["cat", "cut", "head", "readlink", "sed", "sh", "tr"]) {
     const hostPath = ["/usr/bin", "/bin"]
       .map((dir) => NodePath.join(dir, tool))
       .find((candidate) => NodeFS.existsSync(candidate));
@@ -477,13 +477,15 @@ ${arm64 ? '      },\n      {\n        "name": "t3-0.1.3-nightly.20261026.25-linu
 ]`;
 
   /** Runs the Ubuntu half of `t3-phone update` on the host, on an arm64 phone. */
-  function runGuestUpdate(sandbox: Sandbox, releases: string) {
+  function runGuestUpdate(sandbox: Sandbox, releases: string | null) {
     expect(run(sandbox, ["update"]).calls).toEqual([
       expect.stringMatching(
         /^proot-distro login ubuntu -- .* env MODE=update DEVICE_NAME= RELEASE_REPO=tebiggs\/t3code \/bin\/bash -s$/,
       ),
     ]);
-    NodeFS.writeFileSync(NodePath.join(sandbox.root, "releases.json"), releases);
+    if (releases !== null) {
+      NodeFS.writeFileSync(NodePath.join(sandbox.root, "releases.json"), releases);
+    }
     writeExecutable(NodePath.join(sandbox.guestBin, "uname"), "#!/bin/sh\necho aarch64\n");
     for (const name of ["claude", "t3"]) {
       writeExecutable(NodePath.join(sandbox.guestBin, name), "#!/bin/sh\n");
@@ -494,7 +496,7 @@ ${arm64 ? '      },\n      {\n        "name": "t3-0.1.3-nightly.20261026.25-linu
       `#!/bin/sh
 for url; do :; done
 case "$url" in
-  *api.github.com*) cat "$STUB_DIR/releases.json" ;;
+  *api.github.com*) [ -f "$STUB_DIR/releases.json" ] || exit 22; cat "$STUB_DIR/releases.json" ;;
   *install.sh) echo 'echo "installer version=$T3CODE_VERSION base=$T3CODE_RELEASE_BASE_URL channel=$T3CODE_CHANNEL" >> "$STUB_LOG"' ;;
 esac
 `,
@@ -538,5 +540,47 @@ esac
 
     expect(result.status).toBe(0);
     expect(result.calls).toContain("installer version= base= channel=nightly\n");
+  });
+
+  it("takes the newest release when the API answers in compact JSON", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+    const compact = JSON.stringify(
+      ["0.2.0-nightly.20261027.30", "0.1.3-nightly.20261026.25"].map((version) => ({
+        tag_name: `v${version}`,
+        assets: [{ name: `t3-${version}-linux-arm64.tar.gz` }],
+      })),
+    );
+
+    expect(runGuestUpdate(sandbox, compact).calls).toContain(
+      "installer version=0.2.0-nightly.20261027.30 ",
+    );
+  });
+
+  it("keeps the installed server when GitHub can't be reached", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+
+    const result = runGuestUpdate(sandbox, null);
+
+    expect(result.status).toBe(1);
+    expect(result.calls).not.toContain("installer");
+  });
+
+  it("refuses a second update while one is running", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    NodeFS.mkdirSync(NodePath.join(sandbox.home, ".t3-phone"), { recursive: true });
+    NodeFS.symlinkSync(
+      `${process.pid}:${processStartTime(process.pid)}`,
+      NodePath.join(sandbox.home, ".t3-phone/update.lock"),
+    );
+
+    const result = run(sandbox, ["update"]);
+
+    expect(result).toMatchObject({
+      status: 1,
+      stdout: "An update is already running.\n",
+      calls: [],
+    });
   });
 });

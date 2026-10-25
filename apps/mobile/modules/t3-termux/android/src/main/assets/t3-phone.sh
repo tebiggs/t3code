@@ -187,8 +187,14 @@ if [ "$MODE" = update ] || ! command -v t3 >/dev/null 2>&1; then
     *) arch=x64 ;;
   esac
   # The newest release of this fork with a server for this CPU, else upstream's nightly.
-  version=$(curl -fsSL "https://api.github.com/repos/$RELEASE_REPO/releases?per_page=30" 2>/dev/null \
-    | sed -n "s/.*\"name\": *\"t3-\(.*\)-linux-$arch\.tar\.gz\".*/\1/p" | head -n 1 || true)
+  # A failed lookup stops here rather than switching an installed fork build to upstream.
+  if ! releases=$(curl -fsSL "https://api.github.com/repos/$RELEASE_REPO/releases?per_page=30"); then
+    echo "Couldn't check $RELEASE_REPO for releases. Check the connection and try again." >&2
+    exit 1
+  fi
+  # One field per line, so compact and pretty-printed JSON both list the newest release first.
+  version=$(printf '%s\n' "$releases" | tr ',' '\n' \
+    | sed -n "s/.*\"name\": *\"t3-\([^\"]*\)-linux-$arch\.tar\.gz\".*/\1/p" | head -n 1 || true)
   if [ -n "$version" ]; then
     curl -fsSL https://t3.codes/install.sh \
       | T3CODE_VERSION="$version" T3CODE_RELEASE_BASE_URL="https://github.com/$RELEASE_REPO/releases/download" sh
@@ -216,7 +222,15 @@ UBUNTU
 
 # Installs the newest server; the running one keeps its version until it restarts.
 cmd_update() {
+  mkdir -p "$STATE_DIR"
+  if ! take_lock update.lock; then
+    echo "An update is already running."
+    return 1
+  fi
   ubuntu_setup update
+  code=$?
+  release_lock update.lock
+  return "$code"
 }
 
 # Only adds what is missing: an existing Ubuntu, Claude Code, sign-in, shell config and

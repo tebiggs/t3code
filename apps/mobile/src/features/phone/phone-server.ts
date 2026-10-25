@@ -34,8 +34,8 @@ const SERVER_POLL_INTERVAL_MS = 1_000;
 // hold a probe forever.
 const SERVER_PROBE_TIMEOUT_MS = 3_000;
 const AUTO_START_INTERVAL_MS = 60_000;
-// Downloads a ~70 MB server archive over the phone's connection.
-const UPDATE_TIMEOUT_MS = 10 * 60_000;
+// Downloads a ~90 MB server archive over the phone's connection.
+const UPDATE_TIMEOUT_MS = 20 * 60_000;
 
 /** Starting the server from the home chip, the detail page or on app open. */
 export interface PhoneServerRuntime {
@@ -228,26 +228,44 @@ function reconnect(environmentId: EnvironmentId) {
   });
 }
 
+// While an update restarts the server, auto-start would race it for serve.lock.
+let updating = false;
+
 /** Installs the newest server build in Ubuntu, then restarts the server on it. */
 export async function updatePhoneServer(settings: PhoneServerSettings): Promise<void> {
-  const result = await runPhoneScript(["update"], UPDATE_TIMEOUT_MS);
-  const refused = termuxErrorMessage(result);
-  if (refused !== null) throw new Error(refused);
-  if (result.exitCode !== 0) {
-    const output = (result.stderr.trim() || result.stdout.trim()).split("\n").slice(-5).join("\n");
-    throw new Error(output || "The update didn't finish.");
+  if (updating) return;
+  updating = true;
+  try {
+    const result = await runPhoneScript(["update"], UPDATE_TIMEOUT_MS).catch((error: unknown) => {
+      if (!isTimeout(error)) throw error;
+      // The installer keeps going in Termux; a later Update restarts on whatever it installed.
+      throw new Error(
+        "The update is still downloading in Termux. Tap Update again in a few minutes.",
+      );
+    });
+    const refused = termuxErrorMessage(result);
+    if (refused !== null) throw new Error(refused);
+    if (result.exitCode !== 0) {
+      const output = (result.stderr.trim() || result.stdout.trim())
+        .split("\n")
+        .slice(-5)
+        .join("\n");
+      throw new Error(output || "The update didn't finish.");
+    }
+    await stopPhoneServerWhenSettled();
+    const started = await startPhoneServer(settings.port);
+    if (started !== settings.environmentId) {
+      throw new Error("A different T3 Code server is answering on this phone.");
+    }
+    reconnect(settings.environmentId);
+  } finally {
+    updating = false;
   }
-  await stopPhoneServerWhenSettled();
-  const started = await startPhoneServer(settings.port);
-  if (started !== settings.environmentId) {
-    throw new Error("A different T3 Code server is answering on this phone.");
-  }
-  reconnect(settings.environmentId);
 }
 
 async function autoStartPhoneServer() {
   // Starting Termux from the background would fail or surprise; the next foreground retries.
-  if (AppState.currentState !== "active") return;
+  if (AppState.currentState !== "active" || updating) return;
   const settings = appAtomRegistry.get(phoneServerSettingsAtom);
   if (settings === null || !settings.autoStart) return;
   const environment = appAtomRegistry
@@ -269,7 +287,7 @@ async function autoStartPhoneServer() {
   // Stop or Remove may switch auto-start off while this one is still probing the port.
   await startAndReconnectPhoneServer(
     settings,
-    () => appAtomRegistry.get(phoneServerSettingsAtom)?.autoStart === true,
+    () => !updating && appAtomRegistry.get(phoneServerSettingsAtom)?.autoStart === true,
   );
 }
 
