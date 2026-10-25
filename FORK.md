@@ -27,3 +27,8 @@ adds the feature, and remove it in the PR that drops the feature.
 - #2 Servers and clients update from this fork's releases instead of
   upstream's: `packages/shared/src/cliRelease.ts`,
   `apps/web/src/state/npmRelease.ts`.
+- #4 The Android app's Home shows whether a desktop is awake and can put it to
+  sleep or wake it, sending Wake-on-LAN through another connected environment
+  on the same LAN: `apps/mobile/src/features/power/`,
+  `apps/mobile/src/persistence/mobile-preferences.ts` (`environmentPower`),
+  `apps/mobile/src/state/workspaceModel.ts`.
