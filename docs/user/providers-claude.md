@@ -57,6 +57,8 @@ inside Termux, and the phone becomes an environment named after the device.
 - Android stops background apps. The checklist's **Keep it running** section links to
   the battery and developer settings that keep Termux alive. When the server isn't
   running, the app starts it when you open it, unless you stopped it.
+- The phone's T3 Code server doesn't update itself. Use **Update T3 Code** on the
+  phone's environment page in **Settings > Environments**.
 - In Termux, `t3-phone shell` opens Ubuntu.
 
 ## Compact long conversations

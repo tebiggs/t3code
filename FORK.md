@@ -4,7 +4,7 @@ This is a fork of T3 Code. `main` is upstream's newest nightly plus the
 features listed below.
 
 - **Releases.** Every push to `main` builds the Windows x64 desktop app, the
-  Linux x64 server and the Android APK. The build runs in
+  Linux x64 and arm64 servers and the Android APK. The build runs in
   `.github/workflows/fork-release.yml`, which can also be run by hand on
   `main` from the Actions tab or with `gh workflow run fork-release.yml`.
   When typecheck and the tests covering the fork's changes pass, it publishes

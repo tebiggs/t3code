@@ -11,6 +11,9 @@ const SCRIPT_PATH = NodePath.join(
   "../../../modules/t3-termux/android/src/main/assets/t3-phone.sh",
 );
 const SCRIPT = NodeFS.readFileSync(SCRIPT_PATH, "utf8");
+const HOST_BASH = NodeChildProcess.execFileSync("sh", ["-c", "command -v bash"], {
+  encoding: "utf8",
+}).trim();
 
 // A fake Termux: $PREFIX/bin holds stubs that log their arguments, and the stub
 // proot-distro runs guest commands on the host with a PATH of only the fake guest bin
@@ -232,7 +235,7 @@ describe("t3-phone install", () => {
       "pkg install -y proot-distro",
       "proot-distro install ubuntu",
       expect.stringMatching(
-        /^proot-distro login ubuntu -- .* env DEVICE_NAME=Tim's Z Fold5 \/bin\/bash -s$/,
+        /^proot-distro login ubuntu -- .* env MODE=install DEVICE_NAME=Tim's Z Fold5 RELEASE_REPO=tebiggs\/t3code \/bin\/bash -s$/,
       ),
       "sleep 2",
       "am start -n com.t3tools.t3code/.MainActivity",
@@ -457,5 +460,83 @@ describe("t3-phone serve and stop", () => {
     });
     expect(NodeFS.readlinkSync(NodePath.join(stateDir(sandbox), "serve.lock"))).toBe(identity);
     expect(await supervisor.exited).toBe("SIGKILL");
+  });
+});
+
+describe("t3-phone update", () => {
+  const RELEASES = (arm64: boolean) => `[
+  {
+    "tag_name": "v0.1.3-nightly.20261026.25",
+    "assets": [
+      {
+        "name": "t3-0.1.3-nightly.20261026.25-linux-x64.tar.gz",
+${arm64 ? '      },\n      {\n        "name": "t3-0.1.3-nightly.20261026.25-linux-arm64.tar.gz",' : ""}
+      }
+    ]
+  }
+]`;
+
+  /** Runs the Ubuntu half of `t3-phone update` on the host, on an arm64 phone. */
+  function runGuestUpdate(sandbox: Sandbox, releases: string) {
+    expect(run(sandbox, ["update"]).calls).toEqual([
+      expect.stringMatching(
+        /^proot-distro login ubuntu -- .* env MODE=update DEVICE_NAME= RELEASE_REPO=tebiggs\/t3code \/bin\/bash -s$/,
+      ),
+    ]);
+    NodeFS.writeFileSync(NodePath.join(sandbox.root, "releases.json"), releases);
+    writeExecutable(NodePath.join(sandbox.guestBin, "uname"), "#!/bin/sh\necho aarch64\n");
+    for (const name of ["claude", "t3"]) {
+      writeExecutable(NodePath.join(sandbox.guestBin, name), "#!/bin/sh\n");
+    }
+    // The last argument is the URL: the release list, or an installer that logs its settings.
+    writeExecutable(
+      NodePath.join(sandbox.guestBin, "curl"),
+      `#!/bin/sh
+for url; do :; done
+case "$url" in
+  *api.github.com*) cat "$STUB_DIR/releases.json" ;;
+  *install.sh) echo 'echo "installer version=$T3CODE_VERSION base=$T3CODE_RELEASE_BASE_URL channel=$T3CODE_CHANNEL" >> "$STUB_LOG"' ;;
+esac
+`,
+    );
+    // Spawned by absolute path: the guest PATH below has no bash on it.
+    const result = NodeChildProcess.spawnSync(
+      HOST_BASH,
+      [NodePath.join(sandbox.root, "guest-install.sh")],
+      {
+        encoding: "utf8",
+        env: {
+          NODE_ENV: "test",
+          PATH: `${sandbox.guestBin}:${sandbox.guestTools}`,
+          MODE: "update",
+          RELEASE_REPO: "tebiggs/t3code",
+          STUB_LOG: sandbox.log,
+          STUB_DIR: sandbox.root,
+        },
+      },
+    );
+    return { status: result.status, calls: NodeFS.readFileSync(sandbox.log, "utf8") };
+  }
+
+  it("installs the fork's newest server for this CPU", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+
+    const result = runGuestUpdate(sandbox, RELEASES(true));
+
+    expect(result.status).toBe(0);
+    expect(result.calls).toContain(
+      "installer version=0.1.3-nightly.20261026.25 base=https://github.com/tebiggs/t3code/releases/download channel=\n",
+    );
+  });
+
+  it("falls back to upstream's nightly when the fork has no server for this CPU", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+
+    const result = runGuestUpdate(sandbox, RELEASES(false));
+
+    expect(result.status).toBe(0);
+    expect(result.calls).toContain("installer version= base= channel=nightly\n");
   });
 });

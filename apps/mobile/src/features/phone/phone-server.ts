@@ -34,6 +34,8 @@ const SERVER_POLL_INTERVAL_MS = 1_000;
 // hold a probe forever.
 const SERVER_PROBE_TIMEOUT_MS = 3_000;
 const AUTO_START_INTERVAL_MS = 60_000;
+// Downloads a ~70 MB server archive over the phone's connection.
+const UPDATE_TIMEOUT_MS = 10 * 60_000;
 
 /** Starting the server from the home chip, the detail page or on app open. */
 export interface PhoneServerRuntime {
@@ -208,9 +210,7 @@ export async function startAndReconnectPhoneServer(
         "A different T3 Code server is answering on this phone. Open phone setup to connect it.",
       );
     }
-    void runAtomCommand(appAtomRegistry, environmentCatalog.retryNow, settings.environmentId, {
-      reportFailure: false,
-    });
+    reconnect(settings.environmentId);
     appAtomRegistry.set(phoneServerRuntimeAtom, IDLE_RUNTIME);
     return true;
   } catch (error) {
@@ -220,6 +220,29 @@ export async function startAndReconnectPhoneServer(
     });
     return false;
   }
+}
+
+function reconnect(environmentId: EnvironmentId) {
+  void runAtomCommand(appAtomRegistry, environmentCatalog.retryNow, environmentId, {
+    reportFailure: false,
+  });
+}
+
+/** Installs the newest server build in Ubuntu, then restarts the server on it. */
+export async function updatePhoneServer(settings: PhoneServerSettings): Promise<void> {
+  const result = await runPhoneScript(["update"], UPDATE_TIMEOUT_MS);
+  const refused = termuxErrorMessage(result);
+  if (refused !== null) throw new Error(refused);
+  if (result.exitCode !== 0) {
+    const output = (result.stderr.trim() || result.stdout.trim()).split("\n").slice(-5).join("\n");
+    throw new Error(output || "The update didn't finish.");
+  }
+  await stopPhoneServerWhenSettled();
+  const started = await startPhoneServer(settings.port);
+  if (started !== settings.environmentId) {
+    throw new Error("A different T3 Code server is answering on this phone.");
+  }
+  reconnect(settings.environmentId);
 }
 
 async function autoStartPhoneServer() {

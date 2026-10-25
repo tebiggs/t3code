@@ -9,6 +9,8 @@ DISTRO=ubuntu
 STATE_DIR="$HOME/.t3-phone"
 PORT="${T3_PHONE_PORT:-$(cat "$STATE_DIR/port" 2>/dev/null || echo 3773)}"
 INSTALL_STEPS=4
+# The fork whose releases carry a Linux arm64 server (FORK.md).
+RELEASE_REPO=tebiggs/t3code
 SHARED_STORAGE="${T3_PHONE_SHARED_STORAGE:-/storage/emulated/0}"
 # Termux's bin goes last so agents can still call termux-* commands from Ubuntu.
 UBUNTU_PATH="/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PREFIX/bin"
@@ -158,6 +160,65 @@ save_launcher() {
     && chmod 755 "$PREFIX/bin/t3-phone"
 }
 
+# install: adds whatever is missing. update: installs the newest T3 Code server only.
+ubuntu_setup() {
+  in_ubuntu env MODE="$1" DEVICE_NAME="${2:-}" RELEASE_REPO="$RELEASE_REPO" /bin/bash -s <<'UBUNTU'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export PATH="/root/.local/bin:$PATH"
+if [ "$MODE" = install ]; then
+  missing=""
+  for package in ca-certificates curl git openssh-client procps ripgrep; do
+    dpkg -s "$package" >/dev/null 2>&1 || missing="$missing $package"
+  done
+  if [ -n "$missing" ]; then
+    apt-get update
+    apt-get install -y $missing
+  fi
+  if command -v claude >/dev/null 2>&1; then
+    echo "Claude Code is already installed."
+  else
+    curl -fsSL https://claude.ai/install.sh | bash
+  fi
+fi
+if [ "$MODE" = update ] || ! command -v t3 >/dev/null 2>&1; then
+  case "$(uname -m)" in
+    aarch64 | arm64) arch=arm64 ;;
+    *) arch=x64 ;;
+  esac
+  # The newest release of this fork with a server for this CPU, else upstream's nightly.
+  version=$(curl -fsSL "https://api.github.com/repos/$RELEASE_REPO/releases?per_page=30" 2>/dev/null \
+    | sed -n "s/.*\"name\": *\"t3-\(.*\)-linux-$arch\.tar\.gz\".*/\1/p" | head -n 1 || true)
+  if [ -n "$version" ]; then
+    curl -fsSL https://t3.codes/install.sh \
+      | T3CODE_VERSION="$version" T3CODE_RELEASE_BASE_URL="https://github.com/$RELEASE_REPO/releases/download" sh
+  else
+    curl -fsSL https://t3.codes/install.sh | T3CODE_CHANNEL=nightly sh
+  fi
+else
+  echo "T3 Code is already installed."
+fi
+command -v claude >/dev/null || { echo "Claude Code isn't on PATH after installing." >&2; exit 1; }
+command -v t3 >/dev/null || { echo "T3 Code isn't on PATH after installing." >&2; exit 1; }
+[ "$MODE" = install ] || exit 0
+grep -qs 'HOME/.local/bin' /root/.bashrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
+# The server names its environment after PRETTY_HOSTNAME.
+if [ -n "${DEVICE_NAME:-}" ] && [ ! -f /etc/machine-info ]; then
+  printf 'PRETTY_HOSTNAME="%s"\n' "$(printf '%s' "$DEVICE_NAME" | tr -d '"\\')" > /etc/machine-info
+fi
+# Lets `claude auth login` open the phone's browser.
+if ! command -v xdg-open >/dev/null 2>&1; then
+  printf '#!/bin/sh\nexec /data/data/com.termux/files/usr/bin/termux-open-url "$1"\n' > /usr/local/bin/xdg-open
+  chmod 755 /usr/local/bin/xdg-open
+fi
+UBUNTU
+}
+
+# Installs the newest server; the running one keeps its version until it restarts.
+cmd_update() {
+  ubuntu_setup update
+}
+
 # Only adds what is missing: an existing Ubuntu, Claude Code, sign-in, shell config and
 # aliases are left as they are.
 cmd_install() {
@@ -212,41 +273,7 @@ cmd_install() {
   fi
 
   say 3 "Claude Code and T3 Code in Ubuntu"
-  in_ubuntu env DEVICE_NAME="$device_name" /bin/bash -s <<'UBUNTU' || fail "Installing inside Ubuntu failed."
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-missing=""
-for package in ca-certificates curl git openssh-client procps ripgrep; do
-  dpkg -s "$package" >/dev/null 2>&1 || missing="$missing $package"
-done
-if [ -n "$missing" ]; then
-  apt-get update
-  apt-get install -y $missing
-fi
-export PATH="/root/.local/bin:$PATH"
-if command -v claude >/dev/null 2>&1; then
-  echo "Claude Code is already installed."
-else
-  curl -fsSL https://claude.ai/install.sh | bash
-fi
-if command -v t3 >/dev/null 2>&1; then
-  echo "T3 Code is already installed."
-else
-  curl -fsSL https://t3.codes/install.sh | T3CODE_CHANNEL=nightly sh
-fi
-command -v claude >/dev/null || { echo "Claude Code isn't on PATH after installing." >&2; exit 1; }
-command -v t3 >/dev/null || { echo "T3 Code isn't on PATH after installing." >&2; exit 1; }
-grep -qs 'HOME/.local/bin' /root/.bashrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
-# The server names its environment after PRETTY_HOSTNAME.
-if [ -n "${DEVICE_NAME:-}" ] && [ ! -f /etc/machine-info ]; then
-  printf 'PRETTY_HOSTNAME="%s"\n' "$(printf '%s' "$DEVICE_NAME" | tr -d '"\\')" > /etc/machine-info
-fi
-# Lets `claude auth login` open the phone's browser.
-if ! command -v xdg-open >/dev/null 2>&1; then
-  printf '#!/bin/sh\nexec /data/data/com.termux/files/usr/bin/termux-open-url "$1"\n' > /usr/local/bin/xdg-open
-  chmod 755 /usr/local/bin/xdg-open
-fi
-UBUNTU
+  ubuntu_setup install "$device_name" || fail "Installing inside Ubuntu failed."
 
   say 4 "The t3-phone command"
   save_launcher || fail "Couldn't write $PREFIX/bin/t3-phone."
@@ -363,12 +390,13 @@ case "${1:-}" in
   pair) cmd_pair ;;
   login) shift; cmd_login "$@" ;;
   logout) in_ubuntu claude auth logout ;;
+  update) cmd_update ;;
   log) shift; cmd_log "$@" ;;
   storage) shift; cmd_storage "$@" ;;
   save-launcher) save_launcher ;;
   shell) exec proot-distro login "$DISTRO" ;;
   *)
-    echo "Usage: t3-phone shell | status | install | serve | stop | login | logout"
+    echo "Usage: t3-phone shell | status | install | update | serve | stop | login | logout"
     echo "  shell   open Ubuntu (run 'claude auth login' there to sign in)"
     ;;
 esac

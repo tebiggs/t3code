@@ -10,6 +10,7 @@ import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phon
 import {
   startAndReconnectPhoneServer,
   stopPhoneServerWhenSettled,
+  updatePhoneServer,
   usePhoneServerRuntime,
 } from "./phone-server";
 import { openTermux } from "./termux";
@@ -22,8 +23,8 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
   const environment = useWorkspaceEnvironments().find(
     (candidate) => candidate.environmentId === props.environmentId,
   );
-  const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"stopping" | "updating" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   if (settings === null || settings.environmentId !== props.environmentId) return null;
   const connected = environment?.connectionState === "connected";
 
@@ -31,7 +32,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
     <SettingsSection
       title="Phone server"
       footer={
-        stopError ??
+        actionError ??
         runtime.error ??
         "T3 Code runs as a background task in Termux. Stop it here or with t3-phone stop in Termux; exiting Termux from its notification leaves it running. Its log is ~/.t3-phone/server.log."
       }
@@ -52,18 +53,20 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
       {connected ? (
         <ListRow
           icon="stop.fill"
-          label={stopping ? "Stopping…" : "Stop server"}
+          label={busy === "stopping" ? "Stopping…" : "Stop server"}
           description="Also turns off starting when T3 Code opens."
-          disabled={stopping}
+          disabled={busy !== null}
           onPress={() => {
-            setStopping(true);
-            setStopError(null);
+            setBusy("stopping");
+            setActionError(null);
             setPhoneServerSettings({ ...settings, autoStart: false });
             stopPhoneServerWhenSettled()
               .catch((error: unknown) =>
-                setStopError(error instanceof Error ? error.message : "Couldn't stop the server."),
+                setActionError(
+                  error instanceof Error ? error.message : "Couldn't stop the server.",
+                ),
               )
-              .finally(() => setStopping(false));
+              .finally(() => setBusy(null));
           }}
         />
       ) : (
@@ -74,6 +77,21 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
           onPress={() => void startAndReconnectPhoneServer(settings)}
         />
       )}
+      <ListRow
+        icon="arrow.down.circle"
+        label={busy === "updating" ? "Updating…" : "Update T3 Code"}
+        description="Installs the newest server build, then restarts the server."
+        disabled={busy !== null || runtime.starting}
+        onPress={() => {
+          setBusy("updating");
+          setActionError(null);
+          updatePhoneServer(settings)
+            .catch((error: unknown) =>
+              setActionError(error instanceof Error ? error.message : "The update didn't finish."),
+            )
+            .finally(() => setBusy(null));
+        }}
+      />
       <ListRow icon="terminal" label="Open Termux" onPress={() => openTermux()} />
     </SettingsSection>
   );
