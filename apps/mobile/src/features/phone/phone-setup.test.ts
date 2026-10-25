@@ -88,6 +88,20 @@ describe("phoneInstallState", () => {
     ).toEqual({ kind: "running", step: 3, total: 4, message: "Claude Code" });
   });
 
+  it("keeps a finishing installer running until it lets go of its lock", () => {
+    expect(
+      phoneInstallState({
+        ...READY_STATUS,
+        prootDistro: false,
+        ubuntu: false,
+        claudeVersion: null,
+        t3Version: null,
+        installRunning: true,
+        install: { status: "done", step: 4, total: 4, message: "Done", running: true },
+      }),
+    ).toEqual({ kind: "running", step: 4, total: 4, message: "Finishing" });
+  });
+
   it("reports an installer Android killed midway as stopped where it was", () => {
     expect(
       phoneInstallState({

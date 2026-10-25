@@ -131,12 +131,13 @@ export type PhoneInstallState =
 
 export function phoneInstallState(status: PhoneScriptStatus): PhoneInstallState {
   const progress = status.install;
-  if (status.installRunning && progress?.status === "running") {
+  // While the installer holds its lock, status skips Ubuntu, so its progress is all there is.
+  if (status.installRunning) {
     return {
       kind: "running",
-      step: progress.step,
-      total: progress.total,
-      message: progress.message,
+      step: progress?.step ?? 0,
+      total: progress?.total ?? 0,
+      message: progress?.status === "running" ? progress.message : "Finishing",
     };
   }
   const complete =

@@ -252,6 +252,8 @@ UBUNTU
   save_launcher || fail "Couldn't write $PREFIX/bin/t3-phone."
 
   record done "Done"
+  # Released before switching back, so the app's first check sees a finished install.
+  release_lock install.lock
   printf '\n\033[1;32mDone.\033[0m Returning to T3 Code...\n'
   return_to_app "$app_component"
 }

@@ -440,8 +440,10 @@ function InstallStepBody(props: {
     return (
       <>
         <StepText>
-          Installing in Termux, step {install.step} of {install.total}: {install.message}. This
-          screen checks again every few seconds.
+          {install.total > 0
+            ? `Installing in Termux, step ${install.step} of ${install.total}: ${install.message}.`
+            : "Installing in Termux."}{" "}
+          This screen checks again every few seconds.
         </StepText>
         <Button label="Open Termux" tone="primary" onPress={props.onOpenTermux} />
       </>
