@@ -8,13 +8,16 @@ import {
   useNavigationTabOrder,
   useHiddenNavigationTabs,
 } from "../workspace/navigation-tabs";
+import { currentWorkspaceSelections } from "../workspace/workspace-selection-store";
+import { rememberedSettingsPage } from "../workspace/workspace-tab-navigation";
 import { useSelectWorkspaceTab } from "../workspace/useSelectWorkspaceTab";
 import {
   ScreenScrollView as ScrollView,
   ScreenScrollViewBottomInset,
 } from "../../components/ui/ScreenScrollView";
 import { useAuth, useUser } from "@clerk/expo";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useNavigationState } from "@react-navigation/native";
+import { use, useMemo } from "react";
 import { Platform, View } from "react-native";
 import { useWorkspaceSurface } from "../workspace/useWorkspaceSurface";
 import { useDeviceType } from "../../native/native-layout-metrics";
@@ -26,18 +29,31 @@ import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
-import { SettingsSection } from "./components/SettingsSection";
+import { SettingsSection, SettingsSidebarContext } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
 import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
+import { NativePrimaryColumnContext } from "../../native/v5-workspace-context";
 
 export function SettingsRouteScreen() {
   const surface = useWorkspaceSurface();
   const deviceType = useDeviceType();
   const compactTabs = useCompactWorkspaceTabs();
+  const { layout } = useAdaptiveWorkspaceLayout();
+  const inSidebar = use(NativePrimaryColumnContext) !== null && layout.usesSplitView;
+  // The page open beside the list: the route right above the Settings tab's route. While
+  // another tab is open this list stays mounted, hidden, and must keep showing the page Settings
+  // reopens on; otherwise returning shows it unselected for a frame before the page arrives.
+  const selected = useNavigationState((state) => {
+    const list = state.routes.findIndex((route) => route.name === "Settings");
+    return list < 0
+      ? rememberedSettingsPage(currentWorkspaceSelections())
+      : (state.routes[list + 1]?.name ?? null);
+  });
+  const sidebar = useMemo(() => (inSidebar ? { selected } : null), [inSidebar, selected]);
   const content = hasCloudPublicConfig() ? (
     <ConfiguredSettingsRouteScreen />
   ) : (
@@ -45,22 +61,28 @@ export function SettingsRouteScreen() {
   );
 
   return (
-    <View className={`flex-1 ${surface.className}`}>
-      <SettingsEnvironmentFilterHeader />
-      <ScreenScrollViewBottomInset value={deviceType === "pad" || compactTabs ? 80 : 0}>
-        {Platform.OS === "android" ? (
-          <SettingsScreen title="Settings" trailing={<AndroidSettingsEnvironmentFilter />}>
-            {content}
-          </SettingsScreen>
-        ) : (
-          content
-        )}
-      </ScreenScrollViewBottomInset>
-    </View>
+    <SettingsSidebarContext value={sidebar}>
+      <View className={`flex-1 ${inSidebar ? surface.className : "bg-screen"}`}>
+        <SettingsEnvironmentFilterHeader />
+        <ScreenScrollViewBottomInset value={deviceType === "pad" || compactTabs ? 80 : 0}>
+          {Platform.OS === "android" ? (
+            <SettingsScreen title="Settings" trailing={<AndroidSettingsEnvironmentFilter />}>
+              {content}
+            </SettingsScreen>
+          ) : (
+            content
+          )}
+        </ScreenScrollViewBottomInset>
+      </View>
+    </SettingsSidebarContext>
   );
 }
 
 function ConfiguredSettingsRouteScreen() {
+  // UIKit's scroll-edge material takes the scroll view's own color; like the chat list, match
+  // the sidebar's surface so the bar doesn't darken over content at rest.
+  // Grouped cards only lift off the screen surface; the drawer is as dark as they are.
+  const listSurface = use(SettingsSidebarContext) ? "bg-drawer" : "bg-screen";
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
@@ -77,7 +99,7 @@ function ConfiguredSettingsRouteScreen() {
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
-        className="flex-1"
+        className={`flex-1 ${listSurface}`}
         contentContainerClassName="gap-4 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
@@ -88,7 +110,7 @@ function ConfiguredSettingsRouteScreen() {
             label="T3 Account"
             value={accountLabel}
             disabled={!isLoaded}
-            onPress={() => navigation.navigate("SettingsSheet", { screen: "SettingsAuth" })}
+            onPress={() => navigation.navigate("SettingsAuth")}
           />
           <SettingsRow
             icon="desktopcomputer"
@@ -107,6 +129,10 @@ function ConfiguredSettingsRouteScreen() {
 }
 
 function LocalSettingsRouteScreen() {
+  // UIKit's scroll-edge material takes the scroll view's own color; like the chat list, match
+  // the sidebar's surface so the bar doesn't darken over content at rest.
+  // Grouped cards only lift off the screen surface; the drawer is as dark as they are.
+  const listSurface = use(SettingsSidebarContext) ? "bg-drawer" : "bg-screen";
   const insets = useSafeAreaInsets();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const environmentCount = Object.keys(savedConnectionsById).length;
@@ -116,7 +142,7 @@ function LocalSettingsRouteScreen() {
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
-        className="flex-1"
+        className={`flex-1 ${listSurface}`}
         contentContainerClassName="gap-4 px-5 pt-4"
         contentContainerStyle={{
           paddingBottom: Math.max(insets.bottom, 18) + 18,
