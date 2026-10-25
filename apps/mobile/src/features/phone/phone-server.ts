@@ -121,14 +121,28 @@ async function serverLogTail(): Promise<string> {
   }
 }
 
+let pendingStart: Promise<EnvironmentId> | null = null;
+
 /**
  * Starts the server as a Termux background task unless it already answers, and resolves
- * with its environment id.
+ * with its environment id. Callers share one start in flight, so Connect, the Home chip and
+ * auto-start never launch two servers. `stillWanted` is checked just before launching.
  */
-export async function startPhoneServer(port: number): Promise<EnvironmentId> {
+export function startPhoneServer(
+  port: number,
+  stillWanted: () => boolean = () => true,
+): Promise<EnvironmentId> {
+  pendingStart ??= launchPhoneServer(port, stillWanted).finally(() => {
+    pendingStart = null;
+  });
+  return pendingStart;
+}
+
+async function launchPhoneServer(port: number, stillWanted: () => boolean): Promise<EnvironmentId> {
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   const running = await readPhoneServerEnvironmentId(port);
   if (running !== null) return running;
+  if (!stillWanted()) throw new Error("Starting T3 Code was cancelled.");
   startPhoneScriptInBackground(["serve"]);
   const started = await waitForServer(port, deadline);
   if (started === null) {
@@ -173,11 +187,12 @@ let lastAutoStartAt = 0;
 /** Starts the phone server and reconnects to it, reporting progress in phoneServerRuntimeAtom. */
 export async function startAndReconnectPhoneServer(
   settings: PhoneServerSettings,
+  stillWanted?: () => boolean,
 ): Promise<boolean> {
   if (appAtomRegistry.get(phoneServerRuntimeAtom).starting) return false;
   appAtomRegistry.set(phoneServerRuntimeAtom, { starting: true, error: null });
   try {
-    const started = await startPhoneServer(settings.port);
+    const started = await startPhoneServer(settings.port, stillWanted);
     if (started !== settings.environmentId) {
       throw new Error(
         "A different T3 Code server is answering on this phone. Open phone setup to connect it.",
@@ -218,7 +233,11 @@ async function autoStartPhoneServer() {
     });
     return;
   }
-  await startAndReconnectPhoneServer(settings);
+  // Stop or Remove may switch auto-start off while this one is still probing the port.
+  await startAndReconnectPhoneServer(
+    settings,
+    () => appAtomRegistry.get(phoneServerSettingsAtom)?.autoStart === true,
+  );
 }
 
 /**

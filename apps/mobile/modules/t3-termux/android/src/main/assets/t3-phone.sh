@@ -37,15 +37,40 @@ server_up() {
   curl -fsS -m 2 "http://127.0.0.1:$PORT/.well-known/t3/environment" >/dev/null 2>&1
 }
 
-install_lock_pid() {
-  pid=$(cat "$STATE_DIR/install.lock/pid" 2>/dev/null) || return 1
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
-}
-
 # Fields of /proc/<pid>/stat after the command name, which may contain spaces:
-# 2 is the parent pid, 20 the start time that tells a reused pid apart.
+# 1 is the state, 2 the parent pid, 20 the start time that tells a reused pid apart.
 proc_field() {
   sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d ' ' -f "$2"
+}
+
+# A process identity, pid:starttime, that a reused pid can't match.
+self_id() {
+  echo "$$:$(proc_field "$$" 20)"
+}
+
+id_alive() {
+  [ -n "$1" ] || return 1
+  pid=${1%%:*}
+  [ "$(proc_field "$pid" 20)" = "${1#*:}" ] && [ "$(proc_field "$pid" 1)" != Z ]
+}
+
+# A lock is a symlink whose target is its owner's identity, so taking it and recording the
+# owner are one atomic step. A lock whose owner is gone is cleared once; losing the retry
+# means another process took it first.
+take_lock() {
+  ln -s "$(self_id)" "$STATE_DIR/$1" 2>/dev/null && return 0
+  id_alive "$(readlink "$STATE_DIR/$1" 2>/dev/null)" && return 1
+  rm -f "$STATE_DIR/$1"
+  ln -s "$(self_id)" "$STATE_DIR/$1" 2>/dev/null
+}
+
+release_lock() {
+  [ "$(readlink "$STATE_DIR/$1" 2>/dev/null)" = "$(self_id)" ] && rm -f "$STATE_DIR/$1"
+  return 0
+}
+
+lock_owner() {
+  owner=$(readlink "$STATE_DIR/$1" 2>/dev/null) && id_alive "$owner" && echo "$owner"
 }
 
 descends_from() {
@@ -79,7 +104,7 @@ cmd_status() {
   if [ -f "$STATE_DIR/install.state" ]; then
     sed -n 's/^\(status\|step\|total\|message\)=/install_\1=/p' "$STATE_DIR/install.state"
   fi
-  if install_lock_pid >/dev/null; then echo "install_running=true"; else echo "install_running=false"; fi
+  if lock_owner install.lock >/dev/null; then echo "install_running=true"; else echo "install_running=false"; fi
   if ! command -v proot-distro >/dev/null 2>&1; then
     echo "proot=false"
     return 0
@@ -135,7 +160,7 @@ cmd_install() {
   mkdir -p "$STATE_DIR"
   record() {
     printf 'status=%s\nstep=%s\ntotal=%s\nmessage=%s\n' "$1" "$step" "$INSTALL_STEPS" "$2" \
-      > "$STATE_DIR/install.state.tmp" && mv "$STATE_DIR/install.state.tmp" "$STATE_DIR/install.state"
+      > "$STATE_DIR/install.state.$$" && mv "$STATE_DIR/install.state.$$" "$STATE_DIR/install.state"
   }
   say() {
     step=$1
@@ -150,25 +175,16 @@ cmd_install() {
     exit 1
   }
 
-  # mkdir is atomic: of two installers started together, one gets the lock. A lock left by
-  # an installer Android killed is cleared once, and losing that retry means another won.
-  if ! mkdir "$STATE_DIR/install.lock" 2>/dev/null; then
-    if other=$(install_lock_pid); then
-      echo "Setup is already running in another Termux session (process $other)."
-      exit 0
-    fi
-    rm -rf "$STATE_DIR/install.lock"
-    if ! mkdir "$STATE_DIR/install.lock" 2>/dev/null; then
-      echo "Setup is already running in another Termux session."
-      exit 0
-    fi
+  if ! take_lock install.lock; then
+    echo "Setup is already running in another Termux session."
+    exit 0
   fi
-  echo "$$" > "$STATE_DIR/install.lock/pid"
   trap 'finish_install' EXIT
+  trap 'exit 143' TERM INT HUP
   finish_install() {
-    [ "$(cat "$STATE_DIR/install.lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$STATE_DIR/install.lock"
+    release_lock install.lock
     # The server takes its own wake lock; only release the one setup took.
-    server_up || termux-wake-unlock 2>/dev/null || true
+    lock_owner serve.lock >/dev/null || termux-wake-unlock 2>/dev/null || true
   }
   termux-wake-lock 2>/dev/null || true
   printf '\033[1mT3 Code phone setup\033[0m\n'
@@ -233,47 +249,73 @@ UBUNTU
   return_to_app "$app_component"
 }
 
-# Runs as a Termux background task, so nothing depends on a terminal being on screen.
-# Output goes to a log the app reads back when the server doesn't come up.
+# Runs as a Termux background task, so nothing depends on a terminal being on screen, and
+# stays as the server's supervisor: it holds serve.lock and the wake lock while the server
+# runs and gives both back when it exits, however it exits. Output goes to a log the app
+# reads back when the server doesn't come up.
 cmd_serve() {
-  if server_up; then
-    echo "T3 Code is already running on port $PORT."
+  mkdir -p "$STATE_DIR"
+  if ! take_lock serve.lock; then
+    echo "T3 Code is already running or starting."
     return 0
   fi
-  mkdir -p "$STATE_DIR"
+  if server_up; then
+    release_lock serve.lock
+    echo "Something else is already serving on port $PORT."
+    return 1
+  fi
   termux-wake-lock 2>/dev/null || true
-  # exec keeps this pid through proot-distro into proot, so stop can find it again.
-  echo "$$ $(proc_field "$$" 20)" > "$STATE_DIR/server.pid"
-  exec proot-distro login "$DISTRO" -- /usr/bin/env HOME=/root PATH="$UBUNTU_PATH" IS_SANDBOX=1 \
-    t3 serve --host 127.0.0.1 --port "$PORT" > "$STATE_DIR/server.log" 2>&1
+  # A TERM from stop interrupts wait; pass it on to the server so it shuts down cleanly.
+  child=""
+  trap 'stop_child' TERM INT HUP
+  proot-distro login "$DISTRO" -- /usr/bin/env HOME=/root PATH="$UBUNTU_PATH" IS_SANDBOX=1 \
+    t3 serve --host 127.0.0.1 --port "$PORT" > "$STATE_DIR/server.log" 2>&1 < /dev/null &
+  child=$!
+  wait "$child"
+  code=$?
+  while kill -0 "$child" 2>/dev/null; do
+    wait "$child"
+    code=$?
+  done
+  printf '\nT3 Code exited with status %s.\n' "$code" >> "$STATE_DIR/server.log"
+  release_lock serve.lock
+  termux-wake-unlock 2>/dev/null || true
 }
 
-# Signals only the process tree serve started: a pid is trusted only while its start time
-# still matches, so a crashed server's reused pid is left alone.
+stop_child() {
+  rootfs=$(ubuntu_rootfs) || rootfs=""
+  server=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$rootfs/root/.t3/userdata/server-runtime.json" 2>/dev/null | head -n 1)
+  # Only a process under this supervisor counts; the state file outlives a crashed server.
+  if [ -n "$server" ] && descends_from "$server" "$$"; then
+    kill "$server" 2>/dev/null
+  elif [ -n "$child" ]; then
+    kill "$child" 2>/dev/null
+  fi
+}
+
+# Asks the supervisor to stop and waits until it has, so success means the server is gone.
 cmd_stop() {
-  read -r launcher started 2>/dev/null < "$STATE_DIR/server.pid" || launcher=""
-  if [ -z "$launcher" ] || [ "$(proc_field "$launcher" 20)" != "${started:-}" ]; then
-    rm -f "$STATE_DIR/server.pid"
-    termux-wake-unlock 2>/dev/null || true
+  owner=$(lock_owner serve.lock) || {
     if server_up; then
       echo "T3 Code is running, but not from t3-phone serve. Stop it where it was started."
       return 1
     fi
     echo "T3 Code wasn't running."
     return 0
+  }
+  if ! kill "${owner%%:*}" 2>/dev/null; then
+    echo "Couldn't signal T3 Code (process ${owner%%:*})."
+    return 1
   fi
-  rootfs=$(ubuntu_rootfs) || rootfs=""
-  server=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$rootfs/root/.t3/userdata/server-runtime.json" 2>/dev/null | head -n 1)
-  # Signal the server itself so it shuts down cleanly; proot exits after it. Only a
-  # descendant of serve's proot counts (proot-distro 4 puts su and a shell in between).
-  if [ -n "$server" ] && descends_from "$server" "$launcher"; then
-    kill "$server"
-  else
-    kill "$launcher"
-  fi
-  rm -f "$STATE_DIR/server.pid"
-  termux-wake-unlock 2>/dev/null || true
-  echo "Stopped T3 Code."
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if ! id_alive "$owner"; then
+      echo "Stopped T3 Code."
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "T3 Code didn't stop within 10 seconds."
+  return 1
 }
 
 cmd_pair() {

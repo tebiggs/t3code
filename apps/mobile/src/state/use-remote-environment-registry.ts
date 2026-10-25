@@ -192,6 +192,9 @@ export function useRemoteConnections() {
           void controller.removeEnvironment(environmentId);
         };
         const stopThenForget = async () => {
+          // Auto-start would otherwise relaunch the server as soon as its connection drops.
+          const previous = appAtomRegistry.get(phoneServerSettingsAtom);
+          if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
           try {
             // Loaded on demand: the Termux bridge pulls in the expo runtime.
             const termux = await import("../features/phone/termux");
@@ -202,7 +205,13 @@ export function useRemoteConnections() {
               "The server didn't stop",
               `${error instanceof Error ? error.message : "Termux didn't stop it."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server in Termux first.`,
               [
-                { text: "Keep", style: "cancel" },
+                {
+                  text: "Keep",
+                  style: "cancel",
+                  onPress: () => {
+                    if (previous) setPhoneServerSettings(previous);
+                  },
+                },
                 { text: "Remove anyway", style: "destructive", onPress: forgetPhone },
               ],
             );

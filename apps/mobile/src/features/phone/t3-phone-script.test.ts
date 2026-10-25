@@ -252,10 +252,10 @@ describe("t3-phone install", () => {
   it("refuses to start a second installer while one is running", () => {
     using sandbox = makeSandbox({ prootDistro: true });
     // This test's own process stands in for a live installer.
-    NodeFS.mkdirSync(NodePath.join(sandbox.home, ".t3-phone/install.lock"), { recursive: true });
-    NodeFS.writeFileSync(
-      NodePath.join(sandbox.home, ".t3-phone/install.lock/pid"),
-      `${process.pid}\n`,
+    NodeFS.mkdirSync(NodePath.join(sandbox.home, ".t3-phone"), { recursive: true });
+    NodeFS.symlinkSync(
+      `${process.pid}:${processStartTime(process.pid)}`,
+      NodePath.join(sandbox.home, ".t3-phone/install.lock"),
     );
 
     const result = run(sandbox, ["install"]);
@@ -330,7 +330,27 @@ describe("t3-phone pair", () => {
 });
 
 describe("t3-phone serve and stop", () => {
-  it("logs the server's output and records the pid stop will trust", () => {
+  const stateDir = (sandbox: Sandbox) => NodePath.join(sandbox.home, ".t3-phone");
+
+  /** Writes serve.lock as if `pid` were the running supervisor. */
+  function holdServeLock(sandbox: Sandbox, identity: string) {
+    NodeFS.mkdirSync(stateDir(sandbox), { recursive: true });
+    NodeFS.symlinkSync(identity, NodePath.join(stateDir(sandbox), "serve.lock"));
+  }
+
+  function spawnLongRunning(ignoreTerm: boolean) {
+    const child = NodeChildProcess.spawn(
+      "sh",
+      ["-c", ignoreTerm ? "trap '' TERM; exec sleep 600" : "exec sleep 600"],
+      { stdio: "ignore" },
+    );
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      child.once("exit", (_code, signal) => resolve(signal)),
+    );
+    return { child, pid: child.pid ?? 0, exited };
+  }
+
+  it("supervises the server and gives back its locks when it exits", () => {
     using sandbox = makeSandbox({ prootDistro: true });
     installUbuntu(sandbox);
     writeExecutable(NodePath.join(sandbox.guestBin, "t3"), '#!/bin/sh\necho "t3 $*"\n');
@@ -343,55 +363,61 @@ describe("t3-phone serve and stop", () => {
       expect.stringMatching(
         /^proot-distro login ubuntu -- .* t3 serve --host 127\.0\.0\.1 --port 3773$/,
       ),
+      "termux-wake-unlock ",
     ]);
-    const stateDir = NodePath.join(sandbox.home, ".t3-phone");
-    expect(NodeFS.readFileSync(NodePath.join(stateDir, "server.log"), "utf8")).toBe(
-      "t3 serve --host 127.0.0.1 --port 3773\n",
+    expect(NodeFS.readFileSync(NodePath.join(stateDir(sandbox), "server.log"), "utf8")).toBe(
+      "t3 serve --host 127.0.0.1 --port 3773\n\nT3 Code exited with status 0.\n",
     );
-    expect(NodeFS.readFileSync(NodePath.join(stateDir, "server.pid"), "utf8")).toMatch(
-      /^\d+ \d+\n$/,
-    );
+    expect(NodeFS.existsSync(NodePath.join(stateDir(sandbox), "serve.lock"))).toBe(false);
+  });
+
+  it("starts no second server while one is running or starting", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    holdServeLock(sandbox, `${process.pid}:${processStartTime(process.pid)}`);
+
+    const result = run(sandbox, ["serve"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("T3 Code is already running or starting.\n");
+    expect(result.calls).toEqual([]);
   });
 
   it("leaves a reused pid alone", () => {
     using sandbox = makeSandbox({ prootDistro: true });
-    const stateDir = NodePath.join(sandbox.home, ".t3-phone");
-    NodeFS.mkdirSync(stateDir, { recursive: true });
     // This test's own process, recorded with a start time it never had.
-    NodeFS.writeFileSync(NodePath.join(stateDir, "server.pid"), `${process.pid} 1\n`);
+    holdServeLock(sandbox, `${process.pid}:1`);
 
     const result = run(sandbox, ["stop"]);
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("T3 Code wasn't running.\n");
-    expect(NodeFS.existsSync(NodePath.join(stateDir, "server.pid"))).toBe(false);
   });
 
-  it("signals serve's own process, not a runtime pid outside its tree", async () => {
+  it("stops the supervisor and reports success only once it is gone", async () => {
     using sandbox = makeSandbox({ prootDistro: true });
-    const rootfs = installUbuntu(sandbox);
-    const launcher = NodeChildProcess.spawn("sleep", ["600"], { stdio: "ignore" });
-    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
-      launcher.once("exit", (_code, signal) => resolve(signal)),
-    );
-    const launcherPid = launcher.pid ?? 0;
-    const stateDir = NodePath.join(sandbox.home, ".t3-phone");
-    NodeFS.mkdirSync(stateDir, { recursive: true });
-    NodeFS.writeFileSync(
-      NodePath.join(stateDir, "server.pid"),
-      `${launcherPid} ${processStartTime(launcherPid)}\n`,
-    );
-    // Stale runtime state naming an unrelated live process: this test runner.
-    const userdata = NodePath.join(rootfs, "root/.t3/userdata");
-    NodeFS.mkdirSync(userdata, { recursive: true });
-    NodeFS.writeFileSync(
-      NodePath.join(userdata, "server-runtime.json"),
-      JSON.stringify({ version: 1, pid: process.pid, port: 3773 }),
-    );
+    const supervisor = spawnLongRunning(false);
+    holdServeLock(sandbox, `${supervisor.pid}:${processStartTime(supervisor.pid)}`);
 
     const result = run(sandbox, ["stop"]);
 
-    expect(result.stdout).toBe("Stopped T3 Code.\n");
-    expect(await exited).toBe("SIGTERM");
+    expect(result).toMatchObject({ status: 0, stdout: "Stopped T3 Code.\n" });
+    expect(await supervisor.exited).toBe("SIGTERM");
+  });
+
+  it("reports failure and keeps the lock when the server doesn't stop", async () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    const supervisor = spawnLongRunning(true);
+    const identity = `${supervisor.pid}:${processStartTime(supervisor.pid)}`;
+    holdServeLock(sandbox, identity);
+
+    const result = run(sandbox, ["stop"]);
+    supervisor.child.kill("SIGKILL");
+
+    expect(result).toMatchObject({
+      status: 1,
+      stdout: "T3 Code didn't stop within 10 seconds.\n",
+    });
+    expect(NodeFS.readlinkSync(NodePath.join(stateDir(sandbox), "serve.lock"))).toBe(identity);
+    expect(await supervisor.exited).toBe("SIGKILL");
   });
 });
