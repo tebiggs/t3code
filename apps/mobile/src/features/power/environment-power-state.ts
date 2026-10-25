@@ -12,7 +12,9 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPowerSettingsAtom } from "../../state/environment-power-settings";
 import { updateMobilePreferencesAtom } from "../../state/preferences";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
+import type { WorkspaceEnvironment } from "../../state/workspaceModel";
 import {
+  checkThroughRelay,
   probeEnvironment,
   retryEnvironmentIfWaiting,
   runPowerCommand,
@@ -23,6 +25,7 @@ import {
   ASLEEP_RECHECK_INTERVAL_MS,
   INITIAL_POWER_RUNTIME,
   reducePower,
+  relayCheckTarget,
   sleepTarget,
   wakeTarget,
   type PowerEvent,
@@ -163,12 +166,14 @@ export function useEnvironmentPowerWorker() {
   useEffect(() => {
     const now = Date.now();
     for (const environment of environments) {
-      if (!environment.isEnabled || settings[environment.environmentId] === undefined) continue;
+      const powerSettings = settings[environment.environmentId];
+      if (!environment.isEnabled || powerSettings === undefined) continue;
       dispatch(environment.environmentId, {
         type: "connection",
         connection: { phase: environment.connectionState, error: environment.connectionError },
         now,
       });
+      startLaunchCheck(environment, powerSettings, environments);
     }
     for (const [environmentId, state] of appAtomRegistry.get(environmentPowerRuntimeAtom)) {
       // Switched off or removed: the catalog owns it now, so drop it without reconnecting.
@@ -236,6 +241,40 @@ async function confirmAsleep(environmentId: EnvironmentId) {
   if (!(await isAnswering(environmentId))) {
     dispatch(environmentId, { type: "probe-failed", now: Date.now() });
   }
+}
+
+// One check per app launch. Later outages keep the grace period instead, because the relay can't
+// tell a sleeping machine from one whose server is restarting.
+const launchChecked = new Set<EnvironmentId>();
+
+function startLaunchCheck(
+  environment: WorkspaceEnvironment,
+  settings: EnvironmentPowerSettings,
+  environments: ReadonlyArray<WorkspaceEnvironment>,
+) {
+  const { environmentId } = environment;
+  if (launchChecked.has(environmentId)) return;
+  if (environment.connectionState === "connected") {
+    launchChecked.add(environmentId);
+    return;
+  }
+  const target = relayCheckTarget(environmentId, settings);
+  if (target === null) return;
+  const relay = environments.find((entry) => entry.environmentId === target.environmentId);
+  if (relay?.isEnabled !== true || relay.connectionState !== "connected") return;
+  launchChecked.add(environmentId);
+  void runAtomCommand(appAtomRegistry, checkThroughRelay, target, { reportFailure: false }).then(
+    (result) => {
+      if (!AsyncResult.isSuccess(result) || result.value !== "silent") return;
+      // The machine's own connection may have come up while the relay was checking.
+      const current = appAtomRegistry
+        .get(workspaceConnections.environmentsAtom)
+        .find((entry) => entry.environmentId === environmentId);
+      if (current?.isEnabled !== true || current.connectionState === "connected") return;
+      if (settingsFor(environmentId) === undefined) return;
+      dispatch(environmentId, { type: "relay-silent", now: Date.now() });
+    },
+  );
 }
 
 function checkAsleepEnvironments() {

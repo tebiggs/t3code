@@ -42,8 +42,18 @@ export const SLEEP_CONFIRM_TIMEOUT_MS = 45_000;
 /** The first write plus retries after a reattach shows the input never arrived. */
 export const MAX_INPUT_WRITES = 3;
 
+/** Upper bound for the launch check, including shell startup. After it, the normal connection decides. */
+export const RELAY_CHECK_TIMEOUT_MS = 10_000;
+/** The port `t3` and the desktop app listen on unless it was taken. */
+export const DEFAULT_SERVER_PORT = 3773;
+
 export const RELAY_COMMAND_ENV_KEY = "T3_POWER_COMMAND";
 export const POWER_MAC_ENV_KEY = "T3_POWER_MAC";
+export const CHECK_HOST_ENV_KEY = "T3_POWER_CHECK_HOST";
+export const CHECK_PORT_ENV_KEY = "T3_POWER_CHECK_PORT";
+export const CHECK_ENVIRONMENT_ENV_KEY = "T3_POWER_CHECK_ENVIRONMENT";
+/** Exit status of the built-in check when nothing answered. Any failure of the shell itself exits 1. */
+export const CHECK_SILENT_EXIT_CODE = 3;
 
 /**
  * The command travels in an environment variable so it needs no quoting, and the shell ends with
@@ -63,7 +73,12 @@ export function shellInputFor(os: ExecutionEnvironmentPlatformOs): string {
 export type PowerCommand =
   | { readonly kind: "custom"; readonly command: string }
   | { readonly kind: "wake"; readonly macAddress: string }
-  | { readonly kind: "sleep" };
+  | { readonly kind: "sleep" }
+  | {
+      readonly kind: "check";
+      readonly address: LocalAddress;
+      readonly environmentId: EnvironmentId;
+    };
 
 // python3 ships with most Linux distributions and macOS developer tools; no extra package needed.
 const POSIX_WAKE = `python3 -c 'import os,socket;m=bytes.fromhex(os.environ["${POWER_MAC_ENV_KEY}"]);s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);s.sendto(b"\\xff"*6+m*16,("255.255.255.255",9))'`;
@@ -76,6 +91,26 @@ const SLEEP_BY_OS: Partial<Record<ExecutionEnvironmentPlatformOs, string>> = {
   darwin: "pmset sleepnow",
   windows: `Add-Type -AssemblyName System.Windows.Forms; if (-not [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)) { throw 'Windows refused to sleep.' }`,
 };
+
+// Run on the relay, so the machine is on the same network and a second of silence means it's down.
+// A refused connection or an answer from another server isn't silence, and "no route to host" is
+// what the network stack reports when the machine doesn't answer address lookups.
+const POSIX_CHECK = `python3 -c '
+import errno,json,os,socket,sys,urllib.request
+h=os.environ["${CHECK_HOST_ENV_KEY}"]
+p=int(os.environ["${CHECK_PORT_ENV_KEY}"])
+try:
+  socket.create_connection((h,p),1).close()
+except socket.timeout:
+  sys.exit(${CHECK_SILENT_EXIT_CODE})
+except OSError as e:
+  sys.exit(${CHECK_SILENT_EXIT_CODE} if e.errno in (errno.EHOSTUNREACH,errno.EHOSTDOWN) else 2)
+try:
+  d=json.load(urllib.request.urlopen("http://%s:%d/.well-known/t3/environment"%(h,p),timeout=2))
+except Exception:
+  sys.exit(2)
+sys.exit(0 if d.get("environmentId")==os.environ["${CHECK_ENVIRONMENT_ENV_KEY}"] else 2)
+'`;
 
 export function resolvePowerCommand(
   command: PowerCommand,
@@ -93,7 +128,25 @@ export function resolvePowerCommand(
       const sleep = SLEEP_BY_OS[os];
       return sleep === undefined ? null : { command: sleep, env: {} };
     }
+    case "check":
+      return os === "linux" || os === "darwin"
+        ? {
+            command: POSIX_CHECK,
+            env: {
+              [CHECK_HOST_ENV_KEY]: command.address.host,
+              [CHECK_PORT_ENV_KEY]: String(command.address.port),
+              [CHECK_ENVIRONMENT_ENV_KEY]: command.environmentId,
+            },
+          }
+        : null;
   }
+}
+
+export type RelayCheck = "answered" | "silent" | "unknown";
+
+export function relayCheckResult(exitCode: number | null): RelayCheck {
+  if (exitCode === 0) return "answered";
+  return exitCode === CHECK_SILENT_EXIT_CODE ? "silent" : "unknown";
 }
 
 export type PowerTarget =
@@ -128,6 +181,36 @@ export function sleepTarget(
   return settings.relayEnvironmentId
     ? { environmentId: settings.relayEnvironmentId, command: { kind: "custom", command: custom } }
     : { error: "Choose a machine to send the custom sleep command through." };
+}
+
+/**
+ * The launch check: the relay looks for this machine's T3 server at its local address, which
+ * answers within seconds whether it's asleep. Null when there's nothing to check with.
+ */
+export function relayCheckTarget(
+  environmentId: EnvironmentId,
+  settings: EnvironmentPowerSettings,
+): { readonly environmentId: EnvironmentId; readonly command: PowerCommand } | null {
+  const address = parseLocalAddress(settings.localAddress ?? "");
+  return settings.relayEnvironmentId && address
+    ? {
+        environmentId: settings.relayEnvironmentId,
+        command: { kind: "check", address, environmentId },
+      }
+    : null;
+}
+
+export interface LocalAddress {
+  readonly host: string;
+  readonly port: number;
+}
+
+/** A host name or IPv4 address with an optional port, or null when the input isn't one. */
+export function parseLocalAddress(input: string): LocalAddress | null {
+  const match = /^([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::(\d{1,5}))?$/i.exec(input.trim());
+  if (!match) return null;
+  const port = match[2] === undefined ? DEFAULT_SERVER_PORT : Number(match[2]);
+  return port >= 1 && port <= 65_535 ? { host: match[1]!, port } : null;
 }
 
 /** Canonical `aa:bb:cc:dd:ee:ff`, or null when the input isn't a MAC address. */
@@ -177,7 +260,9 @@ export type PowerEvent =
   | { readonly type: "sleep-sent"; readonly now: number }
   | { readonly type: "sleep-failed"; readonly error: string }
   /** A live-session probe after a sent sleep got no answer. */
-  | { readonly type: "probe-failed"; readonly now: number };
+  | { readonly type: "probe-failed"; readonly now: number }
+  /** The launch check found nothing answering at the machine's local address. */
+  | { readonly type: "relay-silent"; readonly now: number };
 
 /**
  * `pause` stops the environment's reconnect loop, `resume` restarts it, and `recheck` asks the
@@ -333,6 +418,12 @@ export function reducePower(
       };
     case "probe-failed":
       return confirmingSleep(state) ? fellAsleep(state, event.now) : unchanged;
+    case "relay-silent":
+      // Shown as asleep straight away, but the loop keeps running: one more failure pauses it
+      // through the connection branch, and connecting makes it awake.
+      return state.mode === "auto" && state.asleepSince === null
+        ? { state: { ...state, asleepSince: event.now, failingSince: null }, effect: null }
+        : unchanged;
   }
 }
 

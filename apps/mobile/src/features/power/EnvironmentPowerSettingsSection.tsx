@@ -11,7 +11,7 @@ import { useWorkspaceEnvironments } from "../../state/workspace";
 import { ConnectionFormField } from "../connection/ConnectionFormField";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
-import { normalizeMacAddress } from "./environment-power";
+import { normalizeMacAddress, parseLocalAddress } from "./environment-power";
 import {
   defaultEnvironmentPowerSettings,
   setEnvironmentPowerSettings,
@@ -74,6 +74,7 @@ function PowerSettingsFields(props: {
   }>;
 }) {
   const [macAddress, setMacAddress] = useState(props.settings.macAddress ?? "");
+  const [localAddress, setLocalAddress] = useState(props.settings.localAddress ?? "");
   const [wakeCommand, setWakeCommand] = useState(props.settings.wakeCommand);
   const [sleepCommand, setSleepCommand] = useState(props.settings.sleepCommand);
   const relay = props.candidates.find(
@@ -92,6 +93,16 @@ function PowerSettingsFields(props: {
     if (normalized === null) return;
     setMacAddress(normalized);
     if (normalized !== (props.settings.macAddress ?? "")) save({ macAddress: normalized });
+  };
+  const trimmedLocalAddress = localAddress.trim();
+  const localAddressInvalid =
+    trimmedLocalAddress.length > 0 && parseLocalAddress(trimmedLocalAddress) === null;
+  const saveLocalAddress = () => {
+    if (localAddressInvalid) return;
+    setLocalAddress(trimmedLocalAddress);
+    if (trimmedLocalAddress !== (props.settings.localAddress ?? "")) {
+      save({ localAddress: trimmedLocalAddress });
+    }
   };
 
   return (
@@ -142,6 +153,23 @@ function PowerSettingsFields(props: {
             {macInvalid
               ? "Enter 12 hex digits, for example 1a:2b:3c:4d:5e:6f."
               : "The wired network adapter of this machine. On Windows, run getmac /v; on macOS or Linux, ip link or ifconfig."}
+          </Text>
+        </View>
+        <View className="gap-1">
+          <ConnectionFormField
+            label="Local address (optional)"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder="192.168.1.20 or 192.168.1.20:3773"
+            value={localAddress}
+            onChangeText={setLocalAddress}
+            onEndEditing={saveLocalAddress}
+          />
+          <Text textRole="label" className="px-1 text-foreground-muted">
+            {localAddressInvalid
+              ? "Enter a host name or IPv4 address, with an optional :port."
+              : "Lets the machine you wake through tell within seconds whether this one is asleep when the app starts. In T3 Code on this machine, turn on Network access, and let the port (3773 unless you add one) through its firewall."}
           </Text>
         </View>
         <ConnectionFormField

@@ -18,8 +18,10 @@ import {
   lastOutputLine,
   LIVE_PROBE_TIMEOUT_MS,
   needsInput,
+  RELAY_CHECK_TIMEOUT_MS,
   RELAY_COMMAND_ENV_KEY,
   RELAY_COMMAND_TIMEOUT_MS,
+  relayCheckResult,
   resolvePowerCommand,
   shellInputFor,
   SLEEP_SETTLE_MS,
@@ -65,7 +67,10 @@ function terminalOutcome(
   }
 }
 
-/** Runs one command in a throwaway terminal on the connected environment. */
+/**
+ * Runs one command in a throwaway terminal on the connected environment. Ends with its exit, or
+ * "settled" for a built-in sleep that is still running after the settle window.
+ */
 const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
   command: PowerCommand,
 ) {
@@ -74,7 +79,7 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
   const resolved = resolvePowerCommand(command, os);
   if (resolved === null) {
     return yield* new PowerCommandError({
-      message: "T3 Code can't tell which operating system this machine runs.",
+      message: "T3 Code has no built-in command for this machine's operating system.",
     });
   }
   const target = {
@@ -145,6 +150,11 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
       ),
     ),
   );
+  return { result, output };
+});
+
+const runToSuccess = Effect.fn("EnvironmentPower.runToSuccess")(function* (command: PowerCommand) {
+  const { result, output } = yield* runInTerminal(command);
   if (result === "settled" || result?.exitCode === 0) return;
   const detail =
     result?.message ??
@@ -157,12 +167,26 @@ export const runPowerCommand = createRuntimeCommand(connectionAtomRuntime, {
   label: "environment-power:run-command",
   execute: (input: { readonly environmentId: EnvironmentId; readonly command: PowerCommand }) =>
     EnvironmentRegistry.EnvironmentRegistry.pipe(
-      Effect.flatMap((registry) => registry.run(input.environmentId, runInTerminal(input.command))),
+      Effect.flatMap((registry) => registry.run(input.environmentId, runToSuccess(input.command))),
       Effect.mapError((cause) =>
         cause instanceof PowerCommandError
           ? cause
           : new PowerCommandError({ message: failureMessage(cause) }),
       ),
+    ),
+});
+
+/** Runs the launch check on the relay. Anything that keeps it from answering is "unknown". */
+export const checkThroughRelay = createRuntimeCommand(connectionAtomRuntime, {
+  label: "environment-power:check-through-relay",
+  execute: (input: { readonly environmentId: EnvironmentId; readonly command: PowerCommand }) =>
+    EnvironmentRegistry.EnvironmentRegistry.pipe(
+      Effect.flatMap((registry) => registry.run(input.environmentId, runInTerminal(input.command))),
+      Effect.timeout(RELAY_CHECK_TIMEOUT_MS),
+      Effect.map(({ result }) =>
+        result === "settled" || result === null ? "unknown" : relayCheckResult(result.exitCode),
+      ),
+      Effect.orElseSucceed(() => "unknown" as const),
     ),
 });
 

@@ -52,6 +52,8 @@ export const EnvironmentPowerSettings = Schema.Struct({
   relayEnvironmentId: Schema.NullOr(EnvironmentId),
   /** Target for the built-in Wake-on-LAN. Optional so settings saved before it still decode. */
   macAddress: Schema.optional(Schema.String),
+  /** `host` or `host:port` where the relay can reach this machine's T3 server. Empty skips the launch check. */
+  localAddress: Schema.optional(Schema.String),
   /** Custom commands replace the built-in wake or sleep; empty means built-in. */
   wakeCommand: Schema.String,
   sleepCommand: Schema.String,

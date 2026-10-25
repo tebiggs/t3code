@@ -5,13 +5,18 @@ import { EnvironmentId } from "@t3tools/contracts";
 import {
   ASLEEP_AFTER_FAILING_MS,
   INITIAL_POWER_RUNTIME,
+  CHECK_SILENT_EXIT_CODE,
+  DEFAULT_SERVER_PORT,
   lastOutputLine,
   MAX_INPUT_WRITES,
   needsInput,
   normalizeMacAddress,
+  parseLocalAddress,
   POWER_MAC_ENV_KEY,
   powerStatus,
   reducePower,
+  relayCheckResult,
+  relayCheckTarget,
   resolvePowerCommand,
   shellInputFor,
   SLEEP_CONFIRM_TIMEOUT_MS,
@@ -120,10 +125,10 @@ describe("reducePower", () => {
   it("reports a wake command that failed and stays asleep", () => {
     const { state, effects } = run(ASLEEP, [
       { type: "wake-started" },
-      { type: "wake-failed", error: "pc-power: command not found", now: 7 },
+      { type: "wake-failed", error: "wake-desktop: command not found", now: 7 },
     ]);
     expect(effects.at(-1)).toBe("pause");
-    expect(state).toMatchObject({ mode: "asleep", error: "pc-power: command not found" });
+    expect(state).toMatchObject({ mode: "asleep", error: "wake-desktop: command not found" });
   });
 
   it("marks a sent sleep asleep only once the connection fails", () => {
@@ -214,6 +219,34 @@ describe("reducePower", () => {
     expect(state.mode).toBe("auto");
   });
 
+  it("shows asleep as soon as the launch check finds nothing, and pauses on the next failure", () => {
+    const silent = run(INITIAL_POWER_RUNTIME, [
+      { type: "connection", connection: { phase: "connecting", error: null }, now: 1 },
+      { type: "relay-silent", now: 3 },
+    ]);
+    expect(silent.effects).toEqual([null, null]);
+    expect(powerStatus(silent.state, { phase: "connecting", error: null })).toBe("asleep");
+    const { state, effects } = run(silent.state, [
+      { type: "connection", connection: failed, now: 9 },
+    ]);
+    expect(effects).toEqual(["pause"]);
+    expect(state).toMatchObject({ mode: "asleep", asleepSince: 3 });
+  });
+
+  it("lets the machine's own connection overrule the launch check", () => {
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "relay-silent", now: 3 },
+      { type: "connection", connection: connected, now: 5 },
+    ]);
+    expect(effects).toEqual([null, null]);
+    expect(state).toEqual(INITIAL_POWER_RUNTIME);
+  });
+
+  it("ignores a launch check that lands during a wake", () => {
+    const { state } = run(ASLEEP, [{ type: "wake-started" }, { type: "relay-silent", now: 3 }]);
+    expect(state.mode).toBe("waking");
+  });
+
   it("stays awake with an error when the sleep command fails", () => {
     const { state, effects } = run(INITIAL_POWER_RUNTIME, [
       { type: "sleep-started" },
@@ -250,8 +283,8 @@ describe("powerStatus", () => {
 describe("lastOutputLine", () => {
   it("returns the last printed line without colors or the echoed command", () => {
     const output =
-      'exec sh -c "$T3_POWER_COMMAND"\r\n\u001b[31merror:\u001b[0m lease held by codex-rng-1\r\n\r\n';
-    expect(lastOutputLine(output)).toBe("error: lease held by codex-rng-1");
+      'exec sh -c "$T3_POWER_COMMAND"\r\n\u001b[31merror:\u001b[0m machine is busy\r\n\r\n';
+    expect(lastOutputLine(output)).toBe("error: machine is busy");
   });
 
   it("returns null when nothing was printed", () => {
@@ -291,11 +324,53 @@ describe("resolvePowerCommand", () => {
     );
   });
 
+  it("checks through a POSIX relay only", () => {
+    const check = {
+      kind: "check",
+      address: { host: "192.168.1.20", port: 3773 },
+      environmentId: EnvironmentId.make("desktop"),
+    } as const;
+    expect(resolvePowerCommand(check, "linux")?.env).toEqual({
+      T3_POWER_CHECK_HOST: "192.168.1.20",
+      T3_POWER_CHECK_PORT: "3773",
+      T3_POWER_CHECK_ENVIRONMENT: "desktop",
+    });
+    expect(resolvePowerCommand(check, "windows")).toBeNull();
+  });
+
   it("runs custom commands as given", () => {
-    expect(resolvePowerCommand({ kind: "custom", command: "pc-power wake" }, "linux")).toEqual({
-      command: "pc-power wake",
+    expect(resolvePowerCommand({ kind: "custom", command: "wake-desktop" }, "linux")).toEqual({
+      command: "wake-desktop",
       env: {},
     });
+  });
+});
+
+describe("parseLocalAddress", () => {
+  it("accepts a host or IPv4 address with an optional port", () => {
+    expect(parseLocalAddress(" 192.168.1.20 ")).toEqual({
+      host: "192.168.1.20",
+      port: DEFAULT_SERVER_PORT,
+    });
+    expect(parseLocalAddress("desktop.local:4000")).toEqual({ host: "desktop.local", port: 4000 });
+  });
+
+  it("rejects URLs, bad ports and empty input", () => {
+    expect(parseLocalAddress("http://192.168.1.20")).toBeNull();
+    expect(parseLocalAddress("192.168.1.20:0")).toBeNull();
+    expect(parseLocalAddress("192.168.1.20:70000")).toBeNull();
+    expect(parseLocalAddress("")).toBeNull();
+  });
+});
+
+describe("relayCheckResult", () => {
+  it("counts only the check's own silent exit as silent", () => {
+    expect(relayCheckResult(0)).toBe("answered");
+    expect(relayCheckResult(CHECK_SILENT_EXIT_CODE)).toBe("silent");
+    // A shell or interpreter failure must not read as a sleeping machine.
+    expect(relayCheckResult(1)).toBe("unknown");
+    expect(relayCheckResult(127)).toBe("unknown");
+    expect(relayCheckResult(null)).toBe("unknown");
   });
 });
 
@@ -346,17 +421,32 @@ describe("power targets", () => {
   it("runs custom commands on the relay", () => {
     const custom = {
       ...builtIn,
-      wakeCommand: "pc-power wake",
-      sleepCommand: "pc-power sleep --force",
+      wakeCommand: "wake-desktop",
+      sleepCommand: "sleep-desktop",
     };
     expect(wakeTarget(custom)).toEqual({
       environmentId: relay,
-      command: { kind: "custom", command: "pc-power wake" },
+      command: { kind: "custom", command: "wake-desktop" },
     });
     expect(sleepTarget(desktop, custom)).toEqual({
       environmentId: relay,
-      command: { kind: "custom", command: "pc-power sleep --force" },
+      command: { kind: "custom", command: "sleep-desktop" },
     });
+  });
+
+  it("checks at launch only with a relay and a valid local address", () => {
+    expect(relayCheckTarget(desktop, { ...builtIn, localAddress: "192.168.1.20" })).toEqual({
+      environmentId: relay,
+      command: {
+        kind: "check",
+        address: { host: "192.168.1.20", port: DEFAULT_SERVER_PORT },
+        environmentId: desktop,
+      },
+    });
+    expect(relayCheckTarget(desktop, builtIn)).toBeNull();
+    expect(
+      relayCheckTarget(desktop, { ...builtIn, relayEnvironmentId: null, localAddress: "host" }),
+    ).toBeNull();
   });
 
   it("never falls back to the built-in sleep without settings", () => {
