@@ -84,7 +84,8 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
   }
   const target = {
     threadId: POWER_TERMINAL_THREAD_ID,
-    terminalId: `power-${Date.now().toString(36)}`,
+    // Unique even for commands started in the same millisecond on one relay.
+    terminalId: `power-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   };
   const attachInput = {
     ...target,

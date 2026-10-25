@@ -92,6 +92,8 @@ function retryConnection(environmentId: EnvironmentId) {
 }
 
 function dispatch(environmentId: EnvironmentId, event: PowerEvent) {
+  // A result that lands after power control was turned off belongs to the normal loop now.
+  if (settingsFor(environmentId) === undefined) return;
   const previous =
     appAtomRegistry.get(environmentPowerRuntimeAtom).get(environmentId) ?? INITIAL_POWER_RUNTIME;
   const { state, effect } = reducePower(previous, event);
@@ -175,15 +177,16 @@ export function useEnvironmentPowerWorker() {
       });
       startLaunchCheck(environment, powerSettings, environments);
     }
-    for (const [environmentId, state] of appAtomRegistry.get(environmentPowerRuntimeAtom)) {
+    for (const environmentId of appAtomRegistry.get(environmentPowerRuntimeAtom).keys()) {
       // Switched off or removed: the catalog owns it now, so drop it without reconnecting.
       if (!isEnabledEnvironment(environmentId)) {
         setRuntime(environmentId, null);
         continue;
       }
-      // Power control was turned off: hand the environment back to the normal reconnect loop.
+      // Power control was turned off: hand the environment back to the normal reconnect loop,
+      // which an asleep machine or a wake in flight may have left paused.
       if (settings[environmentId] !== undefined) continue;
-      if (state.mode === "asleep") setConnectionDesired(environmentId, true);
+      setConnectionDesired(environmentId, true);
       setRuntime(environmentId, null);
     }
   }, [environments, settings]);
@@ -243,9 +246,10 @@ async function confirmAsleep(environmentId: EnvironmentId) {
   }
 }
 
-// One check per app launch. Later outages keep the grace period instead, because the relay can't
-// tell a sleeping machine from one whose server is restarting.
-const launchChecked = new Set<EnvironmentId>();
+// At most one check per app launch and settings, and none once the machine has connected. Later
+// outages keep the grace period instead, because the relay can't tell a sleeping machine from one
+// whose server is restarting.
+const launchChecks = new Map<EnvironmentId, EnvironmentPowerSettings | "connected">();
 
 function startLaunchCheck(
   environment: WorkspaceEnvironment,
@@ -253,16 +257,17 @@ function startLaunchCheck(
   environments: ReadonlyArray<WorkspaceEnvironment>,
 ) {
   const { environmentId } = environment;
-  if (launchChecked.has(environmentId)) return;
+  const previous = launchChecks.get(environmentId);
+  if (previous === "connected" || Equal.equals(previous, settings)) return;
   if (environment.connectionState === "connected") {
-    launchChecked.add(environmentId);
+    launchChecks.set(environmentId, "connected");
     return;
   }
   const target = relayCheckTarget(environmentId, settings);
   if (target === null) return;
   const relay = environments.find((entry) => entry.environmentId === target.environmentId);
   if (relay?.isEnabled !== true || relay.connectionState !== "connected") return;
-  launchChecked.add(environmentId);
+  launchChecks.set(environmentId, settings);
   void runAtomCommand(appAtomRegistry, checkThroughRelay, target, { reportFailure: false }).then(
     (result) => {
       if (!AsyncResult.isSuccess(result) || result.value !== "silent") return;
@@ -271,7 +276,8 @@ function startLaunchCheck(
         .get(workspaceConnections.environmentsAtom)
         .find((entry) => entry.environmentId === environmentId);
       if (current?.isEnabled !== true || current.connectionState === "connected") return;
-      if (settingsFor(environmentId) === undefined) return;
+      // A result for an address or relay the user has since changed says nothing.
+      if (!Equal.equals(settingsFor(environmentId), settings)) return;
       dispatch(environmentId, { type: "relay-silent", now: Date.now() });
     },
   );

@@ -91,6 +91,8 @@ export function EnvironmentPowerSheet({
         return "Checking whether it's awake…";
       case "offline":
         return "Your phone is offline.";
+      case "blocked":
+        return environment?.connectionError ?? "Check this machine in Settings.";
     }
   })();
 

@@ -63,6 +63,18 @@ describe("reducePower", () => {
     expect(state).toEqual(INITIAL_POWER_RUNTIME);
   });
 
+  it("never treats a blocked connection as sleep", () => {
+    const blocked = { phase: "error", error: "Pairing expired" } as const;
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "connection", connection: failed, now: 5 },
+      { type: "connection", connection: blocked, now: 8 },
+      { type: "tick", now: 5 + ASLEEP_AFTER_FAILING_MS },
+    ]);
+    expect(effects).toEqual([null, null, null]);
+    expect(state).toMatchObject({ mode: "auto", asleepSince: null, failingSince: null });
+    expect(powerStatus(state, blocked)).toBe("blocked");
+  });
+
   it("doesn't count failures while the phone itself is offline", () => {
     const { state, effects } = run(INITIAL_POWER_RUNTIME, [
       { type: "connection", connection: failed, now: 5 },
@@ -120,6 +132,16 @@ describe("reducePower", () => {
     expect(effects.at(-1)).toBe("pause");
     expect(state.mode).toBe("asleep");
     expect(state.error).not.toBeNull();
+  });
+
+  it("ignores a wake failure that arrives after the machine connected", () => {
+    const { state, effects } = run(ASLEEP, [
+      { type: "wake-started" },
+      { type: "connection", connection: connected, now: 50 },
+      { type: "wake-failed", error: "The command didn't finish within a minute.", now: 60 },
+    ]);
+    expect(effects).toEqual([null, null, null]);
+    expect(state).toEqual(INITIAL_POWER_RUNTIME);
   });
 
   it("reports a wake command that failed and stays asleep", () => {
@@ -231,6 +253,15 @@ describe("reducePower", () => {
     ]);
     expect(effects).toEqual(["pause"]);
     expect(state).toMatchObject({ mode: "asleep", asleepSince: 3 });
+  });
+
+  it("pauses at once when the launch check and the connection both failed", () => {
+    const { state, effects } = run(INITIAL_POWER_RUNTIME, [
+      { type: "connection", connection: failed, now: 5 },
+      { type: "relay-silent", now: 6 },
+    ]);
+    expect(effects).toEqual([null, "pause"]);
+    expect(state).toMatchObject({ mode: "asleep", asleepSince: 6 });
   });
 
   it("lets the machine's own connection overrule the launch check", () => {

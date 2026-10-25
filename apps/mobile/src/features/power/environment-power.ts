@@ -270,11 +270,10 @@ export type PowerEvent =
  */
 export type PowerEffect = "pause" | "resume" | "recheck" | null;
 
+// Only a retryable failure says anything about sleep. A blocked connection, such as rejected
+// credentials or a missing permission, means the machine answered and the user has to act.
 function connectionFailed(connection: PowerConnection): boolean {
-  return (
-    connection.phase === "error" ||
-    (connection.phase === "reconnecting" && connection.error !== null)
-  );
+  return connection.phase === "reconnecting" && connection.error !== null;
 }
 
 function fellAsleep(state: PowerRuntime, now: number, error: string | null = null) {
@@ -342,6 +341,15 @@ export function reducePower(
           ? { state: { ...state, failingSince: event.now }, effect: null }
           : unchanged;
       }
+      // A blocked connection means the machine answered, so earlier failures and an asleep
+      // guess no longer count.
+      if (
+        state.mode === "auto" &&
+        (phase === "error" || phase === "unsupported") &&
+        (state.asleepSince !== null || state.failingSince !== null)
+      ) {
+        return { state: { ...state, asleepSince: null, failingSince: null }, effect: null };
+      }
       // The phone losing its network says nothing about the machine.
       if (state.mode === "auto" && phase === "offline" && state.failingSince !== null) {
         return { state: { ...state, failingSince: null }, effect: null };
@@ -375,7 +383,8 @@ export function reducePower(
           }
         : unchanged;
     case "wake-failed":
-      return fellAsleep(state, event.now, event.error);
+      // A late failure after the machine already connected is stale.
+      return state.mode === "waking" ? fellAsleep(state, event.now, event.error) : unchanged;
     case "tick": {
       const expired = state.deadline !== null && event.now >= state.deadline;
       if (expired && state.mode === "waking") {
@@ -399,6 +408,7 @@ export function reducePower(
         effect: null,
       };
     case "sleep-unreachable":
+      if (state.mode !== "sleeping") return unchanged;
       // Nothing was sent. The supervisor's own check ends a dead session, and the failed
       // reconnects then pause it through the connection branch above. One missed probe isn't
       // proof of sleep, so a session that answers the recheck stays plainly awake.
@@ -412,22 +422,29 @@ export function reducePower(
         effect: null,
       };
     case "sleep-failed":
-      return {
-        state: { ...state, mode: "auto", deadline: null, error: event.error },
-        effect: null,
-      };
+      return state.mode === "sleeping"
+        ? { state: { ...state, mode: "auto", deadline: null, error: event.error }, effect: null }
+        : unchanged;
     case "probe-failed":
       return confirmingSleep(state) ? fellAsleep(state, event.now) : unchanged;
     case "relay-silent":
-      // Shown as asleep straight away, but the loop keeps running: one more failure pauses it
+      if (state.mode !== "auto" || state.asleepSince !== null) return unchanged;
+      // Its own connection already failed as well.
+      if (state.failingSince !== null) return fellAsleep(state, event.now);
+      // Shown as asleep straight away, but the loop keeps running: its first failure pauses it
       // through the connection branch, and connecting makes it awake.
-      return state.mode === "auto" && state.asleepSince === null
-        ? { state: { ...state, asleepSince: event.now, failingSince: null }, effect: null }
-        : unchanged;
+      return { state: { ...state, asleepSince: event.now }, effect: null };
   }
 }
 
-export type PowerStatus = "awake" | "asleep" | "waking" | "sleeping" | "checking" | "offline";
+export type PowerStatus =
+  | "awake"
+  | "asleep"
+  | "waking"
+  | "sleeping"
+  | "checking"
+  | "offline"
+  | "blocked";
 
 export function powerStatus(state: PowerRuntime, connection: PowerConnection): PowerStatus {
   if (state.mode === "sleeping") return "sleeping";
@@ -435,6 +452,7 @@ export function powerStatus(state: PowerRuntime, connection: PowerConnection): P
   if (connection.phase === "connected") return "awake";
   // Includes a check in flight, so the periodic check doesn't flicker the chip.
   if (state.asleepSince !== null) return "asleep";
+  if (connection.phase === "error" || connection.phase === "unsupported") return "blocked";
   return connection.phase === "offline" ? "offline" : "checking";
 }
 
@@ -445,6 +463,7 @@ export const POWER_STATUS_LABELS: Record<PowerStatus, string> = {
   sleeping: "Going to sleep…",
   checking: "Checking…",
   offline: "Offline",
+  blocked: "Can't connect",
 };
 
 /** Threads whose agent is running on the environment, which sleeping would interrupt. */

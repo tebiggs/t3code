@@ -76,6 +76,14 @@ export function PowerStatusGlyph(props: { readonly status: PowerStatus; readonly
       return <SymbolView name="moon" size={size} tintColorClassName="accent-icon-muted" />;
     case "offline":
       return <SymbolView name="wifi.slash" size={size} tintColorClassName="accent-icon-muted" />;
+    case "blocked":
+      return (
+        <SymbolView
+          name="exclamationmark.triangle"
+          size={size}
+          tintColorClassName="accent-icon-muted"
+        />
+      );
     case "waking":
     case "sleeping":
     case "checking":
