@@ -57,11 +57,12 @@ id_alive() {
 # A lock is a symlink whose target is its owner's identity, so taking it and recording the
 # owner are one atomic step. A lock whose owner is gone is cleared once; losing the retry
 # means another process took it first.
+# -T keeps ln from creating the link inside a directory that sits at the lock's path.
 take_lock() {
-  ln -s "$(self_id)" "$STATE_DIR/$1" 2>/dev/null && return 0
+  ln -sT "$(self_id)" "$STATE_DIR/$1" 2>/dev/null && return 0
   id_alive "$(readlink "$STATE_DIR/$1" 2>/dev/null)" && return 1
-  rm -f "$STATE_DIR/$1"
-  ln -s "$(self_id)" "$STATE_DIR/$1" 2>/dev/null
+  rm -rf "$STATE_DIR/$1"
+  ln -sT "$(self_id)" "$STATE_DIR/$1" 2>/dev/null
 }
 
 release_lock() {
@@ -104,7 +105,13 @@ cmd_status() {
   if [ -f "$STATE_DIR/install.state" ]; then
     sed -n 's/^\(status\|step\|total\|message\)=/install_\1=/p' "$STATE_DIR/install.state"
   fi
-  if lock_owner install.lock >/dev/null; then echo "install_running=true"; else echo "install_running=false"; fi
+  if lock_owner install.lock >/dev/null; then
+    # A half-installed Ubuntu can't answer, and proot-distro may hold it locked; the
+    # installer's own progress is what matters until it finishes.
+    echo "install_running=true"
+    return 0
+  fi
+  echo "install_running=false"
   if ! command -v proot-distro >/dev/null 2>&1; then
     echo "proot=false"
     return 0

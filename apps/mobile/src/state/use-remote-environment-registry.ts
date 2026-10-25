@@ -197,8 +197,8 @@ export function useRemoteConnections() {
           if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
           try {
             // Loaded on demand: the Termux bridge pulls in the expo runtime.
-            const termux = await import("../features/phone/termux");
-            await termux.stopPhoneServer();
+            const phoneServer = await import("../features/phone/phone-server");
+            await phoneServer.stopPhoneServerWhenSettled();
             forgetPhone();
           } catch (error) {
             Dialog.alert(

@@ -20,6 +20,7 @@ import {
   getTermuxStatus,
   runPhoneScript,
   startPhoneScriptInBackground,
+  stopPhoneServer,
   supportsPhoneSetup,
   termuxErrorMessage,
 } from "./termux";
@@ -122,6 +123,15 @@ async function serverLogTail(): Promise<string> {
 }
 
 let pendingStart: Promise<EnvironmentId> | null = null;
+
+/**
+ * Stops the server once any start in flight has settled: a start already handed to Termux
+ * takes its lock only later, so stopping first would miss it and let it come up afterwards.
+ */
+export async function stopPhoneServerWhenSettled(): Promise<void> {
+  await pendingStart?.catch(() => undefined);
+  await stopPhoneServer();
+}
 
 /**
  * Starts the server as a Termux background task unless it already answers, and resolves

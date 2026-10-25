@@ -249,6 +249,44 @@ describe("t3-phone install", () => {
     });
   });
 
+  it("takes over a lock path left as a directory by a dead installer", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+    allowStorage(sandbox);
+    NodeFS.mkdirSync(NodePath.join(sandbox.home, ".t3-phone/install.lock"), { recursive: true });
+
+    const result = run(sandbox, ["install"]);
+
+    expect(result.status).toBe(0);
+    expect(result.calls).toContainEqual(
+      expect.stringMatching(/^proot-distro login ubuntu -- .* \/bin\/bash -s$/),
+    );
+    expect(NodeFS.existsSync(NodePath.join(sandbox.home, ".t3-phone/install.lock"))).toBe(false);
+  });
+
+  it("reports a running installer without entering Ubuntu", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+    NodeFS.mkdirSync(NodePath.join(sandbox.home, ".t3-phone"), { recursive: true });
+    NodeFS.symlinkSync(
+      `${process.pid}:${processStartTime(process.pid)}`,
+      NodePath.join(sandbox.home, ".t3-phone/install.lock"),
+    );
+    NodeFS.writeFileSync(
+      NodePath.join(sandbox.home, ".t3-phone/install.state"),
+      "status=running\nstep=2\ntotal=4\nmessage=Ubuntu\n",
+    );
+
+    const result = run(sandbox, ["status"]);
+
+    expect(result.status).toBe(0);
+    expect(result.calls).toEqual([]);
+    expect(parsePhoneScriptStatus(result.stdout)).toMatchObject({
+      install: { status: "running", step: 2, total: 4, message: "Ubuntu", running: true },
+      installRunning: true,
+    });
+  });
+
   it("refuses to start a second installer while one is running", () => {
     using sandbox = makeSandbox({ prootDistro: true });
     // This test's own process stands in for a live installer.

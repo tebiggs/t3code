@@ -7,8 +7,12 @@ import { useWorkspaceEnvironments } from "../../state/workspace";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
-import { startAndReconnectPhoneServer, usePhoneServerRuntime } from "./phone-server";
-import { openTermux, stopPhoneServer } from "./termux";
+import {
+  startAndReconnectPhoneServer,
+  stopPhoneServerWhenSettled,
+  usePhoneServerRuntime,
+} from "./phone-server";
+import { openTermux } from "./termux";
 
 /** Settings → Environments → <this phone>: the server that phone setup runs in Termux. */
 export function PhoneServerSettingsSection(props: { readonly environmentId: EnvironmentId }) {
@@ -55,7 +59,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
             setStopping(true);
             setStopError(null);
             setPhoneServerSettings({ ...settings, autoStart: false });
-            stopPhoneServer()
+            stopPhoneServerWhenSettled()
               .catch((error: unknown) =>
                 setStopError(error instanceof Error ? error.message : "Couldn't stop the server."),
               )
