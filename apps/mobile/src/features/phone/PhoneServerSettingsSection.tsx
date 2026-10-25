@@ -73,7 +73,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
         <ListRow
           icon="play"
           label={runtime.starting ? "Starting…" : "Start server"}
-          disabled={runtime.starting}
+          disabled={runtime.starting || busy !== null}
           onPress={() => void startAndReconnectPhoneServer(settings)}
         />
       )}

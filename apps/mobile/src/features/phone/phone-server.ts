@@ -125,6 +125,8 @@ async function serverLogTail(): Promise<string> {
 }
 
 let pendingStart: Promise<EnvironmentId> | null = null;
+// While an update restarts the server, any other start would race it for serve.lock.
+let updating = false;
 
 /**
  * Stops the server once any start in flight has settled: a start already handed to Termux
@@ -174,6 +176,7 @@ async function launchPhoneServer(port: number, stillWanted: () => boolean): Prom
  * the port, so another listener there can't be added by mistake.
  */
 export async function connectPhoneServer(port: number): Promise<EnvironmentId> {
+  if (updating) throw new Error("T3 Code is restarting after an update. Try again in a moment.");
   const environmentId = await startPhoneServer(port);
   const result = await runPhoneScript(["pair"], PAIR_TIMEOUT_MS);
   const pairingUrl = termuxErrorMessage(result) === null ? readPairingUrl(result.stdout) : null;
@@ -201,7 +204,7 @@ export async function startAndReconnectPhoneServer(
   settings: PhoneServerSettings,
   stillWanted?: () => boolean,
 ): Promise<boolean> {
-  if (appAtomRegistry.get(phoneServerRuntimeAtom).starting) return false;
+  if (updating || appAtomRegistry.get(phoneServerRuntimeAtom).starting) return false;
   appAtomRegistry.set(phoneServerRuntimeAtom, { starting: true, error: null });
   try {
     const started = await startPhoneServer(settings.port, stillWanted);
@@ -227,9 +230,6 @@ function reconnect(environmentId: EnvironmentId) {
     reportFailure: false,
   });
 }
-
-// While an update restarts the server, auto-start would race it for serve.lock.
-let updating = false;
 
 /** Installs the newest server build in Ubuntu, then restarts the server on it. */
 export async function updatePhoneServer(settings: PhoneServerSettings): Promise<void> {
