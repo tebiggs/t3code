@@ -186,27 +186,38 @@ export function useRemoteConnections() {
       }
       if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
         // Removing only the connection would leave the server running in Termux with a wake
-        // lock and nothing in the app pointing at it.
-        const forgetPhone = (stop: boolean) => {
+        // lock and nothing in the app pointing at it, so a failed stop keeps everything.
+        const forgetPhone = () => {
           setPhoneServerSettings(null);
-          // Loaded on demand: the Termux bridge pulls in the expo runtime.
-          const stopped = stop
-            ? import("../features/phone/termux")
-                .then((termux) => termux.stopPhoneServer())
-                .catch(() => undefined)
-            : Promise.resolve();
-          void stopped.then(() => controller.removeEnvironment(environmentId));
+          void controller.removeEnvironment(environmentId);
+        };
+        const stopThenForget = async () => {
+          try {
+            // Loaded on demand: the Termux bridge pulls in the expo runtime.
+            const termux = await import("../features/phone/termux");
+            await termux.stopPhoneServer();
+            forgetPhone();
+          } catch (error) {
+            Dialog.alert(
+              "The server didn't stop",
+              `${error instanceof Error ? error.message : "Termux didn't stop it."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server in Termux first.`,
+              [
+                { text: "Keep", style: "cancel" },
+                { text: "Remove anyway", style: "destructive", onPress: forgetPhone },
+              ],
+            );
+          }
         };
         Dialog.alert(
           "Remove this phone?",
           `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay in Termux; phone setup can connect them again.`,
           [
             { text: "Cancel", style: "cancel" },
-            { text: "Remove only", onPress: () => forgetPhone(false) },
+            { text: "Remove only", onPress: forgetPhone },
             {
               text: "Remove and stop server",
               style: "destructive",
-              onPress: () => forgetPhone(true),
+              onPress: () => void stopThenForget(),
             },
           ],
         );

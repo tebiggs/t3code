@@ -33,6 +33,7 @@ import {
   requestRunCommandPermission,
   runPhoneScript,
   startPhoneScriptSession,
+  supportsPhoneSetup,
   type TermuxStatus,
 } from "./termux";
 
@@ -122,7 +123,22 @@ function usePhoneEnvironment(status: PhoneScriptStatus | null) {
   return environment;
 }
 
+/** Deep links reach this route on iOS too, where there is no Termux bridge. */
 export function PhoneSetupRouteScreen() {
+  return supportsPhoneSetup() ? <PhoneSetupScreen /> : <PhoneSetupUnavailable />;
+}
+
+function PhoneSetupUnavailable() {
+  return (
+    <SettingsScreen title="Run on this phone">
+      <Text className="px-7 pt-4 text-sm text-foreground-muted">
+        Running agents on the phone itself needs the Android app.
+      </Text>
+    </SettingsScreen>
+  );
+}
+
+function PhoneSetupScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const setup = usePhoneSetupState();
@@ -158,7 +174,7 @@ export function PhoneSetupRouteScreen() {
   };
   const appComponent = setup.termux.appLaunchComponent ?? "";
   const session = (args: ReadonlyArray<string>, label: string) =>
-    run(label, () => startPhoneScriptSession(args, { label, openTermux: true }));
+    run(label, () => startPhoneScriptSession(args, label));
 
   const stepState = (step: PhoneSetupStepId): "done" | "current" | "upcoming" => {
     if (current === "ready") return "done";

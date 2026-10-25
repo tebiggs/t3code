@@ -19,7 +19,7 @@ import { parsePhoneScriptStatus, readPairingUrl, type PhoneProbe } from "./phone
 import {
   getTermuxStatus,
   runPhoneScript,
-  startPhoneScriptSession,
+  startPhoneScriptInBackground,
   supportsPhoneSetup,
   termuxErrorMessage,
 } from "./termux";
@@ -29,6 +29,9 @@ const PAIR_TIMEOUT_MS = 60_000;
 // The first start migrates a fresh database inside proot, which is slow on a phone.
 const SERVER_START_TIMEOUT_MS = 90_000;
 const SERVER_POLL_INTERVAL_MS = 1_000;
+// React Native's Android client has no read timeout, so a listener that never answers would
+// hold a probe forever.
+const SERVER_PROBE_TIMEOUT_MS = 3_000;
 const AUTO_START_INTERVAL_MS = 60_000;
 
 /** Starting the server from the home chip, the detail page or on app open. */
@@ -83,19 +86,24 @@ export async function probePhone(): Promise<PhoneProbe> {
 
 /** The environment a T3 server on this port reports, or null when nothing answers. */
 export async function readPhoneServerEnvironmentId(port: number): Promise<EnvironmentId | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SERVER_PROBE_TIMEOUT_MS);
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/.well-known/t3/environment`);
+    const response = await fetch(`http://127.0.0.1:${port}/.well-known/t3/environment`, {
+      signal: controller.signal,
+    });
     if (!response.ok) return null;
     const body: unknown = await response.json();
     if (typeof body !== "object" || body === null || !("environmentId" in body)) return null;
     return typeof body.environmentId === "string" ? EnvironmentId.make(body.environmentId) : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-async function waitForServer(port: number): Promise<EnvironmentId | null> {
-  const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
+async function waitForServer(port: number, deadline: number): Promise<EnvironmentId | null> {
   while (Date.now() < deadline) {
     const environmentId = await readPhoneServerEnvironmentId(port);
     if (environmentId !== null) return environmentId;
@@ -104,18 +112,31 @@ async function waitForServer(port: number): Promise<EnvironmentId | null> {
   return null;
 }
 
+async function serverLogTail(): Promise<string> {
+  try {
+    const result = await runPhoneScript(["log", "15"], STATUS_TIMEOUT_MS);
+    return termuxErrorMessage(result) === null ? result.stdout.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
- * Starts the server in a Termux session (Termux stays in the background) unless it already
- * answers, and resolves with its environment id.
+ * Starts the server as a Termux background task unless it already answers, and resolves
+ * with its environment id.
  */
 export async function startPhoneServer(port: number): Promise<EnvironmentId> {
+  const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   const running = await readPhoneServerEnvironmentId(port);
   if (running !== null) return running;
-  startPhoneScriptSession(["serve"], { label: "T3 Code server", openTermux: false });
-  const started = await waitForServer(port);
+  startPhoneScriptInBackground(["serve"]);
+  const started = await waitForServer(port, deadline);
   if (started === null) {
+    const log = await serverLogTail();
     throw new Error(
-      `T3 Code didn't start on port ${port}. Open Termux and look at the "T3 Code server" session for the reason.`,
+      log.length > 0
+        ? `T3 Code didn't start on port ${port}:\n${log}`
+        : `T3 Code didn't start on port ${port}. Its log is ~/.t3-phone/server.log in Termux.`,
     );
   }
   return started;
@@ -177,6 +198,8 @@ export async function startAndReconnectPhoneServer(
 }
 
 async function autoStartPhoneServer() {
+  // Starting Termux from the background would fail or surprise; the next foreground retries.
+  if (AppState.currentState !== "active") return;
   const settings = appAtomRegistry.get(phoneServerSettingsAtom);
   if (settings === null || !settings.autoStart) return;
   const environment = appAtomRegistry

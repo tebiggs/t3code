@@ -31,7 +31,8 @@ export interface TermuxScriptResult {
 interface T3TermuxModule {
   getStatus(): TermuxStatus;
   runScript(arguments_: ReadonlyArray<string>, timeoutMs: number): Promise<TermuxScriptResult>;
-  startScriptSession(arguments_: ReadonlyArray<string>, label: string, openTermux: boolean): void;
+  startScriptSession(arguments_: ReadonlyArray<string>, label: string): void;
+  startScriptInBackground(arguments_: ReadonlyArray<string>): void;
   openTermux(): boolean;
   openTermuxSettings(): boolean;
   openDeveloperSettings(): boolean;
@@ -72,17 +73,23 @@ export function runPhoneScript(
   return requireNative().runScript(arguments_, timeoutMs);
 }
 
-export function startPhoneScriptSession(
-  arguments_: ReadonlyArray<string>,
-  options: { readonly label: string; readonly openTermux: boolean },
-): void {
-  requireNative().startScriptSession(arguments_, options.label, options.openTermux);
+/** Opens Termux on a new session running the subcommand, for anything the user watches or answers. */
+export function startPhoneScriptSession(arguments_: ReadonlyArray<string>, label: string): void {
+  requireNative().startScriptSession(arguments_, label);
+}
+
+/** Starts a long-running subcommand inside Termux with no terminal; Termux stays behind. */
+export function startPhoneScriptInBackground(arguments_: ReadonlyArray<string>): void {
+  requireNative().startScriptInBackground(arguments_);
 }
 
 export async function stopPhoneServer(): Promise<void> {
   const result = await runPhoneScript(["stop"], 60_000);
   const refused = termuxErrorMessage(result);
   if (refused !== null) throw new Error(refused);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stdout.trim() || result.stderr.trim() || "The server didn't stop.");
+  }
 }
 
 export function openTermux(): boolean {

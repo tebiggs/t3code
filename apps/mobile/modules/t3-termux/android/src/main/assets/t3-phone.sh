@@ -9,6 +9,7 @@ DISTRO=ubuntu
 STATE_DIR="$HOME/.t3-phone"
 PORT="${T3_PHONE_PORT:-$(cat "$STATE_DIR/port" 2>/dev/null || echo 3773)}"
 INSTALL_STEPS=4
+SHARED_STORAGE="${T3_PHONE_SHARED_STORAGE:-/storage/emulated/0}"
 # Termux's bin goes last so agents can still call termux-* commands from Ubuntu.
 UBUNTU_PATH="/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PREFIX/bin"
 
@@ -41,6 +42,27 @@ install_lock_pid() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
 }
 
+# Fields of /proc/<pid>/stat after the command name, which may contain spaces:
+# 2 is the parent pid, 20 the start time that tells a reused pid apart.
+proc_field() {
+  sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d ' ' -f "$2"
+}
+
+descends_from() {
+  pid=$1
+  for _ in 1 2 3 4 5 6; do
+    pid=$(proc_field "$pid" 2)
+    [ -n "$pid" ] && [ "$pid" != 0 ] || return 1
+    [ "$pid" = "$2" ] && return 0
+  done
+  return 1
+}
+
+# ~/storage survives a revoked permission, so try reading shared storage itself.
+storage_allowed() {
+  ls "$SHARED_STORAGE" >/dev/null 2>&1
+}
+
 return_to_app() {
   [ -n "${1:-}" ] || return 0
   sleep 2
@@ -52,7 +74,7 @@ cmd_status() {
   echo "script=$T3_PHONE_SCRIPT_VERSION"
   echo "launcher=$(sed -n 's/^T3_PHONE_SCRIPT_VERSION=//p' "$PREFIX/bin/t3-phone" 2>/dev/null | head -n 1)"
   echo "port=$PORT"
-  if [ -d "$HOME/storage" ]; then echo "storage=true"; else echo "storage=false"; fi
+  if storage_allowed; then echo "storage=true"; else echo "storage=false"; fi
   if server_up; then echo "server=true"; else echo "server=false"; fi
   if [ -f "$STATE_DIR/install.state" ]; then
     sed -n 's/^\(status\|step\|total\|message\)=/install_\1=/p' "$STATE_DIR/install.state"
@@ -113,7 +135,7 @@ cmd_install() {
   mkdir -p "$STATE_DIR"
   record() {
     printf 'status=%s\nstep=%s\ntotal=%s\nmessage=%s\n' "$1" "$step" "$INSTALL_STEPS" "$2" \
-      > "$STATE_DIR/install.state"
+      > "$STATE_DIR/install.state.tmp" && mv "$STATE_DIR/install.state.tmp" "$STATE_DIR/install.state"
   }
   say() {
     step=$1
@@ -128,18 +150,30 @@ cmd_install() {
     exit 1
   }
 
-  if other=$(install_lock_pid); then
-    echo "Setup is already running in another Termux session (process $other)."
-    exit 0
+  # mkdir is atomic: of two installers started together, one gets the lock. A lock left by
+  # an installer Android killed is cleared once, and losing that retry means another won.
+  if ! mkdir "$STATE_DIR/install.lock" 2>/dev/null; then
+    if other=$(install_lock_pid); then
+      echo "Setup is already running in another Termux session (process $other)."
+      exit 0
+    fi
+    rm -rf "$STATE_DIR/install.lock"
+    if ! mkdir "$STATE_DIR/install.lock" 2>/dev/null; then
+      echo "Setup is already running in another Termux session."
+      exit 0
+    fi
   fi
-  rm -rf "$STATE_DIR/install.lock"
-  mkdir "$STATE_DIR/install.lock" && echo "$$" > "$STATE_DIR/install.lock/pid" \
-    || fail "Couldn't create $STATE_DIR/install.lock."
-  trap 'rm -rf "$STATE_DIR/install.lock"' EXIT
+  echo "$$" > "$STATE_DIR/install.lock/pid"
+  trap 'finish_install' EXIT
+  finish_install() {
+    [ "$(cat "$STATE_DIR/install.lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$STATE_DIR/install.lock"
+    # The server takes its own wake lock; only release the one setup took.
+    server_up || termux-wake-unlock 2>/dev/null || true
+  }
   termux-wake-lock 2>/dev/null || true
   printf '\033[1mT3 Code phone setup\033[0m\n'
 
-  if [ ! -d "$HOME/storage" ]; then
+  if ! storage_allowed; then
     printf '\nAllow storage access if Android asks, so agents can reach your files.\n'
     termux-setup-storage || true
   fi
@@ -156,7 +190,7 @@ cmd_install() {
 
   say 3 "Claude Code and T3 Code in Ubuntu"
   in_ubuntu env DEVICE_NAME="$device_name" /bin/bash -s <<'UBUNTU' || fail "Installing inside Ubuntu failed."
-set -eu
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 missing=""
 for package in ca-certificates curl git openssh-client procps ripgrep; do
@@ -166,6 +200,7 @@ if [ -n "$missing" ]; then
   apt-get update
   apt-get install -y $missing
 fi
+export PATH="/root/.local/bin:$PATH"
 if command -v claude >/dev/null 2>&1; then
   echo "Claude Code is already installed."
 else
@@ -176,6 +211,8 @@ if command -v t3 >/dev/null 2>&1; then
 else
   curl -fsSL https://t3.codes/install.sh | T3CODE_CHANNEL=nightly sh
 fi
+command -v claude >/dev/null || { echo "Claude Code isn't on PATH after installing." >&2; exit 1; }
+command -v t3 >/dev/null || { echo "T3 Code isn't on PATH after installing." >&2; exit 1; }
 grep -qs 'HOME/.local/bin' /root/.bashrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
 # The server names its environment after PRETTY_HOSTNAME.
 if [ -n "${DEVICE_NAME:-}" ] && [ ! -f /etc/machine-info ]; then
@@ -196,27 +233,47 @@ UBUNTU
   return_to_app "$app_component"
 }
 
+# Runs as a Termux background task, so nothing depends on a terminal being on screen.
+# Output goes to a log the app reads back when the server doesn't come up.
 cmd_serve() {
   if server_up; then
     echo "T3 Code is already running on port $PORT."
     return 0
   fi
-  termux-wake-lock
-  printf 'T3 Code server on 127.0.0.1:%s. Closing this session stops it.\n\n' "$PORT"
+  mkdir -p "$STATE_DIR"
+  termux-wake-lock 2>/dev/null || true
+  # exec keeps this pid through proot-distro into proot, so stop can find it again.
+  echo "$$ $(proc_field "$$" 20)" > "$STATE_DIR/server.pid"
   exec proot-distro login "$DISTRO" -- /usr/bin/env HOME=/root PATH="$UBUNTU_PATH" IS_SANDBOX=1 \
-    t3 serve --host 127.0.0.1 --port "$PORT"
+    t3 serve --host 127.0.0.1 --port "$PORT" > "$STATE_DIR/server.log" 2>&1
 }
 
+# Signals only the process tree serve started: a pid is trusted only while its start time
+# still matches, so a crashed server's reused pid is left alone.
 cmd_stop() {
-  rootfs=$(ubuntu_rootfs) || rootfs=""
-  pid=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$rootfs/root/.t3/userdata/server-runtime.json" 2>/dev/null | head -n 1)
-  # The state file outlives a crashed server; only signal a pid that is still t3.
-  if [ -n "$pid" ] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 't3.*serve' && kill "$pid"; then
-    echo "Stopped T3 Code."
-  else
+  read -r launcher started 2>/dev/null < "$STATE_DIR/server.pid" || launcher=""
+  if [ -z "$launcher" ] || [ "$(proc_field "$launcher" 20)" != "${started:-}" ]; then
+    rm -f "$STATE_DIR/server.pid"
+    termux-wake-unlock 2>/dev/null || true
+    if server_up; then
+      echo "T3 Code is running, but not from t3-phone serve. Stop it where it was started."
+      return 1
+    fi
     echo "T3 Code wasn't running."
+    return 0
   fi
+  rootfs=$(ubuntu_rootfs) || rootfs=""
+  server=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$rootfs/root/.t3/userdata/server-runtime.json" 2>/dev/null | head -n 1)
+  # Signal the server itself so it shuts down cleanly; proot exits after it. Only a
+  # descendant of serve's proot counts (proot-distro 4 puts su and a shell in between).
+  if [ -n "$server" ] && descends_from "$server" "$launcher"; then
+    kill "$server"
+  else
+    kill "$launcher"
+  fi
+  rm -f "$STATE_DIR/server.pid"
   termux-wake-unlock 2>/dev/null || true
+  echo "Stopped T3 Code."
 }
 
 cmd_pair() {
@@ -238,6 +295,10 @@ cmd_login() {
   fi
 }
 
+cmd_log() {
+  tail -n "${1:-30}" "$STATE_DIR/server.log" 2>/dev/null
+}
+
 cmd_storage() {
   termux-setup-storage
   return_to_app "${1:-}"
@@ -251,6 +312,7 @@ case "${1:-}" in
   pair) cmd_pair ;;
   login) shift; cmd_login "$@" ;;
   logout) in_ubuntu claude auth logout ;;
+  log) shift; cmd_log "$@" ;;
   storage) shift; cmd_storage "$@" ;;
   save-launcher) save_launcher ;;
   shell) exec proot-distro login "$DISTRO" ;;

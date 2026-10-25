@@ -71,9 +71,16 @@ function makeSandbox(options: { readonly prootDistro: boolean }): Sandbox {
       NodePath.join(prefix, "bin", name),
       `#!/bin/sh\necho "${name} $*" >> "$STUB_LOG"\n${body}`,
     );
-  // Refuses to connect, like curl with nothing listening on the port.
-  logStub("curl", "exit 7\n");
-  for (const name of ["pkg", "am", "termux-setup-storage", "termux-wake-lock", "sleep"]) {
+  // Refuses to connect, like curl with nothing listening on the port. Not logged: it only probes.
+  writeExecutable(NodePath.join(prefix, "bin", "curl"), "#!/bin/sh\nexit 7\n");
+  for (const name of [
+    "pkg",
+    "am",
+    "termux-setup-storage",
+    "termux-wake-lock",
+    "termux-wake-unlock",
+    "sleep",
+  ]) {
     logStub(name);
   }
   if (options.prootDistro) {
@@ -92,6 +99,18 @@ function makeSandbox(options: { readonly prootDistro: boolean }): Sandbox {
 
 function writeExecutable(path: string, contents: string) {
   NodeFS.writeFileSync(path, contents, { mode: 0o755 });
+}
+
+// Stands in for /storage/emulated/0 being readable, which is how the script tells storage
+// access was granted.
+function allowStorage(sandbox: Sandbox) {
+  NodeFS.mkdirSync(NodePath.join(sandbox.root, "shared"));
+}
+
+/** Field 22 of /proc/<pid>/stat, the start time t3-phone records to recognize its server. */
+function processStartTime(pid: number): string {
+  const stat = NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8");
+  return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19] ?? "";
 }
 
 function installUbuntu(sandbox: Sandbox) {
@@ -125,13 +144,14 @@ function run(sandbox: Sandbox, args: ReadonlyArray<string>, env: Record<string, 
       STUB_DIR: sandbox.root,
       GUEST_BIN: sandbox.guestBin,
       GUEST_TOOLS: sandbox.guestTools,
+      T3_PHONE_SHARED_STORAGE: NodePath.join(sandbox.root, "shared"),
       ...env,
     },
   });
   return {
     status: result.status,
     stdout: result.stdout,
-    calls: NodeFS.readFileSync(sandbox.log, "utf8").trim().split("\n").filter(Boolean),
+    calls: NodeFS.readFileSync(sandbox.log, "utf8").split("\n").filter(Boolean),
   };
 }
 
@@ -161,7 +181,7 @@ describe("t3-phone status", () => {
   it("detects a hand-made setup with Claude signed in and no T3 Code", () => {
     using sandbox = makeSandbox({ prootDistro: true });
     installUbuntu(sandbox);
-    NodeFS.mkdirSync(NodePath.join(sandbox.home, "storage"));
+    allowStorage(sandbox);
     installGuestClaude(
       sandbox,
       '{\n  "loggedIn": true,\n  "authMethod": "claude.ai",\n  "subscriptionType": "max"\n}',
@@ -216,6 +236,7 @@ describe("t3-phone install", () => {
       ),
       "sleep 2",
       "am start -n com.t3tools.t3code/.MainActivity",
+      "termux-wake-unlock ",
     ]);
     const launcher = NodeFS.readFileSync(NodePath.join(sandbox.prefix, "bin", "t3-phone"), "utf8");
     expect(launcher).toBe(`#!${sandbox.prefix}/bin/bash\n${SCRIPT}\n`);
@@ -248,7 +269,7 @@ describe("t3-phone install", () => {
   it("skips finished parts of an existing setup", () => {
     using sandbox = makeSandbox({ prootDistro: true });
     installUbuntu(sandbox);
-    NodeFS.mkdirSync(NodePath.join(sandbox.home, "storage"));
+    allowStorage(sandbox);
 
     const result = run(sandbox, ["install"]);
 
@@ -256,13 +277,14 @@ describe("t3-phone install", () => {
     expect(result.calls).toEqual([
       "termux-wake-lock ",
       expect.stringMatching(/^proot-distro login ubuntu -- .* \/bin\/bash -s$/),
+      "termux-wake-unlock ",
     ]);
   });
 
   it("stops before saving t3-phone or returning when the Ubuntu part fails", () => {
     using sandbox = makeSandbox({ prootDistro: true });
     installUbuntu(sandbox);
-    NodeFS.mkdirSync(NodePath.join(sandbox.home, "storage"));
+    allowStorage(sandbox);
 
     const result = run(sandbox, ["install", "com.t3tools.t3code/.MainActivity"], {
       STUB_GUEST_INSTALL_EXIT: "1",
@@ -276,6 +298,7 @@ describe("t3-phone install", () => {
     });
     expect(NodeFS.existsSync(NodePath.join(sandbox.prefix, "bin", "t3-phone"))).toBe(false);
     expect(result.calls.some((call) => call.startsWith("am "))).toBe(false);
+    expect(result.calls.at(-1)).toBe("termux-wake-unlock ");
   });
 });
 
@@ -303,5 +326,72 @@ describe("t3-phone pair", () => {
     );
 
     expect(run(sandbox, ["pair"]).status).toBe(1);
+  });
+});
+
+describe("t3-phone serve and stop", () => {
+  it("logs the server's output and records the pid stop will trust", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+    writeExecutable(NodePath.join(sandbox.guestBin, "t3"), '#!/bin/sh\necho "t3 $*"\n');
+
+    const result = run(sandbox, ["serve"]);
+
+    expect(result.status).toBe(0);
+    expect(result.calls).toEqual([
+      "termux-wake-lock ",
+      expect.stringMatching(
+        /^proot-distro login ubuntu -- .* t3 serve --host 127\.0\.0\.1 --port 3773$/,
+      ),
+    ]);
+    const stateDir = NodePath.join(sandbox.home, ".t3-phone");
+    expect(NodeFS.readFileSync(NodePath.join(stateDir, "server.log"), "utf8")).toBe(
+      "t3 serve --host 127.0.0.1 --port 3773\n",
+    );
+    expect(NodeFS.readFileSync(NodePath.join(stateDir, "server.pid"), "utf8")).toMatch(
+      /^\d+ \d+\n$/,
+    );
+  });
+
+  it("leaves a reused pid alone", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    const stateDir = NodePath.join(sandbox.home, ".t3-phone");
+    NodeFS.mkdirSync(stateDir, { recursive: true });
+    // This test's own process, recorded with a start time it never had.
+    NodeFS.writeFileSync(NodePath.join(stateDir, "server.pid"), `${process.pid} 1\n`);
+
+    const result = run(sandbox, ["stop"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("T3 Code wasn't running.\n");
+    expect(NodeFS.existsSync(NodePath.join(stateDir, "server.pid"))).toBe(false);
+  });
+
+  it("signals serve's own process, not a runtime pid outside its tree", async () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    const rootfs = installUbuntu(sandbox);
+    const launcher = NodeChildProcess.spawn("sleep", ["600"], { stdio: "ignore" });
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      launcher.once("exit", (_code, signal) => resolve(signal)),
+    );
+    const launcherPid = launcher.pid ?? 0;
+    const stateDir = NodePath.join(sandbox.home, ".t3-phone");
+    NodeFS.mkdirSync(stateDir, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(stateDir, "server.pid"),
+      `${launcherPid} ${processStartTime(launcherPid)}\n`,
+    );
+    // Stale runtime state naming an unrelated live process: this test runner.
+    const userdata = NodePath.join(rootfs, "root/.t3/userdata");
+    NodeFS.mkdirSync(userdata, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(userdata, "server-runtime.json"),
+      JSON.stringify({ version: 1, pid: process.pid, port: 3773 }),
+    );
+
+    const result = run(sandbox, ["stop"]);
+
+    expect(result.stdout).toBe("Stopped T3 Code.\n");
+    expect(await exited).toBe("SIGTERM");
   });
 });

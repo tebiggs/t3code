@@ -29,7 +29,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
       footer={
         stopError ??
         runtime.error ??
-        "T3 Code runs in a Termux session on this phone. Closing that session in Termux also stops it."
+        "T3 Code runs as a background task in Termux; exiting Termux from its notification also stops it. Its log is ~/.t3-phone/server.log."
       }
     >
       <ListRow

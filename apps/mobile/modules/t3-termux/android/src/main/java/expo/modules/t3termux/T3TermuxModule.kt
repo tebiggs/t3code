@@ -37,8 +37,7 @@ private const val EXTRA_COMMAND_LABEL = "com.termux.RUN_COMMAND_COMMAND_LABEL"
 private const val EXTRA_PENDING_INTENT = "com.termux.RUN_COMMAND_PENDING_INTENT"
 
 // TermuxConstants.TERMUX_APP.TERMUX_SERVICE.VALUE_EXTRA_SESSION_ACTION_*.
-private const val SESSION_ACTION_SWITCH_AND_OPEN = "0"
-private const val SESSION_ACTION_KEEP_CURRENT_DONT_OPEN = "3"
+private const val SESSION_ACTION_SWITCH_AND_DONT_OPEN = "2"
 
 class T3TermuxModule : Module() {
   // Each result PendingIntent needs its own request code, or Termux answers only the first.
@@ -49,42 +48,7 @@ class T3TermuxModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3Termux")
 
-    Function("getStatus") {
-      val context = requireContext()
-      val packageManager = context.packageManager
-      val termux =
-        try {
-          packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
-        } catch (_: PackageManager.NameNotFoundException) {
-          null
-        }
-      mapOf(
-        "installed" to (termux != null),
-        "versionName" to termux?.versionName,
-        "installer" to termux?.let { installerOf(packageManager) },
-        "permissionGranted" to
-          (ContextCompat.checkSelfPermission(context, RUN_COMMAND_PERMISSION) ==
-            PackageManager.PERMISSION_GRANTED),
-        "batteryUnrestricted" to
-          termux?.let {
-            context
-              .getSystemService(PowerManager::class.java)
-              ?.isIgnoringBatteryOptimizations(TERMUX_PACKAGE)
-          },
-        "developerOptionsEnabled" to
-          (readGlobalSetting(context, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED) == "1"),
-        "deviceName" to (readGlobalSetting(context, Settings.Global.DEVICE_NAME) ?: Build.MODEL),
-        "manufacturer" to Build.MANUFACTURER,
-        // Claude Code and the T3 server ship only arm64 and x86_64 Linux builds.
-        "supportedAbi" to
-          Build.SUPPORTED_64_BIT_ABIS.any { it == "arm64-v8a" || it == "x86_64" },
-        "appLaunchComponent" to
-          packageManager
-            .getLaunchIntentForPackage(context.packageName)
-            ?.component
-            ?.flattenToShortString(),
-      )
-    }
+    Function("getStatus") { termuxStatus(requireContext()) }
 
     // Runs a t3-phone subcommand without a terminal and resolves with its output.
     AsyncFunction("runScript") { arguments: List<String>, timeoutMs: Int, promise: Promise ->
@@ -92,17 +56,29 @@ class T3TermuxModule : Module() {
       runInBackground(context, scriptArguments(context, arguments), timeoutMs.toLong(), promise)
     }
 
-    // Runs a t3-phone subcommand in a Termux terminal session, in front or behind.
-    Function("startScriptSession") { arguments: List<String>, label: String, openTermux: Boolean ->
+    // Runs a t3-phone subcommand in a new Termux terminal session and brings Termux forward.
+    // Termux's own service can't open its activity from the background on Android 10+
+    // without "Display over other apps", so this app, in the foreground, opens it. The
+    // session only starts its process once Termux shows it.
+    Function("startScriptSession") { arguments: List<String>, label: String ->
       val context = requireContext()
       startTermuxService(
         context,
         runCommandIntent(scriptArguments(context, arguments), background = false)
-          .putExtra(
-            EXTRA_SESSION_ACTION,
-            if (openTermux) SESSION_ACTION_SWITCH_AND_OPEN else SESSION_ACTION_KEEP_CURRENT_DONT_OPEN,
-          )
+          .putExtra(EXTRA_SESSION_ACTION, SESSION_ACTION_SWITCH_AND_DONT_OPEN)
           .putExtra(EXTRA_COMMAND_LABEL, label),
+      )
+      context.packageManager.getLaunchIntentForPackage(TERMUX_PACKAGE)?.let {
+        startActivity(context, it)
+      }
+    }
+
+    // Starts a long-running t3-phone subcommand without a terminal or a result.
+    Function("startScriptInBackground") { arguments: List<String> ->
+      val context = requireContext()
+      startTermuxService(
+        context,
+        runCommandIntent(scriptArguments(context, arguments), background = true),
       )
     }
 
@@ -127,18 +103,61 @@ class T3TermuxModule : Module() {
       startActivity(
         context,
         Intent(
-          if (enabled) Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
-          else Settings.ACTION_DEVICE_INFO_SETTINGS,
+          if (enabled) {
+            Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+          } else {
+            Settings.ACTION_DEVICE_INFO_SETTINGS
+          },
         ),
       )
     }
   }
 
+  private fun termuxStatus(context: Context): Map<String, Any?> {
+    val packageManager = context.packageManager
+    val termux =
+      try {
+        packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
+      } catch (_: PackageManager.NameNotFoundException) {
+        null
+      }
+    return mapOf(
+      "installed" to (termux != null),
+      "versionName" to termux?.versionName,
+      "installer" to termux?.let { installerOf(packageManager) },
+      "permissionGranted" to
+        (
+          ContextCompat.checkSelfPermission(context, RUN_COMMAND_PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED
+          ),
+      "batteryUnrestricted" to
+        termux?.let {
+          context
+            .getSystemService(PowerManager::class.java)
+            ?.isIgnoringBatteryOptimizations(TERMUX_PACKAGE)
+        },
+      "developerOptionsEnabled" to
+        (readGlobalSetting(context, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED) == "1"),
+      "deviceName" to (readGlobalSetting(context, Settings.Global.DEVICE_NAME) ?: Build.MODEL),
+      "manufacturer" to Build.MANUFACTURER,
+      // Claude Code and the T3 server ship only arm64 and x86_64 Linux builds.
+      "supportedAbi" to
+        Build.SUPPORTED_64_BIT_ABIS.any { it == "arm64-v8a" || it == "x86_64" },
+      "appLaunchComponent" to
+        packageManager
+          .getLaunchIntentForPackage(context.packageName)
+          ?.component
+          ?.flattenToShortString(),
+    )
+  }
+
   private fun requireContext(): Context =
-    appContext.reactContext ?: throw CodedException("ERR_TERMUX_CONTEXT", "No Android context.", null)
+    appContext.reactContext
+      ?: throw CodedException("ERR_TERMUX_CONTEXT", "No Android context.", null)
 
   private fun scriptArguments(context: Context, arguments: List<String>): List<String> {
-    val script = phoneScript ?: context.assets.open("t3-phone.sh").bufferedReader().use { it.readText() }
+    val script =
+      phoneScript ?: context.assets.open("t3-phone.sh").bufferedReader().use { it.readText() }
     phoneScript = script
     // With `bash -c`, the next argument becomes $0, so the script sees itself as t3-phone.
     return listOf("-c", script, "t3-phone") + arguments
@@ -148,7 +167,7 @@ class T3TermuxModule : Module() {
     context: Context,
     arguments: List<String>,
     timeoutMs: Long,
-    promise: Promise,
+    promise: Promise
   ) {
     val requestCode = requestCodes.incrementAndGet()
     val action = "${context.packageName}.T3_TERMUX_RESULT.$requestCode"
@@ -227,26 +246,31 @@ class T3TermuxModule : Module() {
 
   private fun startTermuxService(context: Context, intent: Intent) {
     val component =
-      try {
+      runCatching {
         // RunCommandService calls startForeground itself, as Android 8+ requires.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
           context.startForegroundService(intent)
         } else {
           context.startService(intent)
         }
-      } catch (error: SecurityException) {
-        throw CodedException(
-          "ERR_TERMUX_PERMISSION",
-          "T3 Code isn't allowed to run commands in Termux.",
-          error,
-        )
-      } catch (error: IllegalStateException) {
-        throw CodedException("ERR_TERMUX_START", "Android didn't let Termux start.", error)
-      }
+      }.getOrElse { throw startFailure(it) }
     if (component == null) {
       throw CodedException("ERR_TERMUX_MISSING", "Termux isn't installed.", null)
     }
   }
+
+  private fun startFailure(error: Throwable): Throwable =
+    when (error) {
+      is SecurityException ->
+        CodedException(
+          "ERR_TERMUX_PERMISSION",
+          "T3 Code isn't allowed to run commands in Termux.",
+          error,
+        )
+      is IllegalStateException ->
+        CodedException("ERR_TERMUX_START", "Android didn't let Termux start.", error)
+      else -> error
+    }
 
   private fun unregister(context: Context, receiver: BroadcastReceiver) {
     try {
@@ -268,7 +292,8 @@ class T3TermuxModule : Module() {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         packageManager.getInstallSourceInfo(TERMUX_PACKAGE).installingPackageName
       } else {
-        @Suppress("DEPRECATION") packageManager.getInstallerPackageName(TERMUX_PACKAGE)
+        @Suppress("DEPRECATION")
+        packageManager.getInstallerPackageName(TERMUX_PACKAGE)
       }
     } catch (_: Exception) {
       null
