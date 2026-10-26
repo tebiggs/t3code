@@ -168,7 +168,8 @@ export DEBIAN_FRONTEND=noninteractive
 export PATH="/root/.local/bin:$PATH"
 if [ "$MODE" = install ]; then
   missing=""
-  for package in ca-certificates curl git openssh-client procps ripgrep; do
+  # libatomic1: the arm64 t3 binary links it, and Ubuntu's container image leaves it out.
+  for package in ca-certificates curl git libatomic1 openssh-client procps ripgrep; do
     dpkg -s "$package" >/dev/null 2>&1 || missing="$missing $package"
   done
   if [ -n "$missing" ]; then

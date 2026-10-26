@@ -1,4 +1,5 @@
 import { ListRow } from "../../components/ui/ListRow";
+import { RowPressable } from "../../components/ui/RowPressable";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAuth } from "@clerk/expo";
@@ -218,6 +219,8 @@ export function ConnectionsNewRouteScreen({
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: 4,
+          // contentInset is iOS-only; Android needs the room as padding.
+          paddingBottom: Platform.OS === "android" ? Math.max(insets.bottom, 18) + 18 : 0,
         }}
       >
         <View collapsable={false} className="gap-6.5">
@@ -416,26 +419,52 @@ function PhoneSection() {
       <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
         Or run on this phone
       </Text>
-      <ListRow
-        icon="iphone"
-        label="Run agents on this phone"
-        description={
-          !supported
-            ? "Needs a 64-bit phone."
-            : phone
-              ? `Set up as ${phone.environmentLabel}.`
-              : "Claude Code in Termux. No other computer needed."
-        }
-        disabled={!supported}
-        onPress={() => {
-          // The root sheet gives way to the setup page instead of stacking under it.
-          if (routeName === "ConnectionsNew") {
-            navigation.dispatch(StackActions.replace("PhoneSetup"));
-          } else {
-            navigation.navigate("PhoneSetup");
-          }
-        }}
-      />
+      <View collapsable={false} className="overflow-hidden rounded-[24px] bg-grouped-card">
+        <RowPressable
+          accessibilityRole="button"
+          accessibilityLabel="Run agents on this phone"
+          accessibilityState={{ disabled: !supported }}
+          disabled={!supported}
+          onPress={() => {
+            // The root sheet gives way to the setup page instead of stacking under it.
+            if (routeName === "ConnectionsNew") {
+              navigation.dispatch(StackActions.replace("PhoneSetup"));
+            } else {
+              navigation.navigate("PhoneSetup");
+            }
+          }}
+          className={cn(
+            "flex-row items-center gap-3 bg-grouped-card px-4 py-3.5",
+            !supported && "opacity-45",
+          )}
+        >
+          <View className="min-w-0 flex-1 gap-0.5">
+            <View className="min-w-0 flex-row items-center gap-2">
+              <SymbolView name="iphone" size={14} tintColorClassName="accent-foreground-muted" />
+              <Text
+                className="min-w-0 flex-shrink text-base font-t3-bold leading-snug text-foreground"
+                numberOfLines={1}
+              >
+                Run agents on this phone
+              </Text>
+            </View>
+            <Text className="text-xs text-foreground-muted">
+              {!supported
+                ? "Needs a 64-bit phone"
+                : phone
+                  ? `Set up as ${phone.environmentLabel}`
+                  : "Claude Code in Termux, no other computer needed"}
+            </Text>
+          </View>
+          <SymbolView
+            name="chevron.right"
+            size={14}
+            tintColorClassName="accent-chevron"
+            type="monochrome"
+            weight="semibold"
+          />
+        </RowPressable>
+      </View>
     </View>
   );
 }
