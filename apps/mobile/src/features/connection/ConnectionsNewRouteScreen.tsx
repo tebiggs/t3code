@@ -1,5 +1,6 @@
 import { ListRow } from "../../components/ui/ListRow";
 import { RowPressable } from "../../components/ui/RowPressable";
+import { useResolveClassNames } from "uniwind";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAuth } from "@clerk/expo";
@@ -416,6 +417,12 @@ function PhoneSection() {
     (environment) => environment.environmentId === settings?.environmentId,
   );
   const [supported] = useState(() => getTermuxStatus().supportedAbi);
+  const rippleStyle = useResolveClassNames("bg-subtle-strong");
+  const description = !supported
+    ? "Needs a 64-bit phone"
+    : phone
+      ? `Set up as ${phone.environmentLabel}`
+      : "Claude Code in Termux, no other computer needed";
   return (
     <View collapsable={false} className="gap-2">
       <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
@@ -424,9 +431,11 @@ function PhoneSection() {
       <View collapsable={false} className="overflow-hidden rounded-[24px] bg-grouped-card">
         <RowPressable
           accessibilityRole="button"
-          accessibilityLabel="Run agents on this phone"
+          accessibilityLabel={`Run agents on this phone, ${description}`}
           accessibilityState={{ disabled: !supported }}
           disabled={!supported}
+          android_ripple={{ color: rippleStyle.backgroundColor }}
+          unstable_pressDelay={Platform.OS === "android" ? 50 : undefined}
           onPress={() => {
             // The root sheet gives way to the setup page instead of stacking under it.
             if (routeName === "ConnectionsNew") {
@@ -450,13 +459,7 @@ function PhoneSection() {
                 Run agents on this phone
               </Text>
             </View>
-            <Text className="text-xs text-foreground-muted">
-              {!supported
-                ? "Needs a 64-bit phone"
-                : phone
-                  ? `Set up as ${phone.environmentLabel}`
-                  : "Claude Code in Termux, no other computer needed"}
-            </Text>
+            <Text className="text-xs text-foreground-muted">{description}</Text>
           </View>
           <SymbolView
             name="chevron.right"
