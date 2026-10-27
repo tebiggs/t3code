@@ -6,8 +6,8 @@ import {
   workflowOpeningParentThreadId,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
 import { Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -24,7 +24,6 @@ const FOLDED_SCRIPT_LINES = 10;
 
 const NO_THREAD_ATOM = Atom.make<EnvironmentThread | null>(null);
 
-/** `ref` is null while the thread's creation is pending; reading it then caches a not-found. */
 export function useWorkflowOpening(ref: ScopedThreadRef | null) {
   const threadAtom = ref === null ? NO_THREAD_ATOM : environmentThreadDetails.threadAtom(ref);
   // Selected as a primitive so an ordinary thread's updates never change the result.
