@@ -1,0 +1,15 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.t3tools.deviceruntime'
+version = '0.0.0'
+
+android {
+  namespace 'expo.modules.t3deviceruntime'
+  defaultConfig {
+    versionCode 1
+    versionName '0.0.0'
+  }
+}

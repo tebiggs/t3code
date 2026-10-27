@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET" />
+  <!-- Reads the active network's DNS servers for the guest's resolv.conf. -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+</manifest>

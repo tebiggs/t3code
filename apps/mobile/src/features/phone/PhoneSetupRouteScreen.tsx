@@ -346,6 +346,12 @@ function PhoneSetupScreen() {
             onAllowStorage={() => void session(["storage", appComponent], "Phone storage")}
           />
         ) : null}
+
+        <Button
+          label="Try it without Termux (prototype)"
+          tone="text"
+          onPress={() => navigation.navigate("DeviceRuntime")}
+        />
       </ScreenScrollView>
     </SettingsScreen>
   );

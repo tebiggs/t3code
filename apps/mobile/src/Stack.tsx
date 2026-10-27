@@ -66,6 +66,7 @@ import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { EnvironmentPowerSheet } from "./features/power/EnvironmentPowerSheet";
 import { useEnvironmentPowerWorker } from "./features/power/environment-power-state";
 import { PhoneSetupRouteScreen } from "./features/phone/PhoneSetupRouteScreen";
+import { DeviceRuntimePrototypeScreen } from "./features/device-runtime/DeviceRuntimePrototypeScreen";
 import { usePhoneServerWorker } from "./features/phone/phone-server";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
@@ -935,6 +936,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
     PhoneSetup: createNativeStackScreen({
       screen: PhoneSetupRouteScreen,
       linking: "phone-setup",
+      options: { headerShown: false, presentation: "card" as const, gestureEnabled: true },
+    }),
+    DeviceRuntime: createNativeStackScreen({
+      screen: DeviceRuntimePrototypeScreen,
+      linking: "device-runtime",
       options: { headerShown: false, presentation: "card" as const, gestureEnabled: true },
     }),
     EnvironmentPower: createNativeStackScreen({
