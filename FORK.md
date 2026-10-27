@@ -41,3 +41,10 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`). The
   phone warns when it runs upstream's server, telling builds apart by #2's
   release repo inside the binary.
+- #11 Phone setup can skip Termux: the app downloads Ubuntu into its own
+  storage and runs it through proot from the APK's native libraries, with
+  the server under a foreground service. Claude Code comes from Anthropic's
+  apt repository and updates with the server:
+  `apps/mobile/modules/t3-device-runtime/`,
+  `apps/mobile/src/features/device-runtime/`,
+  `apps/mobile/src/features/phone/phone-server-host.ts`.

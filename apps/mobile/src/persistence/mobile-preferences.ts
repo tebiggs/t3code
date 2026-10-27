@@ -63,12 +63,17 @@ export type EnvironmentPowerSettings = typeof EnvironmentPowerSettings.Type;
 const EnvironmentPowerPreferences = Schema.Record(Schema.String, EnvironmentPowerSettings);
 
 /** The T3 server that phone setup runs in Termux on this device. */
+export const PhoneServerHostKind = Schema.Literals(["termux", "device"]);
+export type PhoneServerHostKind = typeof PhoneServerHostKind.Type;
+
 export const PhoneServerSettings = Schema.Struct({
   environmentId: EnvironmentId,
-  /** Loopback port the server listens on inside Termux. */
+  /** Loopback port the server listens on. */
   port: Schema.Number,
-  /** Start the server in Termux when the app opens and it isn't running. Stop turns it off. */
+  /** Start the server when the app opens and it isn't running. Stop turns it off. */
   autoStart: Schema.Boolean,
+  /** What runs the server: Termux, or the runtime inside this app. Absent for Termux. */
+  host: Schema.optional(PhoneServerHostKind),
 });
 export type PhoneServerSettings = typeof PhoneServerSettings.Type;
 

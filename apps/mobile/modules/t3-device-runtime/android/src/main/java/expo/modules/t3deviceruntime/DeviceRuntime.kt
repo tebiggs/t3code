@@ -23,12 +23,13 @@ import java.util.zip.GZIPInputStream
 private const val UBUNTU_RELEASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04.1/release/"
 private const val CLAUDE_KEY_URL = "https://downloads.claude.ai/keys/claude-code.asc"
 private const val CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
-const val GUEST_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+const val GUEST_PATH = "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// Kotlin has no octal literals: 0777, 0600 and 0700.
+// Kotlin has no octal literals: 0777, 0600, 0700 and 0755.
 private const val PERMISSION_BITS = 0x1FF
 private const val OWNER_READ_WRITE = 0x180
 private const val OWNER_ALL = 0x1C0
+private const val EXECUTABLE = 0x1ED
 
 class RuntimeCancelled : IOException("Cancelled")
 
@@ -118,6 +119,22 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     log("Claude Code signing key verified: $fingerprint")
   }
 
+  /** The server names its environment after PRETTY_HOSTNAME. */
+  fun writeMachineInfo(deviceName: String) {
+    val name = deviceName.filterNot { it == '"' || it == '\\' || it.isISOControl() }
+    replaceFile(File(rootfs, "etc/machine-info"), "PRETTY_HOSTNAME=\"$name\"\n")
+  }
+
+  /** Where the guest's BROWSER leaves a URL for the app to open. */
+  val openUrlFile: File
+    get() = File(rootfs, "tmp/.t3-open-url")
+
+  fun writeOpenUrlCommand() {
+    val command = File(rootfs, "usr/local/bin/t3-open-url")
+    replaceFile(command, "#!/bin/sh\nprintf '%s\\n' \"$1\" > /tmp/.t3-open-url.$$ && mv /tmp/.t3-open-url.$$ /tmp/.t3-open-url\n")
+    Os.chmod(command.path, EXECUTABLE)
+  }
+
   /** Android has no resolv.conf, and some /proc files are closed to apps; the guest needs both. */
   private fun writeGuestConfig() {
     val dns = runCatching {
@@ -192,8 +209,8 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     }
   }
 
-  /** Runs a command in the guest, logging each output line, and returns its exit status. */
-  fun run(guestCommand: List<String>, stdin: String? = null, environment: Map<String, String> = emptyMap()): Int {
+  /** Starts a command in the guest with stderr merged into stdout. */
+  fun start(guestCommand: List<String>, environment: Map<String, String> = emptyMap()): Process {
     checkCancelled()
     writeGuestConfig()
     prootTmp.mkdirs()
@@ -205,11 +222,21 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
       put("PROOT_TMP_DIR", prootTmp.path)
       remove("LD_PRELOAD")
     }
-    val started = builder.start()
+    return builder.start()
+  }
+
+  /** Runs a command in the guest, passing each output line on, and returns its exit status. */
+  fun run(
+    guestCommand: List<String>,
+    stdin: String? = null,
+    environment: Map<String, String> = emptyMap(),
+    onLine: (String) -> Unit = log,
+  ): Int {
+    val started = start(guestCommand, environment)
     process = started
     try {
       started.outputStream.use { input -> stdin?.let { input.write(it.toByteArray()) } }
-      started.inputStream.bufferedReader().useLines { lines -> lines.forEach(log) }
+      started.inputStream.bufferedReader().useLines { lines -> lines.forEach(onLine) }
       return started.waitFor()
     } finally {
       process = null
@@ -218,26 +245,17 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     }
   }
 
-  fun reset() {
-    deleteTree(File(home, "ubuntu.staging"))
-    deleteTree(rootfs)
-    installedMarker.delete()
+  /** Runs a command in the guest and returns its exit status and output. */
+  fun capture(guestCommand: List<String>, stdin: String? = null): Pair<Int, String> {
+    val output = StringBuilder()
+    val code = run(guestCommand, stdin) { output.append(it).append('\n') }
+    return code to output.toString()
   }
 
-  /** Apparent size of regular files under a guest path, without following symlinks. */
-  fun guestSize(guestPath: String): Long {
-    val start = File(rootfs, guestPath.trimStart('/')).toPath()
-    if (!Files.exists(start)) return 0
-    var total = 0L
-    Files.walkFileTree(start, object : SimpleFileVisitor<Path>() {
-      override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
-        if (attributes.isRegularFile) total += attributes.size()
-        return FileVisitResult.CONTINUE
-      }
-
-      override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
-    })
-    return total
+  /** Deletes Ubuntu and everything installed in it, including the server's data. */
+  fun remove() {
+    deleteTree(home)
+    deleteTree(prootTmp)
   }
 
   private fun open(url: String): HttpURLConnection {

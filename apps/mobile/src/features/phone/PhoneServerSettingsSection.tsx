@@ -17,18 +17,20 @@ import {
 import { UPSTREAM_SERVER_WARNING, type PhoneScriptStatus } from "./phone-setup";
 import { openTermux } from "./termux";
 
-function useInstalledServerBuild() {
+// The on-device runtime only installs this fork's builds.
+function useInstalledServerBuild(termux: boolean) {
   const [build, setBuild] = useState<PhoneScriptStatus["t3Build"]>(null);
   const check = useCallback(() => {
+    if (!termux) return;
     void probePhone().then((probe) => {
       if (probe.kind === "ok") setBuild(probe.status.t3Build);
     });
-  }, []);
+  }, [termux]);
   useFocusEffect(check);
   return { build, check };
 }
 
-/** Settings → Environments → <this phone>: the server that phone setup runs in Termux. */
+/** Settings → Environments → <this phone>: the server phone setup runs in Termux or in this app. */
 export function PhoneServerSettingsSection(props: { readonly environmentId: EnvironmentId }) {
   const navigation = useNavigation();
   const settings = usePhoneServerSettings();
@@ -38,7 +40,8 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
   );
   const [busy, setBusy] = useState<"stopping" | "updating" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const server = useInstalledServerBuild();
+  const termux = settings?.host !== "device";
+  const server = useInstalledServerBuild(termux);
   if (settings === null || settings.environmentId !== props.environmentId) return null;
   const connected = environment?.connectionState === "connected";
 
@@ -49,19 +52,25 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
         actionError ??
         runtime.error ??
         (server.build === "upstream" ? UPSTREAM_SERVER_WARNING : null) ??
-        "T3 Code runs as a background task in Termux. Stop it here or with t3-phone stop in Termux; exiting Termux from its notification leaves it running. Its log is ~/.t3-phone/server.log."
+        (termux
+          ? "T3 Code runs as a background task in Termux. Stop it here or with t3-phone stop in Termux; exiting Termux from its notification leaves it running. Its log is ~/.t3-phone/server.log."
+          : "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification.")
       }
     >
       <ListRow
         icon="iphone"
         label="Setup and checks"
-        description="Install, Claude sign-in and keep-alive settings"
+        description={
+          termux
+            ? "Install, Claude sign-in and keep-alive settings"
+            : "Install, Claude sign-in, log and removal"
+        }
         onPress={() => navigation.navigate("PhoneSetup")}
       />
       <SettingsSwitchRow
         icon="play"
         label="Start when T3 Code opens"
-        subtitle="Starts the server in Termux if it isn't running."
+        subtitle={`Starts the server ${termux ? "in Termux" : "on this phone"} if it isn't running.`}
         value={settings.autoStart}
         onValueChange={(autoStart) => setPhoneServerSettings({ ...settings, autoStart })}
       />
@@ -94,11 +103,19 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
       )}
       <ListRow
         icon="arrow.down.circle"
-        label={busy === "updating" ? "Updating…" : "Update T3 Code"}
+        label={
+          busy === "updating"
+            ? "Updating…"
+            : termux
+              ? "Update T3 Code"
+              : "Update T3 Code and Claude Code"
+        }
         description={
-          server.build === "upstream"
-            ? "Runs upstream's server. Installs this app's newest server build, then restarts."
-            : "Installs the newest server build, then restarts the server."
+          !termux
+            ? "Installs the newest server build and Claude Code, then restarts the server."
+            : server.build === "upstream"
+              ? "Runs upstream's server. Installs this app's newest server build, then restarts."
+              : "Installs the newest server build, then restarts the server."
         }
         disabled={busy !== null || runtime.starting}
         onPress={() => {
@@ -114,7 +131,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
             });
         }}
       />
-      <ListRow icon="terminal" label="Open Termux" onPress={() => openTermux()} />
+      {termux ? <ListRow icon="terminal" label="Open Termux" onPress={() => openTermux()} /> : null}
     </SettingsSection>
   );
 }

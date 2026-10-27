@@ -1,195 +1,267 @@
 package expo.modules.t3deviceruntime
 
 import android.content.Context
-import android.net.TrafficStats
-import android.os.Build
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import android.os.Process as AndroidProcess
-import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.util.concurrent.Executors
-import org.json.JSONArray
-import org.json.JSONObject
 
 private const val TAG = "T3DeviceRuntime"
-private const val LOG_LIMIT = 4000
+private const val LOG_LIMIT = 2000
 
-private data class PrototypeStep(val id: String, val title: String)
+private data class JobStep(val id: String, val title: String)
 
-// Phase 1 of the on-device runtime: proves each layer on a real phone and measures it.
-private val PROTOTYPE_STEPS = listOf(
-  PrototypeStep("ubuntu", "Download and extract Ubuntu base"),
-  PrototypeStep("proot", "Start proot from the native library directory"),
-  PrototypeStep("uname", "Run uname -a inside Ubuntu"),
-  PrototypeStep("ca-certificates", "apt-get update and install ca-certificates"),
-  PrototypeStep("essentials", "Install git, curl, openssh-client and ripgrep"),
-  PrototypeStep("node", "Install Node.js from nodejs.org"),
-  PrototypeStep("claude-code", "Install Claude Code from Anthropic's apt repository"),
-  PrototypeStep("versions", "node --version and claude --version"),
+private val INSTALL_STEPS = listOf(
+  JobStep("ubuntu", "Downloading Ubuntu"),
+  JobStep("packages", "Installing Ubuntu packages"),
+  JobStep("node", "Installing Node.js"),
+  JobStep("claude-code", "Installing Claude Code"),
+  JobStep("t3", "Installing T3 Code"),
+  JobStep("cleanup", "Cleaning up"),
 )
 
+private val UPDATE_STEPS = listOf(
+  JobStep("t3", "Updating T3 Code"),
+  JobStep("upgrade-claude-code", "Updating Claude Code"),
+  JobStep("cleanup", "Cleaning up"),
+)
+
+class RuntimeJobFailed(message: String) : CodedException("ERR_DEVICE_RUNTIME_JOB", message, null)
+
 class T3DeviceRuntimeModule : Module() {
-  private val executor = Executors.newSingleThreadExecutor()
+  private val jobs = Executors.newSingleThreadExecutor()
+  private val work = Executors.newCachedThreadPool()
   private val mainHandler = Handler(Looper.getMainLooper())
-  private val log = ArrayDeque<String>()
-  private val pendingLines = ArrayList<String>()
-  private var flushScheduled = false
-  @Volatile private var activeRuntime: DeviceRuntime? = null
-  @Volatile private var state: Map<String, Any?> = mapOf("running" to false)
+  private val jobLog = ArrayDeque<String>()
+  @Volatile private var activeJob: DeviceRuntime? = null
+  @Volatile private var jobState: Map<String, Any?>? = null
+  @Volatile private var login: ClaudeLogin? = null
+  @Volatile private var loginState: Map<String, Any?>? = null
 
   override fun definition() = ModuleDefinition {
     Name("T3DeviceRuntime")
-    Events("onLog", "onState")
+    Events("onJob", "onLogin")
 
     Function("getStatus") {
-      val context = requireContext()
-      val probe = DeviceRuntime(context) {}
-      state + mapOf(
-        "supported" to probe.supported,
-        "ubuntuInstalled" to probe.ubuntuInstalled,
-        "log" to synchronized(log) { log.toList() },
+      val runtime = DeviceRuntime(requireContext()) {}
+      mapOf(
+        "supported" to runtime.supported,
+        "enabled" to enabledMarker(runtime).isFile,
+        "installed" to installedMarker(runtime).isFile,
+        "serverRunning" to DeviceServer.running,
+        "job" to jobState,
+        "login" to loginState,
       )
     }
 
-    Function("startPrototype") {
-      val context = requireContext()
-      val created = DeviceRuntime(context, ::appendLog)
-      synchronized(this@T3DeviceRuntimeModule) {
-        if (activeRuntime != null) return@Function false
-        activeRuntime = created
-      }
-      synchronized(log) { log.clear() }
-      setKeepScreenOn(true)
-      executor.execute { runPrototype(context, created) }
-      true
+    Function("setEnabled") { enabled: Boolean ->
+      val marker = enabledMarker(DeviceRuntime(requireContext()) {})
+      if (enabled) marker.apply { parentFile?.mkdirs() }.writeText("") else marker.delete()
     }
 
-    Function("cancel") { activeRuntime?.cancel() }
-
-    AsyncFunction("reset") {
+    AsyncFunction("install") { deviceName: String, promise: Promise ->
       val context = requireContext()
-      if (activeRuntime != null) throw CodedException("RUNNING", "Stop the prototype before resetting.", null)
-      DeviceRuntime(context) {}.reset()
-    }
-  }
-
-  private fun requireContext(): Context =
-    appContext.reactContext ?: throw CodedException("NO_CONTEXT", "The React context isn't ready.", null)
-
-  private fun runPrototype(context: Context, runtime: DeviceRuntime) {
-    val script = context.assets.open("device-runtime-setup.sh").bufferedReader().readText()
-    val results = JSONArray()
-    val started = SystemClock.elapsedRealtime()
-    var failure: String? = null
-    try {
-      for (step in PROTOTYPE_STEPS) {
-        setState(mapOf("running" to true, "step" to step.id, "stepTitle" to step.title))
-        appendLog("@@ ${step.title}")
-        val rxBefore = TrafficStats.getUidRxBytes(AndroidProcess.myUid())
-        val stepStarted = SystemClock.elapsedRealtime()
-        val exitCode = when (step.id) {
-          "ubuntu" -> { runtime.installUbuntu(); 0 }
-          "proot" -> runDirect(runtime.proot.path, "--version")
-          "uname" -> runtime.run(listOf("/bin/sh", "-c", "uname -a; . /etc/os-release; echo \"\$PRETTY_NAME\""))
+      startJob(context, "install", INSTALL_STEPS, promise) { runtime, step, script ->
+        when (step.id) {
+          "ubuntu" -> {
+            runtime.installUbuntu()
+            runtime.writeMachineInfo(deviceName)
+            0
+          }
           "claude-code" -> {
             runtime.installClaudeKey()
             runtime.run(listOf("/bin/bash", "-s", "--", step.id), stdin = script)
           }
           else -> runtime.run(listOf("/bin/bash", "-s", "--", step.id), stdin = script)
         }
-        val result = JSONObject()
-          .put("id", step.id)
-          .put("title", step.title)
-          .put("seconds", (SystemClock.elapsedRealtime() - stepStarted) / 1000.0)
-          .put("downloadedBytes", TrafficStats.getUidRxBytes(AndroidProcess.myUid()) - rxBefore)
-          .put("exitCode", exitCode)
-        if (runtime.rootfs.isDirectory) result.put("rootfsBytes", runtime.guestSize("/"))
-        results.put(result)
-        appendLog("@@ ${step.id}: exit $exitCode in ${result.getDouble("seconds")} s, " +
-          "downloaded ${megabytes(result.getLong("downloadedBytes"))}, " +
-          "rootfs ${megabytes(result.optLong("rootfsBytes"))}")
-        if (exitCode != 0) {
-          failure = "${step.title} exited with status $exitCode"
-          break
-        }
-      }
-    } catch (error: RuntimeCancelled) {
-      failure = "Cancelled"
-    } catch (error: Throwable) {
-      Log.e(TAG, "Prototype failed", error)
-      failure = "${error.javaClass.simpleName}: ${error.message}"
-    }
-    val report = JSONObject()
-      .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
-      .put("android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-      .put("targetSdk", context.applicationInfo.targetSdkVersion)
-      .put("kernel", System.getProperty("os.version"))
-      .put("totalSeconds", (SystemClock.elapsedRealtime() - started) / 1000.0)
-      .put("failure", failure)
-      .put("steps", results)
-    if (runtime.rootfs.isDirectory) {
-      report.put("sizes", JSONObject().apply {
-        for (path in listOf("/", "/usr", "/opt/node", "/usr/bin/claude", "/var/lib/apt/lists", "/var/cache/apt")) {
-          put(path, runtime.guestSize(path))
-        }
-      })
-    }
-    appendLog("@@ report ${report.toString(2)}")
-    writeReport(context, runtime, report)
-    synchronized(this) { activeRuntime = null }
-    setKeepScreenOn(false)
-    setState(mapOf("running" to false, "failure" to failure, "report" to report.toString()))
-  }
-
-  // Runs a native-library-directory binary directly, outside the guest.
-  private fun runDirect(vararg command: String): Int {
-    val process = ProcessBuilder(*command).redirectErrorStream(true).start()
-    process.inputStream.bufferedReader().useLines { lines -> lines.forEach(::appendLog) }
-    return process.waitFor()
-  }
-
-  private fun writeReport(context: Context, runtime: DeviceRuntime, report: JSONObject) {
-    val text = report.toString(2)
-    val lines = synchronized(log) { log.joinToString("\n") }
-    runCatching { File(runtime.home.apply { mkdirs() }, "prototype-report.json").writeText(text) }
-    // Readable over adb without a debuggable build.
-    context.getExternalFilesDir(null)?.let { dir ->
-      runCatching {
-        File(dir, "device-runtime-report.json").writeText(text)
-        File(dir, "device-runtime.log").writeText(lines)
       }
     }
+
+    // The server keeps running its old build until the app restarts it.
+    AsyncFunction("update") { promise: Promise ->
+      val context = requireContext()
+      if (!installedMarker(DeviceRuntime(context) {}).isFile) {
+        throw CodedException("ERR_DEVICE_RUNTIME_MISSING", "The on-device runtime isn't installed.", null)
+      }
+      startJob(context, "update", UPDATE_STEPS, promise) { runtime, step, script ->
+        if (step.id == "upgrade-claude-code") runtime.installClaudeKey()
+        runtime.run(listOf("/bin/bash", "-s", "--", step.id), stdin = script)
+      }
+    }
+
+    Function("cancelJob") { activeJob?.cancel() }
+
+    Function("getJobLog") { synchronized(jobLog) { jobLog.toList() } }
+
+    AsyncFunction("inspect") { promise: Promise ->
+      val context = requireContext()
+      inBackground(promise) {
+        val runtime = DeviceRuntime(context) {}
+        val script = context.assets.open("device-runtime-setup.sh").bufferedReader().readText()
+        val (code, output) = runtime.capture(listOf("/bin/bash", "-s", "--", "status"), stdin = script)
+        if (code != 0) throw RuntimeJobFailed(output.trim().lines().takeLast(3).joinToString("\n"))
+        output.lines().mapNotNull { line ->
+          val separator = line.indexOf('=')
+          if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1).trim()
+        }.toMap()
+      }
+    }
+
+    Function("startServer") { port: Int -> DeviceServer.start(requireContext(), port) }
+
+    AsyncFunction("stopServer") { promise: Promise ->
+      val context = requireContext()
+      inBackground(promise) { DeviceServer.stop(context) }
+    }
+
+    Function("serverLog") { lines: Int ->
+      val log = DeviceServer.logFile(requireContext())
+      if (log.isFile) log.readLines().takeLast(lines).joinToString("\n") else ""
+    }
+
+    AsyncFunction("pair") { promise: Promise ->
+      val context = requireContext()
+      inBackground(promise) {
+        val (_, output) = DeviceRuntime(context) {}
+          .capture(listOf("t3", "pair", "--label", "T3 Code app on this phone"))
+        output.lines().map { it.trim() }.firstOrNull { it.startsWith("Pairing URL: ") }
+          ?.removePrefix("Pairing URL: ")
+          ?: throw RuntimeJobFailed(output.trim().ifEmpty { "T3 Code didn't give a pairing link." })
+      }
+    }
+
+    Function("startLogin") {
+      val context = requireContext()
+      if (login?.running == true) return@Function null
+      val created = ClaudeLogin(DeviceRuntime(context) {}, ::openUrl) { state ->
+        loginState = state
+        mainHandler.post { sendEvent("onLogin", state) }
+      }
+      login = created
+      created.start()
+    }
+
+    Function("submitLoginCode") { code: String -> login?.submitCode(code) }
+
+    Function("cancelLogin") { login?.cancel() }
+
+    AsyncFunction("logout") { promise: Promise ->
+      val context = requireContext()
+      inBackground(promise) { DeviceRuntime(context) {}.capture(listOf("claude", "auth", "logout")).first }
+    }
+
+    // Stops the server and deletes Ubuntu with everything in it, then turns the runtime off.
+    AsyncFunction("remove") { promise: Promise ->
+      val context = requireContext()
+      if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", "Wait for setup to finish first.", null)
+      inBackground(promise) {
+        login?.cancel()
+        DeviceServer.stop(context)
+        DeviceRuntime(context) {}.remove()
+        jobState = null
+        loginState = null
+      }
+    }
+  }
+
+  private fun requireContext(): Context =
+    appContext.reactContext ?: throw CodedException("ERR_NO_CONTEXT", "The React context isn't ready.", null)
+
+  private fun enabledMarker(runtime: DeviceRuntime) = File(runtime.home, "enabled")
+
+  private fun installedMarker(runtime: DeviceRuntime) = File(runtime.home, "setup.done")
+
+  private fun <T> inBackground(promise: Promise, body: () -> T) {
+    work.execute {
+      try {
+        val result = body()
+        promise.resolve(if (result == Unit) null else result)
+      } catch (error: CodedException) {
+        promise.reject(error)
+      } catch (error: Throwable) {
+        promise.reject(CodedException("ERR_DEVICE_RUNTIME", error.message ?: error.javaClass.simpleName, error))
+      }
+    }
+  }
+
+  private fun startJob(
+    context: Context,
+    kind: String,
+    steps: List<JobStep>,
+    promise: Promise,
+    runStep: (DeviceRuntime, JobStep, String) -> Int,
+  ) {
+    val runtime = DeviceRuntime(context, ::appendLog)
+    synchronized(this) {
+      if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", "Setup or an update is already running.", null)
+      activeJob = runtime
+    }
+    synchronized(jobLog) { jobLog.clear() }
+    setKeepScreenOn(true)
+    jobs.execute {
+      var failure: String? = null
+      try {
+        val script = context.assets.open("device-runtime-setup.sh").bufferedReader().readText()
+        for ((index, step) in steps.withIndex()) {
+          setJobState(kind, true, step, index, steps.size, null)
+          appendLog("@@ ${step.title}")
+          val code = runStep(runtime, step, script)
+          if (code != 0) {
+            val tail = synchronized(jobLog) { jobLog.filterNot { it.startsWith("@@") }.takeLast(4) }
+            failure = "${step.title} failed (exit $code).\n${tail.joinToString("\n")}".trim()
+            break
+          }
+        }
+        if (failure == null && kind == "install") installedMarker(runtime).writeText("")
+      } catch (error: RuntimeCancelled) {
+        failure = "Cancelled."
+      } catch (error: Throwable) {
+        Log.e(TAG, "$kind failed", error)
+        failure = error.message ?: error.javaClass.simpleName
+      }
+      synchronized(this) { activeJob = null }
+      setKeepScreenOn(false)
+      setJobState(kind, false, null, steps.size, steps.size, failure)
+      if (failure == null) promise.resolve(null) else promise.reject(RuntimeJobFailed(failure))
+    }
+  }
+
+  private fun setJobState(kind: String, running: Boolean, step: JobStep?, index: Int, count: Int, error: String?) {
+    val state = mapOf(
+      "kind" to kind,
+      "running" to running,
+      "step" to step?.id,
+      "stepTitle" to step?.title,
+      "stepNumber" to index + 1,
+      "stepCount" to count,
+      "error" to error,
+    )
+    jobState = state
+    mainHandler.post { sendEvent("onJob", state) }
   }
 
   private fun appendLog(line: String) {
     Log.i(TAG, line)
-    synchronized(log) {
-      log.addLast(line)
-      while (log.size > LOG_LIMIT) log.removeFirst()
-      pendingLines.add(line)
-      if (flushScheduled) return
-      flushScheduled = true
+    synchronized(jobLog) {
+      jobLog.addLast(line)
+      while (jobLog.size > LOG_LIMIT) jobLog.removeFirst()
     }
-    mainHandler.postDelayed(::flushLog, 250)
   }
 
-  private fun flushLog() {
-    val lines = synchronized(log) {
-      flushScheduled = false
-      pendingLines.toList().also { pendingLines.clear() }
+  private fun openUrl(url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    mainHandler.post {
+      runCatching { (appContext.currentActivity ?: requireContext()).startActivity(intent) }
+        .onFailure { Log.w(TAG, "Couldn't open the sign-in page", it) }
     }
-    if (lines.isNotEmpty()) sendEvent("onLog", mapOf("lines" to lines))
-  }
-
-  private fun setState(next: Map<String, Any?>) {
-    state = next
-    mainHandler.post { sendEvent("onState", next) }
   }
 
   // The app's processes, proot's included, freeze once it leaves the screen.

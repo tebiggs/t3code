@@ -4,17 +4,20 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { AppState, Linking, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { ListRow } from "../../components/ui/ListRow";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { cn } from "../../lib/cn";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
+import { DeviceRuntimeSetupScreen } from "../device-runtime/DeviceRuntimeSetupScreen";
+import { deviceRuntime, supportsDeviceRuntime } from "../device-runtime/device-runtime";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
 import { connectPhoneServer, probePhone } from "./phone-server";
+import { termuxHost } from "./phone-server-host";
+import { StepRow, StepText } from "./SetupStep";
 import {
   currentPhoneSetupStep,
   PHONE_SCRIPT_VERSION,
@@ -129,7 +132,28 @@ function usePhoneEnvironment(status: PhoneScriptStatus | null) {
 
 /** Deep links reach this route on iOS too, where there is no Termux bridge. */
 export function PhoneSetupRouteScreen() {
-  return supportsPhoneSetup() ? <PhoneSetupScreen /> : <PhoneSetupUnavailable />;
+  const [onDevice, setOnDevice] = useState(() => deviceRuntime?.getStatus().enabled === true);
+  const [deviceSupported] = useState(supportsDeviceRuntime);
+  if (!supportsPhoneSetup()) return <PhoneSetupUnavailable />;
+  const hostSwitch = deviceSupported ? (
+    <SettingsSection>
+      <SettingsSwitchRow
+        icon="cube"
+        label="Without Termux"
+        subtitle="Experimental. Ubuntu runs inside T3 Code itself."
+        value={onDevice}
+        onValueChange={(value) => {
+          deviceRuntime?.setEnabled(value);
+          setOnDevice(value);
+        }}
+      />
+    </SettingsSection>
+  ) : null;
+  return onDevice ? (
+    <DeviceRuntimeSetupScreen hostSwitch={hostSwitch} />
+  ) : (
+    <PhoneSetupScreen hostSwitch={hostSwitch} />
+  );
 }
 
 function PhoneSetupUnavailable() {
@@ -142,7 +166,7 @@ function PhoneSetupUnavailable() {
   );
 }
 
-function PhoneSetupScreen() {
+function PhoneSetupScreen(props: { readonly hostSwitch: ReactNode }) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const setup = usePhoneSetupState();
@@ -164,17 +188,19 @@ function PhoneSetupScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const run = async (label: string, action: () => Promise<void> | void) => {
+  // A promise chain: React Compiler can't compile try/finally.
+  const run = (label: string, action: () => Promise<void> | void) => {
     setBusy(label);
     setActionError(null);
-    try {
-      await action();
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
-    }
-    void setup.refresh();
+    return Promise.resolve()
+      .then(action)
+      .catch((error: unknown) =>
+        setActionError(error instanceof Error ? error.message : String(error)),
+      )
+      .then(() => {
+        setBusy(null);
+        void setup.refresh();
+      });
   };
   const appComponent = setup.termux.appLaunchComponent ?? "";
   const session = (args: ReadonlyArray<string>, label: string) =>
@@ -250,7 +276,7 @@ function PhoneSetupScreen() {
           loading={busy === "connect"}
           onPress={() =>
             void run("connect", async () => {
-              await connectPhoneServer(status.port);
+              await connectPhoneServer(termuxHost, status.port);
             })
           }
         />
@@ -280,6 +306,7 @@ function PhoneSetupScreen() {
           Claude Code and a T3 Code server run inside Termux on this phone, so agents can work with
           your phone's files. Setup takes about 20 minutes and 3 GB of storage. Use Wi-Fi.
         </Text>
+        {props.hostSwitch}
 
         {current === "ready" && environment ? (
           <SettingsSection title="Ready">
@@ -346,12 +373,6 @@ function PhoneSetupScreen() {
             onAllowStorage={() => void session(["storage", appComponent], "Phone storage")}
           />
         ) : null}
-
-        <Button
-          label="Try it without Termux (prototype)"
-          tone="text"
-          onPress={() => navigation.navigate("DeviceRuntime")}
-        />
       </ScreenScrollView>
     </SettingsScreen>
   );
@@ -546,71 +567,6 @@ function KeepRunningSection(props: {
       ) : null}
     </SettingsSection>
   );
-}
-
-function StepRow(props: {
-  readonly number: number;
-  readonly title: string;
-  readonly state: "done" | "current" | "upcoming";
-  readonly summary: string | undefined;
-  readonly action?: ReactNode;
-  readonly children: ReactNode;
-}) {
-  return (
-    <View
-      accessible={props.children === null}
-      accessibilityLabel={`Step ${props.number}, ${props.title}, ${props.state === "done" ? "done" : props.state === "current" ? "current step" : "not started"}`}
-      className="flex-row gap-3 px-4 py-3"
-    >
-      <View
-        className={cn(
-          "mt-0.5 size-6 items-center justify-center rounded-full",
-          props.state === "done" && "bg-adaptive-emerald-600-400",
-          props.state === "current" && "bg-primary",
-          props.state === "upcoming" && "border border-border",
-        )}
-      >
-        {props.state === "done" ? (
-          <SymbolView name="checkmark" size={13} tintColorClassName="accent-screen" />
-        ) : (
-          <Text
-            textRole="label"
-            className={cn(
-              "font-t3-bold",
-              props.state === "current" ? "text-primary-foreground" : "text-foreground-muted",
-            )}
-          >
-            {props.number}
-          </Text>
-        )}
-      </View>
-      <View className="flex-1 gap-2">
-        <View className="flex-row items-center gap-2">
-          <View className="flex-1">
-            <Text
-              className={cn(
-                "text-base",
-                props.state === "upcoming"
-                  ? "text-foreground-muted"
-                  : "font-t3-medium text-foreground",
-              )}
-            >
-              {props.title}
-            </Text>
-            {props.summary && props.state === "done" ? (
-              <Text className="text-sm text-foreground-muted">{props.summary}</Text>
-            ) : null}
-          </View>
-          {props.state === "done" ? props.action : null}
-        </View>
-        {props.children}
-      </View>
-    </View>
-  );
-}
-
-function StepText(props: { readonly children: ReactNode }) {
-  return <Text className="text-sm leading-normal text-foreground-muted">{props.children}</Text>;
 }
 
 function CodeBlock(props: { readonly children: string }) {

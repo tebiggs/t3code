@@ -1,0 +1,433 @@
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Linking, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
+import { ListRow } from "../../components/ui/ListRow";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
+import { useWorkspaceEnvironments } from "../../state/workspace";
+import { connectPhoneServer, stopPhoneServerWhenSettled } from "../phone/phone-server";
+import { StepRow, StepText } from "../phone/SetupStep";
+import { getTermuxStatus, openDeveloperSettings } from "../phone/termux";
+import { SettingsScreen } from "../settings/components/SettingsScreen";
+import { SettingsSection } from "../settings/components/SettingsSection";
+import {
+  DEVICE_SERVER_PORT,
+  deviceServerHost,
+  inspectDeviceRuntime,
+  requireDeviceRuntime,
+  useDeviceRuntimeStatus,
+  type DeviceRuntimeInspection,
+  type DeviceRuntimeStatus,
+} from "./device-runtime";
+
+type StepId = "install" | "signIn" | "connect";
+
+const STEPS: ReadonlyArray<StepId> = ["install", "signIn", "connect"];
+
+const STEP_TITLES: Record<StepId, string> = {
+  install: "Install Ubuntu, Claude Code and T3 Code",
+  signIn: "Sign in to Claude",
+  connect: "Connect this phone",
+};
+
+function errorText(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : fallback;
+}
+
+/** Phone setup without Termux: Ubuntu, Claude Code and the server run inside this app. */
+export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode }) {
+  const native = requireDeviceRuntime();
+  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
+  const { status, refresh } = useDeviceRuntimeStatus();
+  const [inspection, setInspection] = useState<DeviceRuntimeInspection | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showLog, setShowLog] = useState(false);
+  const settings = usePhoneServerSettings();
+  const environment =
+    useWorkspaceEnvironments().find(
+      (candidate) =>
+        settings?.host === "device" && candidate.environmentId === settings.environmentId,
+    ) ?? null;
+  const connected = environment?.connectionState === "connected";
+
+  const inspect = useCallback(() => {
+    if (!native.getStatus().installed) {
+      setInspection(null);
+      return;
+    }
+    inspectDeviceRuntime()
+      .then(setInspection)
+      .catch((cause: unknown) => setError(errorText(cause, "Couldn't check the installation.")));
+  }, [native]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+      inspect();
+    }, [refresh, inspect]),
+  );
+  // oxlint-disable-next-line t3code/react-effect-budget -- re-reads Ubuntu once setup or sign-in finishes natively
+  useEffect(() => {
+    const job = native.addListener("onJob", (next) => {
+      if (!next.running) inspect();
+    });
+    const login = native.addListener("onLogin", (next) => {
+      if (next.state === "done") inspect();
+    });
+    return () => {
+      job.remove();
+      login.remove();
+    };
+  }, [native, inspect]);
+  const installing = status.job?.running === true;
+
+  const current: StepId | "ready" = !status.installed
+    ? "install"
+    : !inspection?.claudeSignedIn
+      ? "signIn"
+      : !connected
+        ? "connect"
+        : "ready";
+  const stepState = (step: StepId): "done" | "current" | "upcoming" => {
+    if (current === "ready") return "done";
+    const index = STEPS.indexOf(step);
+    const currentIndex = STEPS.indexOf(current);
+    return index < currentIndex ? "done" : index === currentIndex ? "current" : "upcoming";
+  };
+
+  // A promise chain: React Compiler can't compile try/finally.
+  const run = (label: string, action: () => Promise<unknown>) => {
+    setBusy(label);
+    setError(null);
+    return action()
+      .catch((cause: unknown) => setError(errorText(cause, "That didn't finish.")))
+      .then(() => {
+        setBusy(null);
+        refresh();
+      });
+  };
+  const install = () =>
+    run("install", async () => {
+      await native.install(getTermuxStatus().deviceName);
+      inspect();
+    });
+  const reinstall = () =>
+    Dialog.alert(
+      "Reinstall?",
+      "Deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone, then installs it again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reinstall",
+          style: "destructive",
+          onPress: () =>
+            void run("install", async () => {
+              await stopPhoneServerWhenSettled(deviceServerHost);
+              await native.remove();
+              native.setEnabled(true);
+              setInspection(null);
+              await native.install(getTermuxStatus().deviceName);
+              inspect();
+            }),
+        },
+      ],
+    );
+  const remove = () =>
+    Dialog.alert(
+      "Remove from this phone?",
+      "Stops the server and deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone. Phone setup goes back to Termux.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () =>
+            void run("remove", async () => {
+              if (settings?.host === "device")
+                setPhoneServerSettings({ ...settings, autoStart: false });
+              await stopPhoneServerWhenSettled(deviceServerHost);
+              await native.remove();
+              if (settings?.host === "device") setPhoneServerSettings(null);
+              navigation.goBack();
+            }),
+        },
+      ],
+    );
+
+  const summary: Record<StepId, string | undefined> = {
+    install:
+      inspection?.claudeVersion && inspection.t3Version
+        ? `Claude Code ${inspection.claudeVersion} · T3 Code ${inspection.t3Version}`
+        : undefined,
+    signIn: inspection?.claudeSignedIn
+      ? inspection.claudePlan
+        ? `Signed in · ${inspection.claudePlan}`
+        : "Signed in"
+      : undefined,
+    connect: environment ? `Connected as ${environment.environmentLabel}` : undefined,
+  };
+  const body: Record<StepId, ReactNode> = {
+    install: (
+      <InstallStepBody
+        status={status}
+        busy={busy === "install"}
+        onInstall={() => void install()}
+        onCancel={() => native.cancelJob()}
+      />
+    ),
+    signIn: <SignInStepBody status={status} checking={status.installed && inspection === null} />,
+    connect: (
+      <>
+        <StepText>Starts T3 Code's server on this phone and adds it to your environments.</StepText>
+        <Button
+          label="Connect"
+          tone="primary"
+          loading={busy === "connect"}
+          onPress={() =>
+            void run("connect", () => connectPhoneServer(deviceServerHost, DEVICE_SERVER_PORT))
+          }
+        />
+      </>
+    ),
+  };
+
+  return (
+    <SettingsScreen title="Run on this phone">
+      <ScreenScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        <Text className="px-2 text-sm leading-normal text-foreground-muted">
+          Claude Code and a T3 Code server run in an Ubuntu system inside T3 Code, without Termux.
+          Setup downloads about 400 MB and uses about 1.1 GB of storage. Use Wi-Fi.
+        </Text>
+        {props.hostSwitch}
+
+        {current === "ready" && environment ? (
+          <SettingsSection title="Ready">
+            <View className="gap-3 p-4">
+              <Text className="text-base font-t3-medium text-foreground">This phone is ready</Text>
+              <Text className="text-sm text-foreground-muted">
+                Connected as {environment.environmentLabel}
+                {inspection?.claudeVersion ? ` · Claude Code ${inspection.claudeVersion}` : ""}
+              </Text>
+              <Button
+                label="Start a thread"
+                tone="primary"
+                onPress={() => navigation.navigate("NewTaskProject")}
+              />
+            </View>
+          </SettingsSection>
+        ) : null}
+
+        <SettingsSection title="Setup">
+          {STEPS.map((step, index) => (
+            <StepRow
+              key={step}
+              number={index + 1}
+              title={STEP_TITLES[step]}
+              state={stepState(step)}
+              summary={summary[step]}
+              action={
+                step === "signIn" && inspection?.claudeSignedIn ? (
+                  <Button
+                    label="Sign out"
+                    tone="text"
+                    loading={busy === "logout"}
+                    onPress={() =>
+                      void run("logout", async () => {
+                        await native.logout();
+                        inspect();
+                      })
+                    }
+                  />
+                ) : null
+              }
+            >
+              {stepState(step) === "current" ? body[step] : null}
+            </StepRow>
+          ))}
+        </SettingsSection>
+
+        {error ? (
+          <Text selectable className="px-2 text-sm text-danger-foreground">
+            {error}
+          </Text>
+        ) : null}
+
+        {status.installed || status.job !== null ? (
+          <SettingsSection
+            title="Manage"
+            footer="While the server runs, T3 Code shows a notification and keeps the phone awake. Android may stop agents when many processes run; the child process setting lifts that limit."
+          >
+            <ListRow
+              icon="terminal"
+              label={showLog ? "Hide log" : "Show log"}
+              description={installing ? "Setup output" : "Setup output and the server's log"}
+              onPress={() => setShowLog((value) => !value)}
+            />
+            {showLog ? <LogView installing={installing} /> : null}
+            <ListRow
+              icon="bolt.circle"
+              label="Battery use"
+              description="Set T3 Code to Unrestricted if the server stops with the screen off."
+              onPress={() => void Linking.openSettings()}
+            />
+            <ListRow
+              icon="terminal"
+              label="Child process limit"
+              description='In Developer options, turn on "Disable child process restrictions".'
+              onPress={() => openDeveloperSettings()}
+            />
+            {status.installed ? (
+              <ListRow
+                icon="arrow.clockwise"
+                label="Reinstall"
+                description="Deletes everything on this phone's server and installs it again."
+                disabled={busy !== null || installing}
+                onPress={reinstall}
+              />
+            ) : null}
+            <ListRow
+              icon="trash"
+              label="Remove from this phone"
+              description="Stops the server and deletes Ubuntu and everything in it."
+              disabled={busy !== null || installing}
+              onPress={remove}
+            />
+          </SettingsSection>
+        ) : null}
+      </ScreenScrollView>
+    </SettingsScreen>
+  );
+}
+
+function InstallStepBody(props: {
+  readonly status: DeviceRuntimeStatus;
+  readonly busy: boolean;
+  readonly onInstall: () => void;
+  readonly onCancel: () => void;
+}) {
+  const job = props.status.job;
+  if (job?.running) {
+    return (
+      <>
+        <StepText>
+          Step {job.stepNumber} of {job.stepCount}: {job.stepTitle}. Keep T3 Code open until it
+          finishes; it takes a few minutes.
+        </StepText>
+        <Button label="Cancel" tone="text" onPress={props.onCancel} />
+      </>
+    );
+  }
+  return (
+    <>
+      {job?.error ? (
+        <Text selectable className="text-sm text-danger-foreground">
+          {job.error}
+        </Text>
+      ) : null}
+      <StepText>
+        Keep T3 Code open while it installs. Running it again skips finished parts.
+      </StepText>
+      <Button
+        label={job?.error ? "Try again" : "Install"}
+        tone="primary"
+        loading={props.busy}
+        onPress={props.onInstall}
+      />
+    </>
+  );
+}
+
+function SignInStepBody(props: {
+  readonly status: DeviceRuntimeStatus;
+  readonly checking: boolean;
+}) {
+  const native = requireDeviceRuntime();
+  const [code, setCode] = useState("");
+  const login = props.status.login;
+  if (props.checking) return <StepText>Checking…</StepText>;
+  if (login?.state === "starting") return <StepText>Starting sign-in…</StepText>;
+  if (login?.state === "browser") {
+    const manualUrl = login.manualUrl ?? "";
+    return (
+      <>
+        <StepText>
+          Sign in in your browser. If it shows a code instead of coming back here, copy it and paste
+          it below.
+        </StepText>
+        <AppTextInput
+          accessibilityLabel="Sign-in code"
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="Code"
+          value={code}
+          onChangeText={setCode}
+        />
+        <View className="flex-row flex-wrap gap-2">
+          <Button
+            label="Submit code"
+            tone="primary"
+            disabled={code.trim().length === 0}
+            onPress={() => {
+              native.submitLoginCode(code);
+              setCode("");
+            }}
+          />
+          {login.manualUrl ? (
+            <Button
+              label="Open again"
+              tone="text"
+              onPress={() => void Linking.openURL(manualUrl)}
+            />
+          ) : null}
+          <Button label="Cancel" tone="text" onPress={() => native.cancelLogin()} />
+        </View>
+      </>
+    );
+  }
+  return (
+    <>
+      {login?.state === "failed" ? (
+        <Text selectable className="text-sm text-danger-foreground">
+          {login.message}
+        </Text>
+      ) : null}
+      <StepText>
+        Use the Claude account that has Claude Code. Your browser opens to sign in.
+      </StepText>
+      <Button label="Sign in" tone="primary" onPress={() => native.startLogin()} />
+    </>
+  );
+}
+
+function LogView(props: { readonly installing: boolean }) {
+  const native = requireDeviceRuntime();
+  const job = native.getJobLog().slice(-60).join("\n");
+  const server = props.installing ? "" : native.serverLog(40);
+  return (
+    <View className="gap-2 px-4 pb-3">
+      {job ? (
+        <Text selectable className="font-mono text-[11px] leading-4 text-foreground-muted">
+          {job}
+        </Text>
+      ) : null}
+      {server ? (
+        <Text selectable className="font-mono text-[11px] leading-4 text-foreground-muted">
+          {server}
+        </Text>
+      ) : null}
+      {!job && !server ? <StepText>Nothing logged yet.</StepText> : null}
+    </View>
+  );
+}

@@ -60,6 +60,13 @@ inside Termux, and the phone becomes an environment named after the device.
 - The phone's T3 Code server doesn't update itself. Use **Update T3 Code** on the
   phone's environment page in **Settings > Environments**.
 - In Termux, `t3-phone shell` opens Ubuntu.
+- **Without Termux** (experimental) at the top of the checklist runs Ubuntu inside
+  T3 Code instead. Setup downloads about 400 MB and takes a few minutes; keep the app
+  open while it installs. **Sign in** opens your browser; if it shows a code instead of
+  returning, paste the code into the app. The server shows a notification while it
+  runs, and **Update T3 Code and Claude Code** on the phone's environment page updates
+  both. Agents can't reach phone storage in this mode yet. **Remove from this phone**
+  deletes it, including the threads stored on the phone.
 
 ## Compact long conversations
 
