@@ -324,11 +324,16 @@ jobs:
           java-version: "17"
 
       # The APK's JavaScript ships inside it; OTA updates would swap in
-      # upstream's preview bundles.
+      # upstream's preview bundles. The release version replaces upstream's
+      # store version so Obtainium can match the APK to its release tag. It
+      # goes in .env because the Gradle bundling step reads app.config.ts again.
       - name: Configure the build
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           cp .env.example .env
           echo "T3CODE_MOBILE_UPDATES_ENABLED=0" >> .env
+          echo "T3CODE_MOBILE_VERSION=$VERSION" >> .env
 
       - name: Generate the native project
         working-directory: apps/mobile
