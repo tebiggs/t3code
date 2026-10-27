@@ -23,6 +23,7 @@ import java.util.zip.GZIPInputStream
 private const val UBUNTU_RELEASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04.1/release/"
 private const val CLAUDE_KEY_URL = "https://downloads.claude.ai/keys/claude-code.asc"
 private const val CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+private const val CONNECT_ATTEMPTS = 3
 const val GUEST_PATH = "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // Kotlin has no octal literals: 0777, 0600, 0700 and 0755.
@@ -258,11 +259,20 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     deleteTree(prootTmp)
   }
 
-  private fun open(url: String): HttpURLConnection {
+  // Phones drop DNS and connections while they switch networks, so connecting retries.
+  private fun open(url: String, attempt: Int = 1): HttpURLConnection {
     val connection = URL(url).openConnection() as HttpURLConnection
     connection.connectTimeout = 30_000
     connection.readTimeout = 60_000
-    val code = connection.responseCode
+    val code = try {
+      connection.responseCode
+    } catch (error: IOException) {
+      connection.disconnect()
+      if (attempt >= CONNECT_ATTEMPTS) throw error
+      checkCancelled()
+      Thread.sleep(attempt * 2_000L)
+      return open(url, attempt + 1)
+    }
     if (code != HttpURLConnection.HTTP_OK) {
       connection.disconnect()
       throw IOException("$url answered HTTP $code")

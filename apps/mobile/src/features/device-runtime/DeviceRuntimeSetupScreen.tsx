@@ -113,11 +113,10 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
         refresh();
       });
   };
-  const install = () =>
-    run("install", async () => {
-      await native.install(getTermuxStatus().deviceName);
-      inspect();
-    });
+  // A failed install shows its error in the install step, from the job's state.
+  const installRuntime = () =>
+    native.install(getTermuxStatus().deviceName).then(inspect, () => undefined);
+  const install = () => run("install", installRuntime);
   const reinstall = () =>
     Dialog.alert(
       "Reinstall?",
@@ -133,8 +132,7 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
               await native.remove();
               native.setEnabled(true);
               setInspection(null);
-              await native.install(getTermuxStatus().deviceName);
-              inspect();
+              await installRuntime();
             }),
         },
       ],

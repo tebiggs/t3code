@@ -10,6 +10,11 @@ RELEASE_REPO=tebiggs/t3code
 T3_LINK="$HOME/.local/bin/t3"
 T3_VERSIONS="$HOME/.t3/runtime/versions"
 
+# Phones drop connections while they switch networks.
+curl() {
+  command curl --retry 3 --retry-connrefused "$@"
+}
+
 apt_install() {
   apt-get install -y --no-install-recommends "$@"
 }
