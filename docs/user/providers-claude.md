@@ -41,6 +41,26 @@ Claude Code's verbose mode can stay enabled when you use Claude for text generat
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3 Code uses the Claude configuration on the connected server.
 
+## Run Claude Code on an Android phone
+
+The Android app can run Claude Code on the phone itself, so agents can work with the
+phone's files without another computer. In **Settings > Environments**, add an
+environment and choose **Run agents on this phone**, then follow the checklist. It
+needs Termux from F-Droid (the Play Store build can't run Ubuntu), a 64-bit phone,
+about 3 GB of storage and 20 minutes. Claude Code and a T3 Code server run in Ubuntu
+inside Termux, and the phone becomes an environment named after the device.
+
+- Phone storage is at `/sdcard`. It keeps no file permissions or symlinks, so keep git
+  repositories in Ubuntu's home folder.
+- If you set up Ubuntu and Claude Code in Termux yourself, the checklist finds them and
+  keeps your Claude sign-in.
+- Android stops background apps. The checklist's **Keep it running** section links to
+  the battery and developer settings that keep Termux alive. When the server isn't
+  running, the app starts it when you open it, unless you stopped it.
+- The phone's T3 Code server doesn't update itself. Use **Update T3 Code** on the
+  phone's environment page in **Settings > Environments**.
+- In Termux, `t3-phone shell` opens Ubuntu.
+
 ## Compact long conversations
 
 Set **Auto-compact after** in the Claude provider settings to an integer between

@@ -1,7 +1,7 @@
 name: Fork release
 
 # Fork-only (tebiggs/t3code). Builds what the fork ships: the Windows x64
-# desktop app, the Linux x64 server archive and the Android APK. A push to
+# desktop app, the Linux x64 and arm64 server archives and the Android APK. A push to
 # main, or a manual run on main, publishes them as a nightly-channel
 # prerelease, which the fork's updaters read. Pull requests and manual runs on
 # other branches run the same checks and builds without publishing. Upstream
@@ -240,6 +240,33 @@ jobs:
       resource_key: linux-x64
       cli_archive: true
 
+  # The arm64 server archive is what the Android app's phone setup installs in
+  # Termux. node-pty compiles from source there, so it builds on arm64 hardware.
+  linux_arm64:
+    name: Linux arm64
+    needs: [prepare, bundle]
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.prepare.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.prepare.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.prepare.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.prepare.outputs.relay_url }}
+      label: Linux arm64
+      runner: ubuntu-24.04-arm
+      platform: linux
+      target: AppImage
+      arch: arm64
+      rust_target: aarch64-unknown-linux-gnu
+      resource_key: linux-arm64
+      cli_archive: true
+
   windows:
     name: Windows x64
     needs: [prepare, bundle]
@@ -334,7 +361,7 @@ jobs:
   # refs/pull/<n>/merge, so the main checks below skip it.
   publish:
     name: Release assets
-    needs: [prepare, checks, linux, windows, android]
+    needs: [prepare, checks, linux, linux_arm64, windows, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

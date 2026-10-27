@@ -24,6 +24,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { ConnectionEnvironmentRow } from "../connection/ConnectionEnvironmentRow";
 import { EnvironmentPowerSettingsSection } from "../power/EnvironmentPowerSettingsSection";
+import { PhoneServerSettingsSection } from "../phone/PhoneServerSettingsSection";
+import { usePhoneServerSettings } from "../../state/phone-server-settings";
 import { EnvironmentRoutesSection } from "./EnvironmentRoutesSection";
 import { OutdatedServerUpdateSection } from "./OutdatedServerUpdateSection";
 import { SettingsActionRow } from "./components/SettingsActionRow";
@@ -53,6 +55,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const connections = useRemoteConnections();
+  const phoneServer = usePhoneServerSettings();
   const environment = connections.connectedEnvironments.find(
     (entry) => entry.environmentId === environmentId,
   );
@@ -206,7 +209,11 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
               }
             />
             {Platform.OS === "android" ? (
-              <EnvironmentPowerSettingsSection environmentId={environmentId} />
+              phoneServer?.environmentId === environmentId ? (
+                <PhoneServerSettingsSection environmentId={environmentId} />
+              ) : (
+                <EnvironmentPowerSettingsSection environmentId={environmentId} />
+              )
             ) : null}
             {outdated ? (
               <OutdatedServerUpdateSection

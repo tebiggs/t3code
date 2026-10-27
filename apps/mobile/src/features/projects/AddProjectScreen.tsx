@@ -73,6 +73,8 @@ import { AsyncResult } from "effect/reactivity";
 import { cn } from "../../lib/cn";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
+import { PhoneFolderShortcuts } from "../phone/PhoneFolderShortcuts";
+import { usePhoneServerSettings } from "../../state/phone-server-settings";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
 import { environmentSession, useEnvironmentScope, readEnvironmentScope } from "../../state/session";
@@ -1195,6 +1197,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
 
 export function AddProjectLocalFolderScreen(props: { readonly environmentId?: string | string[] }) {
   const environment = useEnvironmentFromParam(props.environmentId);
+  const phoneServer = usePhoneServerSettings();
   const canCreateProject = useEnvironmentScope(
     environment?.environmentId ?? null,
     AuthOrchestrationOperateScope,
@@ -1241,6 +1244,11 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
             onPress={submitPath}
             loading={isSubmitting}
           />
+          {phoneServer?.environmentId === environment.environmentId ? (
+            <PhoneFolderShortcuts
+              onPick={(path) => void navigateToBrowsePath({ browseDirectoryPath: path })}
+            />
+          ) : null}
           <FolderBrowser
             environment={environment}
             navigateToBrowsePath={navigateToBrowsePath}

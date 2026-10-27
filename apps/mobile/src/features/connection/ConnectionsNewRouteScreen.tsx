@@ -1,4 +1,6 @@
 import { ListRow } from "../../components/ui/ListRow";
+import { RowPressable } from "../../components/ui/RowPressable";
+import { useResolveClassNames } from "uniwind";
 import * as Dialog from "../../components/ui/Dialog";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAuth } from "@clerk/expo";
@@ -14,7 +16,7 @@ import {
 import type { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
-import { Linking, Pressable, StyleSheet, View } from "react-native";
+import { Linking, Platform, Pressable, StyleSheet, View } from "react-native";
 import Svg, { Defs, RadialGradient, Rect, Stop } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "../../lib/cn";
@@ -32,6 +34,9 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { CloudEnvironmentRows } from "./CloudEnvironmentRows";
 import { splitEnvironmentSections } from "./environmentSections";
+import { usePhoneServerSettings } from "../../state/phone-server-settings";
+import { getTermuxStatus, supportsPhoneSetup } from "../phone/termux";
+import { useWorkspaceEnvironments } from "../../state/workspace";
 import { leaveSettingsPage } from "../settings/settings-navigation";
 import { workspaceHasColumns } from "../workspace/workspace-selection-store";
 
@@ -217,6 +222,8 @@ export function ConnectionsNewRouteScreen({
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: 4,
+          // contentInset is iOS-only; Android needs the room as padding.
+          paddingBottom: Platform.OS === "android" ? Math.max(insets.bottom, 18) + 18 : 0,
         }}
       >
         <View collapsable={false} className="gap-6.5">
@@ -269,6 +276,7 @@ export function ConnectionsNewRouteScreen({
           </View>
 
           {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
+          {Platform.OS === "android" && supportsPhoneSetup() ? <PhoneSection /> : null}
         </View>
       </ScrollView>
     </SettingsScreen>
@@ -397,6 +405,71 @@ function T3ConnectSection() {
           onPress={() => navigation.navigate("SettingsAuth")}
         />
       )}
+    </View>
+  );
+}
+
+function PhoneSection() {
+  const navigation = useNavigation();
+  const routeName = useRoute().name;
+  const settings = usePhoneServerSettings();
+  const phone = useWorkspaceEnvironments().find(
+    (environment) => environment.environmentId === settings?.environmentId,
+  );
+  const [supported] = useState(() => getTermuxStatus().supportedAbi);
+  const rippleStyle = useResolveClassNames("bg-subtle-strong");
+  const description = !supported
+    ? "Needs a 64-bit phone"
+    : phone
+      ? `Set up as ${phone.environmentLabel}`
+      : "Claude Code in Termux, no other computer needed";
+  return (
+    <View collapsable={false} className="gap-2">
+      <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
+        Or run on this phone
+      </Text>
+      <View collapsable={false} className="overflow-hidden rounded-[24px] bg-grouped-card">
+        <RowPressable
+          accessibilityRole="button"
+          accessibilityLabel={`Run agents on this phone, ${description}`}
+          accessibilityState={{ disabled: !supported }}
+          disabled={!supported}
+          android_ripple={{ color: rippleStyle.backgroundColor }}
+          unstable_pressDelay={Platform.OS === "android" ? 50 : undefined}
+          onPress={() => {
+            // The root sheet gives way to the setup page instead of stacking under it.
+            if (routeName === "ConnectionsNew") {
+              navigation.dispatch(StackActions.replace("PhoneSetup"));
+            } else {
+              navigation.navigate("PhoneSetup");
+            }
+          }}
+          className={cn(
+            "flex-row items-center gap-3 bg-grouped-card px-4 py-3.5",
+            !supported && "opacity-45",
+          )}
+        >
+          <View className="min-w-0 flex-1 gap-0.5">
+            <View className="min-w-0 flex-row items-center gap-2">
+              <SymbolView name="iphone" size={14} tintColorClassName="accent-foreground-muted" />
+              <Text
+                className="min-w-0 flex-shrink text-base font-t3-bold leading-snug text-foreground"
+                numberOfLines={1}
+              >
+                Run agents on this phone
+              </Text>
+            </View>
+            <Text className="text-xs text-foreground-muted">{description}</Text>
+          </View>
+          <SymbolView
+            name="chevron.right"
+            size={14}
+            tintColorClassName="accent-chevron"
+            type="monochrome"
+            weight="semibold"
+          />
+        </RowPressable>
+      </View>
     </View>
   );
 }

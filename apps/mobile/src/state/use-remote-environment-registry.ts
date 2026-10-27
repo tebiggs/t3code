@@ -17,6 +17,7 @@ import { environmentSession } from "./session";
 import { environmentCatalog } from "../connection/catalog";
 import { createRemoteEnvironmentProjectionAtoms } from "./remote-environment-projections";
 import { serverEnvironment } from "./server";
+import { phoneServerSettingsAtom, setPhoneServerSettings } from "./phone-server-settings";
 
 const connectionPairingUrlAtom = Atom.make("").pipe(
   Atom.keepAlive,
@@ -193,6 +194,54 @@ export function useRemoteConnections() {
                 ]
               : []),
             remove,
+          ],
+        );
+        return;
+      }
+      if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
+        // Removing only the connection would leave the server running in Termux with a wake
+        // lock and nothing in the app pointing at it, so a failed stop keeps everything.
+        const forgetPhone = () => {
+          setPhoneServerSettings(null);
+          void controller.removeEnvironment(environmentId);
+        };
+        const stopThenForget = async () => {
+          // Auto-start would otherwise relaunch the server as soon as its connection drops.
+          const previous = appAtomRegistry.get(phoneServerSettingsAtom);
+          if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
+          try {
+            // Loaded on demand: the Termux bridge pulls in the expo runtime.
+            const phoneServer = await import("../features/phone/phone-server");
+            await phoneServer.stopPhoneServerWhenSettled();
+            forgetPhone();
+          } catch (error) {
+            Dialog.alert(
+              "The server didn't stop",
+              `${error instanceof Error ? error.message : "Termux didn't stop it."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server in Termux first.`,
+              [
+                {
+                  text: "Keep",
+                  style: "cancel",
+                  onPress: () => {
+                    if (previous) setPhoneServerSettings(previous);
+                  },
+                },
+                { text: "Remove anyway", style: "destructive", onPress: forgetPhone },
+              ],
+            );
+          }
+        };
+        Dialog.alert(
+          "Remove this phone?",
+          `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay in Termux; phone setup can connect them again.`,
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Remove only", onPress: forgetPhone },
+            {
+              text: "Remove and stop server",
+              style: "destructive",
+              onPress: () => void stopThenForget(),
+            },
           ],
         );
         return;

@@ -86,6 +86,7 @@ import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
 import { EnvironmentPowerChips } from "../power/EnvironmentPowerChips";
+import { PhoneServerChip } from "../phone/PhoneServerChip";
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -689,6 +690,7 @@ export function HomeScreen(props: HomeScreenProps) {
         >
           {/* A sleeping machine's wake switch must stay reachable with no threads listed. */}
           {Platform.OS === "android" ? <EnvironmentPowerChips className="pt-3" /> : null}
+          {Platform.OS === "android" ? <PhoneServerChip className="pt-3" /> : null}
           <View
             className="flex-1 items-center justify-center px-8"
             style={{
@@ -737,6 +739,7 @@ export function HomeScreen(props: HomeScreenProps) {
     <>
       {listHeader}
       {Platform.OS === "android" && !hasSearchQuery ? <EnvironmentPowerChips /> : null}
+      {Platform.OS === "android" && !hasSearchQuery ? <PhoneServerChip /> : null}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           gutter={primaryColumn ? 8 : 0}
@@ -786,6 +789,7 @@ export function HomeScreen(props: HomeScreenProps) {
           style={{ paddingBottom: insets.bottom }}
         >
           {!hasSearchQuery ? <EnvironmentPowerChips className="pt-3" /> : null}
+          {!hasSearchQuery ? <PhoneServerChip className="pt-3" /> : null}
           <View className="flex-1 items-center justify-center px-4">{v2ListEmpty}</View>
         </View>
       </View>
