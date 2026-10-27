@@ -23,6 +23,7 @@ import {
   type PhoneProbe,
   type PhoneScriptStatus,
   type PhoneSetupStepId,
+  UPSTREAM_SERVER_WARNING,
 } from "./phone-setup";
 import {
   getTermuxStatus,
@@ -79,6 +80,7 @@ function usePhoneSetupState() {
       void refresh();
     }, [refresh]),
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- re-checks when the user returns from Termux
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") void refresh();
@@ -87,6 +89,7 @@ function usePhoneSetupState() {
   }, [refresh]);
 
   const installRunning = probe.kind === "ok" && phoneInstallState(probe.status).kind === "running";
+  // oxlint-disable-next-line t3code/react-effect-budget -- polls Termux while its installer runs
   useEffect(() => {
     if (!installRunning) return;
     const interval = setInterval(() => void refresh(), INSTALL_RECHECK_MS);
@@ -109,6 +112,7 @@ function usePhoneEnvironment(status: PhoneScriptStatus | null) {
   const environmentId = status?.environmentId ?? settings?.environmentId ?? null;
   const environment =
     environments.find((candidate) => candidate.environmentId === environmentId) ?? null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- persists the pairing once Termux and the connection both report it
   useEffect(() => {
     if (environment === null || status === null) return;
     if (settings?.environmentId === environment.environmentId && settings.port === status.port) {
@@ -285,6 +289,9 @@ function PhoneSetupScreen() {
                 Connected as {environment.environmentLabel}
                 {status?.claudeVersion ? ` · Claude Code ${status.claudeVersion}` : ""}
               </Text>
+              {status?.t3Build === "upstream" ? (
+                <Text className="text-sm text-warning-foreground">{UPSTREAM_SERVER_WARNING}</Text>
+              ) : null}
               <Button
                 label="Start a thread"
                 tone="primary"
@@ -357,7 +364,7 @@ function stepSummary(
       return undefined;
     case "install":
       return status?.claudeVersion && status.t3Version
-        ? `Claude Code ${status.claudeVersion} · T3 Code ${status.t3Version}`
+        ? `Claude Code ${status.claudeVersion} · T3 Code ${status.t3Version}${status.t3Build === "upstream" ? " (upstream)" : ""}`
         : undefined;
     case "signIn":
       return status?.claudeSignedIn

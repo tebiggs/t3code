@@ -304,9 +304,11 @@ export function usePhoneServerWorker() {
     phone !== undefined &&
     phone.connectionState !== "connected" &&
     phone.connectionState !== "connecting";
+  // oxlint-disable-next-line t3code/react-effect-budget -- starts Termux's server when its connection drops
   useEffect(() => {
     if (supportsPhoneSetup() && down) void autoStartPhoneServer();
   }, [down]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- subscribes to the app returning to the foreground
   useEffect(() => {
     if (!supportsPhoneSetup()) return;
     const subscription = AppState.addEventListener("change", (state) => {

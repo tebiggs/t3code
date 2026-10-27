@@ -27,6 +27,8 @@ export interface PhoneScriptStatus {
   readonly claudeSignedIn: boolean;
   readonly claudePlan: string | null;
   readonly t3Version: string | null;
+  /** Upstream's when this fork had no server build for the phone at install time. */
+  readonly t3Build: "fork" | "upstream" | null;
 }
 
 const DEFAULT_PORT = 3773;
@@ -62,6 +64,10 @@ function readInstallProgress(values: ReadonlyMap<string, string>): PhoneInstallP
   };
 }
 
+function readBuild(value: string | undefined): PhoneScriptStatus["t3Build"] {
+  return value === "fork" || value === "upstream" ? value : null;
+}
+
 export function parsePhoneScriptStatus(stdout: string): PhoneScriptStatus {
   const values = readKeyValues(stdout);
   return {
@@ -78,8 +84,12 @@ export function parsePhoneScriptStatus(stdout: string): PhoneScriptStatus {
     claudeSignedIn: values.get("claude_signed_in") === "true",
     claudePlan: nonEmpty(values.get("claude_plan")),
     t3Version: nonEmpty(values.get("t3_version")),
+    t3Build: readBuild(values.get("t3_build")),
   };
 }
+
+export const UPSTREAM_SERVER_WARNING =
+  "This phone runs upstream's T3 Code server because this app's releases had none for it. Update T3 Code to switch. If this stays after updating, the fork's Linux server build is failing.";
 
 export function readPairingUrl(stdout: string): string | null {
   return nonEmpty(readKeyValues(stdout).get("pairing_url"));

@@ -62,7 +62,7 @@ function makeSandbox(options: { readonly prootDistro: boolean }): Sandbox {
   for (const dir of [NodePath.join(prefix, "bin"), home, guestBin, guestTools]) {
     NodeFS.mkdirSync(dir, { recursive: true });
   }
-  for (const tool of ["cat", "cut", "head", "readlink", "sed", "sh", "tr"]) {
+  for (const tool of ["cat", "cut", "grep", "head", "readlink", "sed", "sh", "tr"]) {
     const hostPath = ["/usr/bin", "/bin"]
       .map((dir) => NodePath.join(dir, tool))
       .find((candidate) => NodeFS.existsSync(candidate));
@@ -135,6 +135,16 @@ function installGuestClaude(sandbox: Sandbox, authStatus: string) {
   NodeFS.symlinkSync(binary, NodePath.join(sandbox.guestBin, "claude"));
 }
 
+// The guest's t3 is the installer's symlink into runtime/versions/<version>/t3.
+function installGuestT3(sandbox: Sandbox, version: string, binary: string) {
+  const dir = NodePath.join(sandbox.root, "t3/runtime/versions", version);
+  NodeFS.mkdirSync(dir, { recursive: true });
+  writeExecutable(NodePath.join(dir, "t3"), binary);
+  NodeFS.rmSync(NodePath.join(sandbox.guestBin, "t3"), { force: true });
+  NodeFS.symlinkSync(NodePath.join(dir, "t3"), NodePath.join(sandbox.guestBin, "t3"));
+  return NodePath.join(dir, "t3");
+}
+
 function run(sandbox: Sandbox, args: ReadonlyArray<string>, env: Record<string, string> = {}) {
   const result = NodeChildProcess.spawnSync("bash", ["-c", SCRIPT, "t3-phone", ...args], {
     encoding: "utf8",
@@ -178,6 +188,7 @@ describe("t3-phone status", () => {
       claudeSignedIn: false,
       claudePlan: null,
       t3Version: null,
+      t3Build: null,
     });
   });
 
@@ -211,6 +222,34 @@ describe("t3-phone status", () => {
     expect(parsePhoneScriptStatus(run(sandbox, ["status"]).stdout)).toMatchObject({
       claudeVersion: "2.1.310",
       claudeSignedIn: false,
+    });
+  });
+  it("tells the fork's server build from upstream's", () => {
+    using sandbox = makeSandbox({ prootDistro: true });
+    installUbuntu(sandbox);
+    const fork = installGuestT3(
+      sandbox,
+      "0.1.3-nightly.20261026.36",
+      '#!/bin/sh\nCLI_RELEASE_REPOSITORY="tebiggs/t3code"\n',
+    );
+
+    expect(parsePhoneScriptStatus(run(sandbox, ["status"]).stdout)).toMatchObject({
+      t3Version: "0.1.3-nightly.20261026.36",
+      t3Build: "fork",
+    });
+
+    // Remembered per version, so the binary is searched once.
+    writeExecutable(fork, "#!/bin/sh\n");
+    expect(parsePhoneScriptStatus(run(sandbox, ["status"]).stdout).t3Build).toBe("fork");
+
+    installGuestT3(
+      sandbox,
+      "0.1.3-nightly.20261026.3717",
+      '#!/bin/sh\nCLI_RELEASE_REPOSITORY="pingdotgg/t3code"\n',
+    );
+    expect(parsePhoneScriptStatus(run(sandbox, ["status"]).stdout)).toMatchObject({
+      t3Version: "0.1.3-nightly.20261026.3717",
+      t3Build: "upstream",
     });
   });
 });

@@ -38,7 +38,9 @@ adds the feature, and remove it in the PR that drops the feature.
   and a T3 Code server run in Ubuntu inside Termux, driven through Termux's
   RUN_COMMAND intent: `apps/mobile/modules/t3-termux/`,
   `apps/mobile/src/features/phone/`,
-  `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`). It also
+  `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`). The
+  phone warns when it runs upstream's server, telling builds apart by #2's
+  release repo inside the binary. It also
   fixes an upstream race that a slow server exposes: the thread feed read a new
   thread before its creation was delivered, which cached it as deleted
   (`apps/mobile/src/features/threads/ThreadFeed.tsx`).

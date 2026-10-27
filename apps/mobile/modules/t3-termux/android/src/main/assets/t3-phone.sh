@@ -125,7 +125,7 @@ cmd_status() {
   }
   echo "ubuntu=true"
   echo "environment_id=$(cat "$rootfs/root/.t3/userdata/environment-id" 2>/dev/null)"
-  in_ubuntu /bin/sh -s <<'UBUNTU'
+  in_ubuntu RELEASE_REPO="$RELEASE_REPO" /bin/sh -s <<'UBUNTU'
 claude=$(command -v claude 2>/dev/null)
 if [ -n "$claude" ]; then
   target=$(readlink -f "$claude")
@@ -145,7 +145,18 @@ t3=$(command -v t3 2>/dev/null)
 if [ -n "$t3" ]; then
   target=$(readlink -f "$t3")
   case "$target" in
-    */runtime/versions/*/t3) target=${target%/t3}; echo "t3_version=${target##*/}" ;;
+    */runtime/versions/*/t3)
+      dir=${target%/t3}
+      echo "t3_version=${dir##*/}"
+      # Only the fork's builds name its release repo, which they update from. Cached beside
+      # each version, since searching the binary takes seconds on a phone.
+      build=$(cat "$dir/.t3-phone-build" 2>/dev/null)
+      if [ -z "$build" ]; then
+        if grep -qaF "$RELEASE_REPO" "$target"; then build=fork; else build=upstream; fi
+        echo "$build" > "$dir/.t3-phone-build" 2>/dev/null || true
+      fi
+      echo "t3_build=$build"
+      ;;
     *) echo "t3_version=installed" ;;
   esac
 fi
@@ -200,6 +211,7 @@ if [ "$MODE" = update ] || ! command -v t3 >/dev/null 2>&1; then
     curl -fsSL https://t3.codes/install.sh \
       | T3CODE_VERSION="$version" T3CODE_RELEASE_BASE_URL="https://github.com/$RELEASE_REPO/releases/download" sh
   else
+    echo "No $RELEASE_REPO release has a Linux $arch server; installing upstream T3 Code's nightly."
     curl -fsSL https://t3.codes/install.sh | T3CODE_CHANNEL=nightly sh
   fi
 else

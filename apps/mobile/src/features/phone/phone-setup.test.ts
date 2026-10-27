@@ -21,6 +21,7 @@ const READY_STATUS: PhoneScriptStatus = {
   claudeSignedIn: true,
   claudePlan: "max",
   t3Version: "0.1.3-nightly.20261025.3669",
+  t3Build: "fork",
 };
 
 function input(overrides: Partial<PhoneSetupInput> = {}): PhoneSetupInput {
