@@ -17,11 +17,11 @@ class ClaudeLogin(
   private val openUrl: (String) -> Unit,
   private val onState: (Map<String, Any?>) -> Unit,
 ) {
-  @Volatile private var process: Process? = null
+  @Volatile private var guest: GuestProcess? = null
   @Volatile private var cancelled = false
 
   val running: Boolean
-    get() = process?.isAlive == true
+    get() = guest?.process?.isAlive == true
 
   fun start() {
     runtime.writeOpenUrlCommand()
@@ -30,30 +30,31 @@ class ClaudeLogin(
       listOf("claude", "auth", "login"),
       mapOf("BROWSER" to "/usr/local/bin/t3-open-url", "IS_SANDBOX" to "1"),
     )
-    process = started
+    guest = started
     onState(mapOf("state" to "starting"))
     Thread({ watchOutput(started, urlFile) }, "t3-claude-login").start()
   }
 
   fun submitCode(code: String) {
-    val input = process?.outputStream ?: return
+    val input = guest?.process?.outputStream ?: return
     input.write((code.trim() + "\n").toByteArray())
     input.flush()
   }
 
   fun cancel() {
     cancelled = true
-    process?.destroy()
+    guest?.terminate()
   }
 
-  private fun watchOutput(started: Process, urlFile: File) {
+  private fun watchOutput(guestProcess: GuestProcess, urlFile: File) {
+    val started = guestProcess.process
     val output = StringBuilder()
     var manualUrl: String? = null
     var opened = false
     val startedAt = System.currentTimeMillis()
     val stream = started.inputStream
     val buffer = ByteArray(4096)
-    // Cancelling destroys the process, which closes its output under this loop.
+    // A forced stop can close the output under this loop.
     try {
       while (true) {
         if (!opened && urlFile.isFile) {
@@ -84,7 +85,8 @@ class ClaudeLogin(
     } catch (ignored: IOException) {
     }
     val code = started.waitFor()
-    process = null
+    guestProcess.cleanUp()
+    guest = null
     urlFile.delete()
     if (code == 0) {
       onState(mapOf("state" to "done"))

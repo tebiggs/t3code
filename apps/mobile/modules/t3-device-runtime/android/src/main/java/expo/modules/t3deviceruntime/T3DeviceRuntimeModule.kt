@@ -14,7 +14,6 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.util.concurrent.Executors
 
-private const val TAG = "T3DeviceRuntime"
 private const val LOG_LIMIT = 2000
 
 private data class JobStep(val id: String, val title: String)
@@ -142,6 +141,7 @@ class T3DeviceRuntimeModule : Module() {
       val context = requireContext()
       if (login?.running == true) return@Function null
       val created = ClaudeLogin(DeviceRuntime(context) {}, ::openUrl) { state ->
+        Log.i(TAG, "Claude sign-in: ${state["state"]}")
         loginState = state
         mainHandler.post { sendEvent("onLogin", state) }
       }

@@ -4,7 +4,9 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.os.SystemClock
 import android.system.Os
+import android.system.OsConstants
 import android.util.Base64
+import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -18,12 +20,15 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 
 private const val UBUNTU_RELEASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04.1/release/"
 private const val CLAUDE_KEY_URL = "https://downloads.claude.ai/keys/claude-code.asc"
 private const val CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 private const val CONNECT_ATTEMPTS = 3
+private const val TERMINATE_GRACE_SECONDS = 5L
+internal const val TAG = "T3DeviceRuntime"
 const val GUEST_PATH = "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // Kotlin has no octal literals: 0777, 0600, 0700 and 0755.
@@ -33,6 +38,29 @@ private const val OWNER_ALL = 0x1C0
 private const val EXECUTABLE = 0x1ED
 
 class RuntimeCancelled : IOException("Cancelled")
+
+/** A command running in the guest. `process` is proot itself. */
+class GuestProcess(val process: Process, private val prootPidFile: File) {
+  /**
+   * proot ignores SIGTERM, so destroy() would leave it and its guests running. On SIGQUIT
+   * it kills every guest process and exits; SIGKILL is the fallback.
+   */
+  fun terminate() {
+    val pid = runCatching { prootPidFile.readText().trim().toInt() }.getOrNull()
+    val signalled = pid != null && runCatching { Os.kill(pid, OsConstants.SIGQUIT) }.isSuccess
+    Log.i(TAG, "Stopping proot $pid: ${if (signalled) "sent SIGQUIT" else "no pid"}")
+    Thread({
+      if (!process.waitFor(TERMINATE_GRACE_SECONDS, TimeUnit.SECONDS)) {
+        Log.w(TAG, "proot $pid outlived SIGQUIT; killing it")
+        process.destroyForcibly()
+      }
+    }, "t3-guest-terminate").start()
+  }
+
+  internal fun cleanUp() {
+    prootPidFile.delete()
+  }
+}
 
 /**
  * Ubuntu's name for the architecture of the installed native library directory
@@ -63,7 +91,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   private val fakeProc = File(home, "proc")
   private val prootTmp = File(context.cacheDir, "proot")
 
-  @Volatile private var process: Process? = null
+  @Volatile private var guest: GuestProcess? = null
   @Volatile private var cancelled = false
 
   val ubuntuInstalled: Boolean
@@ -71,7 +99,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
 
   fun cancel() {
     cancelled = true
-    process?.destroy()
+    guest?.terminate()
   }
 
   private fun checkCancelled() {
@@ -211,11 +239,14 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   }
 
   /** Starts a command in the guest with stderr merged into stdout. */
-  fun start(guestCommand: List<String>, environment: Map<String, String> = emptyMap()): Process {
+  fun start(guestCommand: List<String>, environment: Map<String, String> = emptyMap()): GuestProcess {
     checkCancelled()
     writeGuestConfig()
     prootTmp.mkdirs()
-    val builder = ProcessBuilder(prootCommand(guestCommand, environment))
+    val token = "${System.nanoTime()}"
+    // The guest's parent is proot, and its pids are real ones: proot doesn't namespace them.
+    val command = listOf("/bin/sh", "-c", "echo \$PPID > /tmp/.t3-proot.$token && exec \"\$@\"", "sh") + guestCommand
+    val builder = ProcessBuilder(prootCommand(command, environment))
       .directory(home)
       .redirectErrorStream(true)
     builder.environment().apply {
@@ -223,7 +254,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
       put("PROOT_TMP_DIR", prootTmp.path)
       remove("LD_PRELOAD")
     }
-    return builder.start()
+    return GuestProcess(builder.start(), File(rootfs, "tmp/.t3-proot.$token"))
   }
 
   /** Runs a command in the guest, passing each output line on, and returns its exit status. */
@@ -234,14 +265,18 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     onLine: (String) -> Unit = log,
   ): Int {
     val started = start(guestCommand, environment)
-    process = started
+    guest = started
     try {
-      started.outputStream.use { input -> stdin?.let { input.write(it.toByteArray()) } }
-      started.inputStream.bufferedReader().useLines { lines -> lines.forEach(onLine) }
-      return started.waitFor()
+      started.process.outputStream.use { input -> stdin?.let { input.write(it.toByteArray()) } }
+      started.process.inputStream.bufferedReader().useLines { lines -> lines.forEach(onLine) }
+      return started.process.waitFor()
+    } catch (error: IOException) {
+      // Cancelling closes the output under the reader.
+      checkCancelled()
+      throw error
     } finally {
-      process = null
-      started.destroy()
+      guest = null
+      started.cleanUp()
       checkCancelled()
     }
   }

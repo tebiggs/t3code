@@ -33,12 +33,12 @@ private const val SERVER_PID_FILE = "tmp/.t3-server.pid"
  * freezes a backgrounded app's processes, and proot's guests are this app's children.
  */
 object DeviceServer {
-  @Volatile private var process: Process? = null
+  @Volatile private var guest: GuestProcess? = null
   @Volatile var port: Int = 0
     private set
 
   val running: Boolean
-    get() = process?.isAlive == true
+    get() = guest?.process?.isAlive == true
 
   fun logFile(context: Context): File = File(DeviceRuntime(context) {}.home, "server.log")
 
@@ -51,14 +51,14 @@ object DeviceServer {
 
   /** Asks the server to shut down and waits until proot has exited. */
   fun stop(context: Context) {
-    val started = process ?: return
+    val started = guest ?: return
     val runtime = DeviceRuntime(context) {}
     // The guest's pids are real: proot traces processes but doesn't namespace them.
     val pid = File(runtime.rootfs, SERVER_PID_FILE).takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()
-    if (pid != null) runCatching { Os.kill(pid, OsConstants.SIGTERM) } else started.destroy()
-    if (!started.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-      started.destroyForcibly()
-      started.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    if (pid != null) runCatching { Os.kill(pid, OsConstants.SIGTERM) }
+    if (!started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      started.terminate()
+      started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
     }
   }
 
@@ -75,15 +75,16 @@ object DeviceServer {
       // Claude Code refuses full access as root unless it is told it runs in a sandbox.
       mapOf("IS_SANDBOX" to "1"),
     )
-    process = started
+    guest = started
     this.port = port
     Thread({
       log.outputStream().use { output ->
         // A forced stop closes the output while it's being copied.
-        runCatching { started.inputStream.copyTo(output) }
-        output.write("\nT3 Code exited with status ${started.waitFor()}.\n".toByteArray())
+        runCatching { started.process.inputStream.copyTo(output) }
+        output.write("\nT3 Code exited with status ${started.process.waitFor()}.\n".toByteArray())
       }
-      synchronized(this) { if (process === started) process = null }
+      started.cleanUp()
+      synchronized(this) { if (guest === started) guest = null }
       onExit()
     }, "t3-device-server").start()
     return true
