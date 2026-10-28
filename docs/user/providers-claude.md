@@ -62,11 +62,15 @@ phone becomes an environment named after the device.
   phone's environment page in **Settings > Environments** updates both.
 - **Remove from this phone** in the checklist deletes Ubuntu, including the threads stored
   on the phone.
-- Agents reach Android through `termux-open-url` (also `xdg-open`), `termux-clipboard-get`,
-  `termux-clipboard-set`, `termux-notification`, `termux-notification-remove`,
-  `termux-toast`, `termux-share`, `termux-vibrate` and `termux-battery-status`, with
-  Termux:API's flags. While T3 Code isn't on screen, links and shares arrive as a
-  notification to tap, and the clipboard can't be read.
+- Agents reach Android through Termux:API's commands, flags and output, such as
+  `termux-open` (also `xdg-open`), `termux-clipboard-get`, `termux-notification`,
+  `termux-share`, `termux-download`, `termux-tts-speak`, `termux-location` and
+  `termux-camera-photo`. While T3 Code isn't on screen, links, files and calls arrive as a
+  notification to tap, and the clipboard, camera, microphone and location can't be used.
+- Commands that reach your location, camera, microphone, contacts, SMS, call log, phone or
+  notifications ask you first, as an approval in the thread, even with full access. In
+  **Run on this phone > Agent access** you can set each to **Allow** or **Deny** and grant
+  the Android permission it needs.
 
 ## Compact long conversations
 

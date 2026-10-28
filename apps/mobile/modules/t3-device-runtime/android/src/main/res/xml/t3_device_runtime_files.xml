@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files termux-open shares: the runtime's Ubuntu and phone storage. -->
+<paths>
+  <files-path name="ubuntu" path="device-runtime/ubuntu/" />
+  <root-path name="storage" path="storage/" />
+</paths>

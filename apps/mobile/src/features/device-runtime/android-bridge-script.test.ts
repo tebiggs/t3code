@@ -25,12 +25,16 @@ interface Exit {
 
 interface Bridge extends AsyncDisposable {
   readonly endpoint: string;
+  /** A scratch directory, by its real path. */
+  readonly directory: string;
   readonly requests: Received[];
   run(command: string, args: readonly string[], stdin?: string): Promise<Exit>;
 }
 
 // Stands in for AndroidBridge.kt, answering each request with `reply`.
-async function startBridge(reply: (path: string | undefined) => unknown): Promise<Bridge> {
+async function startBridge(
+  reply: (path: string | undefined) => unknown = succeed,
+): Promise<Bridge> {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-android-bridge-"));
   const endpoint = NodePath.join(directory, "endpoint");
   const requests: Received[] = [];
@@ -56,6 +60,7 @@ async function startBridge(reply: (path: string | undefined) => unknown): Promis
   NodeFS.writeFileSync(endpoint, `${address.port} ${TOKEN}\n`);
   return {
     endpoint,
+    directory: NodeFS.realpathSync(directory),
     requests,
     run(command, args, stdin = "") {
       return new Promise((resolve) => {
@@ -81,7 +86,11 @@ async function startBridge(reply: (path: string | undefined) => unknown): Promis
   };
 }
 
-const succeed = () => ({ ok: true, result: null });
+function succeed() {
+  return { ok: true, result: null };
+}
+
+const sent = (bridge: Bridge) => bridge.requests.map(({ path, body }) => ({ path, body }));
 
 describe("android-bridge.mjs", () => {
   it("sends a notification's flags with its content from stdin", async () => {
@@ -101,7 +110,7 @@ describe("android-bridge.mjs", () => {
     await using bridge = await startBridge(succeed);
     await bridge.run("termux-toast", ["-s", "hello", "-s"]);
     await bridge.run("termux-clipboard-set", [], "line\n");
-    expect(bridge.requests.map(({ path, body }) => ({ path, body }))).toEqual([
+    expect(sent(bridge)).toEqual([
       { path: "/toast", body: { text: "hello -s", short: true } },
       { path: "/clipboard-set", body: { text: "line\n" } },
     ]);
@@ -129,10 +138,10 @@ describe("android-bridge.mjs", () => {
       ok: false,
       error: "Only URLs are supported.",
     }));
-    expect(await bridge.run("xdg-open", ["index.html"])).toEqual({
+    expect(await bridge.run("termux-open-url", ["index.html"])).toEqual({
       code: 1,
       stdout: "",
-      stderr: "xdg-open: Only URLs are supported.\n",
+      stderr: "termux-open-url: Only URLs are supported.\n",
     });
     expect(await bridge.run("termux-vibrate", ["-d", "soon"])).toEqual({
       code: 1,
@@ -140,6 +149,90 @@ describe("android-bridge.mjs", () => {
       stderr: "termux-vibrate: -d takes milliseconds\nUsage: termux-vibrate [-d ms]\n",
     });
     expect(bridge.requests.map(({ path }) => path)).toEqual(["/open-url"]);
+  });
+
+  it("opens files by their real path, which the app maps to its own, and URLs as given", async () => {
+    await using bridge = await startBridge();
+    const file = NodePath.join(bridge.directory, "report.pdf");
+    const link = NodePath.join(bridge.directory, "latest.pdf");
+    NodeFS.writeFileSync(file, "");
+    NodeFS.symlinkSync(file, link);
+    await bridge.run("termux-open", ["--send", link]);
+    await bridge.run("xdg-open", ["https://example.com"]);
+    expect(
+      await bridge.run("termux-open", [NodePath.join(bridge.directory, "missing.pdf")]),
+    ).toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("no such file"),
+    });
+    expect(sent(bridge)).toEqual([
+      { path: "/open", body: { path: file, send: true, chooser: false } },
+      { path: "/open", body: { url: "https://example.com", send: false, chooser: false } },
+    ]);
+  });
+
+  it("reads bundled short options as getopts does", async () => {
+    await using bridge = await startBridge((path) =>
+      path === "/media-scan"
+        ? { ok: true, result: { files: ["/sdcard/a.jpg", "/sdcard/b.jpg"] } }
+        : { ok: true, result: [] },
+    );
+    const missing = NodePath.join(bridge.directory, "deleted.jpg");
+    const scan = await bridge.run("termux-media-scan", ["-rv", bridge.directory, missing]);
+    await bridge.run("termux-sms-list", ["-cl5", "-t", "inbox"]);
+    expect(scan.stdout).toBe("/sdcard/a.jpg\n/sdcard/b.jpg\nFinished scanning 2 file(s)\n");
+    expect(sent(bridge)).toEqual([
+      { path: "/media-scan", body: { paths: [bridge.directory, missing], recursive: true } },
+      {
+        path: "/sms-list",
+        body: { limit: 5, offset: 0, type: "inbox", conversations: true },
+      },
+    ]);
+  });
+
+  it("converts Termux's units and refuses bad arguments before calling Android", async () => {
+    await using bridge = await startBridge(() => ({ ok: true, result: "Recording started" }));
+    const output = NodePath.join(bridge.directory, "memo.m4a");
+    const recording = await bridge.run("termux-microphone-record", [
+      "-f",
+      output,
+      "-l",
+      "30",
+      "-b",
+      "128",
+    ]);
+    await bridge.run("termux-sms-send", ["-n", "555 0100, 555 0199", "on", "my", "way"]);
+    const refused = [
+      await bridge.run("termux-microphone-record", ["-i", "-q"]),
+      await bridge.run("termux-volume", ["music", "loud"]),
+      await bridge.run("termux-location", ["-p", "wifi"]),
+      await bridge.run("termux-torch", ["bright"]),
+    ];
+    expect(recording.stdout).toBe("Recording started\n");
+    expect(refused.map(({ code }) => code)).toEqual([1, 1, 1, 1]);
+    expect(sent(bridge)).toEqual([
+      {
+        path: "/microphone-record",
+        body: { action: "record", file: output, limit: 30_000, bitrate: 128_000 },
+      },
+      { path: "/sms-send", body: { recipients: ["555 0100", "555 0199"], text: "on my way" } },
+    ]);
+  });
+
+  it("reads sensors once per -n and cleans up without calling Android", async () => {
+    await using bridge = await startBridge(() => ({
+      ok: true,
+      result: { "BMI160 Accelerometer": { values: [0.1, 9.8, 0] } },
+    }));
+    const readings = await bridge.run("termux-sensor", ["-s", "accel", "-n", "2", "-d", "0"]);
+    const cleanup = await bridge.run("termux-sensor", ["-c"]);
+    const reading = JSON.stringify({ "BMI160 Accelerometer": { values: [0.1, 9.8, 0] } }, null, 2);
+    expect(readings.stdout).toBe(`${reading}\n${reading}\n`);
+    expect(cleanup.stdout).toBe("Sensor cleanup unnecessary\n");
+    expect(sent(bridge)).toEqual([
+      { path: "/sensor", body: { all: false, sensors: ["accel"] } },
+      { path: "/sensor", body: { all: false, sensors: ["accel"] } },
+    ]);
   });
 
   it("says the bridge isn't running when there's no endpoint", async () => {

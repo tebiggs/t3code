@@ -77,6 +77,44 @@ class T3DeviceRuntimeModule : Module() {
         }
     }
 
+    Function("getAgentAccess") {
+      val context = requireContext()
+      AgentAccess.categories.map { category ->
+        mapOf(
+          "id" to category.id,
+          "policy" to AgentAccess.policy(context, category).id,
+          "granted" to AgentAccess.granted(context, category),
+          "permissions" to category.permissions,
+        )
+      }
+    }
+
+    Function("setAgentAccess") { id: String, policy: String ->
+      try {
+        AgentAccess.setPolicy(requireContext(), id, policy)
+      } catch (error: IllegalArgumentException) {
+        throw CodedException("ERR_AGENT_ACCESS", error.message ?: "Invalid agent access", error)
+      }
+    }
+
+    Function("openNotificationAccessSettings") {
+      val context = requireContext()
+      val listener = AgentNotificationListener.component(context).flattenToString()
+      val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+          .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, listener)
+      } else {
+        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+      }
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      runCatching { (appContext.currentActivity ?: context).startActivity(intent) }
+        .recoverCatching {
+          context.startActivity(
+            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+          )
+        }
+    }
+
     Function("openDeveloperSettings") {
       val context = requireContext()
       val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
