@@ -1,6 +1,6 @@
 import { requireOptionalNativeModule, type NativeModule } from "expo";
 import { useCallback, useEffect, useState } from "react";
-import { AppState, Platform } from "react-native";
+import { AppState, Platform, type Permission } from "react-native";
 
 /** Not Termux setup's old 3773, which may still be serving on phones that used it. */
 export const DEVICE_SERVER_PORT = 3774;
@@ -43,6 +43,18 @@ export interface DeviceRuntimeInspection {
   readonly t3Version: string | null;
 }
 
+export type AgentAccessPolicy = "ask" | "allow" | "deny";
+
+/** A kind of phone data or action agents reach through termux-* commands. */
+export interface AgentAccessCategory {
+  readonly id: string;
+  readonly policy: AgentAccessPolicy;
+  /** Android has granted the permission (or notification access) it needs. */
+  readonly granted: boolean;
+  /** Android permissions to request; empty for notification access. */
+  readonly permissions: ReadonlyArray<Permission>;
+}
+
 type DeviceRuntimeEvents = {
   onJob(job: DeviceRuntimeJob): void;
   onLogin(login: DeviceRuntimeLogin): void;
@@ -52,6 +64,9 @@ declare class T3DeviceRuntimeModule extends NativeModule<DeviceRuntimeEvents> {
   getStatus(): DeviceRuntimeStatus;
   install(): Promise<void>;
   openStorageSettings(): void;
+  getAgentAccess(): ReadonlyArray<AgentAccessCategory>;
+  setAgentAccess(id: string, policy: AgentAccessPolicy): void;
+  openNotificationAccessSettings(): void;
   openDeveloperSettings(): void;
   update(): Promise<void>;
   cancelJob(): void;

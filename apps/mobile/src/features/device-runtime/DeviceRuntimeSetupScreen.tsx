@@ -325,6 +325,17 @@ export function DeviceRuntimeSetupScreen() {
           </SettingsSection>
         ) : null}
 
+        {status.installed ? (
+          <SettingsSection>
+            <ListRow
+              icon="person.crop.circle"
+              label="Agent access"
+              description="Location, contacts, messages and more: ask, allow or never"
+              onPress={() => navigation.navigate("AgentAccess")}
+            />
+          </SettingsSection>
+        ) : null}
+
         {status.installed || status.job !== null ? (
           <SettingsSection title="Manage">
             <ListRow
