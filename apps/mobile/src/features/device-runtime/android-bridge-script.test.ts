@@ -60,7 +60,7 @@ async function startBridge(reply: (path: string | undefined) => unknown): Promis
     run(command, args, stdin = "") {
       return new Promise((resolve) => {
         const child = NodeChildProcess.spawn(process.execPath, [SCRIPT, command, ...args], {
-          env: { T3_ANDROID_BRIDGE_ENDPOINT: endpoint },
+          env: { NODE_ENV: "test", T3_ANDROID_BRIDGE_ENDPOINT: endpoint },
         });
         let stdout = "";
         let stderr = "";
