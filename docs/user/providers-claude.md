@@ -62,6 +62,11 @@ phone becomes an environment named after the device.
   phone's environment page in **Settings > Environments** updates both.
 - **Remove from this phone** in the checklist deletes Ubuntu, including the threads stored
   on the phone.
+- Agents reach Android through `termux-open-url` (also `xdg-open`), `termux-clipboard-get`,
+  `termux-clipboard-set`, `termux-notification`, `termux-notification-remove`,
+  `termux-toast`, `termux-share`, `termux-vibrate` and `termux-battery-status`, with
+  Termux:API's flags. While T3 Code isn't on screen, links and shares arrive as a
+  notification to tap, and the clipboard can't be read.
 
 ## Compact long conversations
 

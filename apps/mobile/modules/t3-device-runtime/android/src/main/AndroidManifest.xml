@@ -8,6 +8,8 @@
   <!-- Phone storage for agents, bound at /sdcard in the runtime's Ubuntu. -->
   <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+  <!-- termux-vibrate, for agents on the phone. -->
+  <uses-permission android:name="android.permission.VIBRATE" />
 
   <application>
     <service

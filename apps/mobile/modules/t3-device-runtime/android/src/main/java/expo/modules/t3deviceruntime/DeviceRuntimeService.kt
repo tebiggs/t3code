@@ -71,6 +71,7 @@ object DeviceServer {
     if (running) return
     RuntimeForeground.hold(context, Hold.Server, "The server is running on this phone.")
     val log = logFile(context)
+    val bridge = AndroidBridge.start(context)
     val started = try {
       DeviceRuntime(context) {}.start(
         listOf("t3", "serve", "--host", "127.0.0.1", "--port", "$port"),
@@ -78,6 +79,7 @@ object DeviceServer {
         mapOf("IS_SANDBOX" to "1"),
       )
     } catch (error: Throwable) {
+      bridge?.stop()
       log.writeText("T3 Code couldn't start: ${error.message}\n")
       RuntimeForeground.release(Hold.Server)
       throw error
@@ -90,6 +92,7 @@ object DeviceServer {
         output.write("\nT3 Code exited with status ${started.process.waitFor()}.\n".toByteArray())
       }
       started.cleanUp()
+      bridge?.stop()
       synchronized(this) { if (guest === started) guest = null }
       RuntimeForeground.release(Hold.Server)
     }, "t3-device-server").start()

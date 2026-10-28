@@ -102,6 +102,8 @@
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
         "src/features/browser/preview-stream.browser.ts!",
+        // The app copies this into the on-device runtime for agents to run.
+        "modules/t3-device-runtime/android/src/main/assets/android-bridge.mjs",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [
