@@ -40,25 +40,27 @@ private const val EXECUTABLE = 0x1ED
 class RuntimeCancelled : IOException("Cancelled")
 
 /** A command running in the guest. `process` is proot itself. */
-class GuestProcess(val process: Process, private val prootPidFile: File) {
+class GuestProcess(val process: Process, private val pidFile: File) {
   /**
-   * proot ignores SIGTERM, so destroy() would leave it and its guests running. On SIGQUIT
-   * it kills every guest process and exits; SIGKILL is the fallback.
+   * proot ignores SIGTERM and SIGQUIT, and Android's destroyForcibly() only sends SIGTERM.
+   * The guest's own process does take signals, and once it exits proot (--kill-on-exit)
+   * kills any other guest process and exits too.
    */
   fun terminate() {
-    val pid = runCatching { prootPidFile.readText().trim().toInt() }.getOrNull()
-    val signalled = pid != null && runCatching { Os.kill(pid, OsConstants.SIGQUIT) }.isSuccess
-    Log.i(TAG, "Stopping proot $pid: ${if (signalled) "sent SIGQUIT" else "no pid"}")
+    val pids = runCatching { pidFile.readText().trim().split(' ').map { it.toInt() } }.getOrNull()
+    val guestPid = pids?.getOrNull(0)
+    val prootPid = pids?.getOrNull(1)
+    if (guestPid != null) runCatching { Os.kill(guestPid, OsConstants.SIGTERM) }
     Thread({
       if (!process.waitFor(TERMINATE_GRACE_SECONDS, TimeUnit.SECONDS)) {
-        Log.w(TAG, "proot $pid outlived SIGQUIT; killing it")
-        process.destroyForcibly()
+        Log.w(TAG, "Guest $guestPid outlived SIGTERM; killing it and proot $prootPid")
+        for (pid in listOfNotNull(guestPid, prootPid)) runCatching { Os.kill(pid, OsConstants.SIGKILL) }
       }
     }, "t3-guest-terminate").start()
   }
 
   internal fun cleanUp() {
-    prootPidFile.delete()
+    pidFile.delete()
   }
 }
 
@@ -244,8 +246,9 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     writeGuestConfig()
     prootTmp.mkdirs()
     val token = "${System.nanoTime()}"
-    // The guest's parent is proot, and its pids are real ones: proot doesn't namespace them.
-    val command = listOf("/bin/sh", "-c", "echo \$PPID > /tmp/.t3-proot.$token && exec \"\$@\"", "sh") + guestCommand
+    // Records the guest's pid, which exec keeps, and its parent's, proot's. The pids are
+    // real ones: proot doesn't namespace them.
+    val command = listOf("/bin/sh", "-c", "echo \$\$ \$PPID > /tmp/.t3-pids.$token && exec \"\$@\"", "sh") + guestCommand
     val builder = ProcessBuilder(prootCommand(command, environment))
       .directory(home)
       .redirectErrorStream(true)
@@ -254,7 +257,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
       put("PROOT_TMP_DIR", prootTmp.path)
       remove("LD_PRELOAD")
     }
-    return GuestProcess(builder.start(), File(rootfs, "tmp/.t3-proot.$token"))
+    return GuestProcess(builder.start(), File(rootfs, "tmp/.t3-pids.$token"))
   }
 
   /** Runs a command in the guest, passing each output line on, and returns its exit status. */

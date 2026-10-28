@@ -11,8 +11,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.system.Os
-import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -25,8 +23,6 @@ private const val EXTRA_PORT = "port"
 private const val CHANNEL_ID = "t3-device-server"
 private const val NOTIFICATION_ID = 3773
 private const val STOP_TIMEOUT_SECONDS = 10L
-// Guest path of the file the server's shell writes its pid to before exec'ing t3.
-private const val SERVER_PID_FILE = "tmp/.t3-server.pid"
 
 /**
  * The T3 server inside the on-device runtime. It runs under a foreground service: Android
@@ -50,16 +46,10 @@ object DeviceServer {
   }
 
   /** Asks the server to shut down and waits until proot has exited. */
-  fun stop(context: Context) {
+  fun stop() {
     val started = guest ?: return
-    val runtime = DeviceRuntime(context) {}
-    // The guest's pids are real: proot traces processes but doesn't namespace them.
-    val pid = File(runtime.rootfs, SERVER_PID_FILE).takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()
-    if (pid != null) runCatching { Os.kill(pid, OsConstants.SIGTERM) }
-    if (!started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-      started.terminate()
-      started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-    }
+    started.terminate()
+    started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
   }
 
   @Synchronized
@@ -67,11 +57,8 @@ object DeviceServer {
     if (running) return false
     val log = logFile(context)
     val runtime = DeviceRuntime(context) {}
-    File(runtime.rootfs, SERVER_PID_FILE).delete()
     val started = runtime.start(
-      listOf(
-        "/bin/sh", "-c", "echo \$\$ > /$SERVER_PID_FILE && exec t3 serve --host 127.0.0.1 --port $port",
-      ),
+      listOf("t3", "serve", "--host", "127.0.0.1", "--port", "$port"),
       // Claude Code refuses full access as root unless it is told it runs in a sandbox.
       mapOf("IS_SANDBOX" to "1"),
     )
@@ -98,7 +85,7 @@ class DeviceServerService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
-      Thread({ DeviceServer.stop(this) }, "t3-device-server-stop").start()
+      Thread({ DeviceServer.stop() }, "t3-device-server-stop").start()
       return START_NOT_STICKY
     }
     ServiceCompat.startForeground(

@@ -117,8 +117,7 @@ class T3DeviceRuntimeModule : Module() {
     Function("startServer") { port: Int -> DeviceServer.start(requireContext(), port) }
 
     AsyncFunction("stopServer") { promise: Promise ->
-      val context = requireContext()
-      inBackground(promise) { DeviceServer.stop(context) }
+      inBackground(promise) { DeviceServer.stop() }
     }
 
     Function("serverLog") { lines: Int ->
@@ -164,7 +163,7 @@ class T3DeviceRuntimeModule : Module() {
       if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", "Wait for setup to finish first.", null)
       inBackground(promise) {
         login?.cancel()
-        DeviceServer.stop(context)
+        DeviceServer.stop()
         DeviceRuntime(context) {}.remove()
         jobState = null
         loginState = null
