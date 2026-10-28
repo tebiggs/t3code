@@ -15,6 +15,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  MessageId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -52,6 +54,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 const layerTestDatabase = SqlitePersistence.layerMemory;
 const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
@@ -485,6 +488,12 @@ function layerTest(input: {
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly continuationRequests?: {
+    readonly offer: (
+      request: ProviderContinuationRequests.ProviderContinuationRequest,
+    ) => Effect.Effect<void>;
+    readonly take: Effect.Effect<ProviderContinuationRequests.ProviderContinuationRequest>;
+  };
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -562,6 +571,14 @@ function layerTest(input: {
           layerTestStores,
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...(input.continuationRequests === undefined
+            ? []
+            : [
+                Layer.succeed(
+                  ProviderContinuationRequests.ProviderContinuationRequests,
+                  input.continuationRequests,
+                ),
+              ]),
         ),
       ),
     ),
@@ -2311,6 +2328,124 @@ it.effect(
       yield* effect.pipe(
         Effect.provide(
           layerTest({ state, idleTimeoutMs: 60_000, capabilities: ExclusiveCapabilities }),
+        ),
+      );
+    }),
+);
+
+it.effect.each([
+  { release: "crash", wakes: true },
+  { release: "settle", wakes: false },
+] as const)(
+  "ProviderSessionManagerV2 records a waited-on job its session took down: $release",
+  ({ release, wakes }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const offered: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = yield* idAllocator.allocate.thread({
+          fixtureName: `provider-session-manager-lost-job-${release}`,
+          projectId: yield* idAllocator.allocate.project({
+            fixtureName: `provider-session-manager-lost-job-${release}`,
+          }),
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const providerThread = {
+          ...makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+          pendingBackgroundTasks: [
+            { taskId: "dev-server", kind: "command", description: "vp run dev" },
+            { taskId: "deploy", kind: "command", description: "Wait for deploy", awaited: true },
+          ],
+        } satisfies OrchestrationV2ProviderThread;
+        const runId = RunId.make(`run:lost-job-${release}`);
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+            {
+              id: yield* idAllocator.allocate.event({ threadId }),
+              type: "provider-thread.updated",
+              threadId,
+              driver: CODEX_DRIVER,
+              occurredAt: now,
+              payload: providerThread,
+            },
+            {
+              id: yield* idAllocator.allocate.event({ threadId }),
+              type: "run.created",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: runId,
+                threadId,
+                ordinal: 1,
+                providerInstanceId: modelSelection.instanceId,
+                modelSelection,
+                providerThreadId: providerThread.id,
+                userMessageId: MessageId.make(`message:lost-job-${release}`),
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "completed",
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+          ],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        if (release === "crash") {
+          yield* runtime.events.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped);
+          yield* Effect.yieldNow;
+        } else {
+          yield* manager.detach({ providerSessionId, threadId, detail: "Thread settled." });
+        }
+
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        assert.deepStrictEqual(
+          projection.providerThreads.find((thread) => thread.id === providerThread.id)
+            ?.pendingBackgroundTasks,
+          [],
+        );
+        // Only the job the agent waited on is reported; the dev server was expected to stop.
+        assert.deepStrictEqual(
+          projection.runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork,
+          [{ kind: "shell", label: "Wait for deploy (id deploy)", id: "deploy", awaited: true }],
+        );
+        // A crash wakes the agent to check on the deploy; a settle the user asked for does not.
+        assert.deepStrictEqual(
+          offered.map((request) => [request.threadId, request.delivery]),
+          wakes ? [[threadId, "message_text"]] : [],
+        );
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            failEventStream: release === "crash",
+            capabilities: ExclusiveCapabilities,
+            continuationRequests: {
+              offer: (request) => Effect.sync(() => void offered.push(request)),
+              take: Effect.never,
+            },
+          }),
         ),
       );
     }),

@@ -493,6 +493,61 @@ describe("ProviderContinuationService", () => {
     });
   });
 
+  it.effect("retries a failed wake under one command, so the agent gets one follow-up", () => {
+    return Effect.gen(function* () {
+      const dispatched = yield* Queue.unbounded<{
+        readonly commandId: string;
+        readonly messageId: string;
+      }>();
+      const attempts = yield* Ref.make(0);
+      const failures = yield* Ref.make(1);
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(projection),
+        dispatch: (command) =>
+          Effect.gen(function* () {
+            yield* Ref.update(attempts, (count) => count + 1);
+            yield* Queue.offer(dispatched, command as never);
+            const remaining = yield* Ref.getAndUpdate(failures, (count) => count - 1);
+            if (remaining > 0) return yield* Effect.die(new Error("database is locked"));
+            return {} as never;
+          }),
+      });
+      const layerWorker = ProviderContinuationService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer(request());
+        const first = yield* Queue.take(dispatched);
+        yield* TestClock.adjust("100 millis");
+        const second = yield* Queue.take(dispatched);
+        // The same command id lets the orchestrator's receipt absorb a first attempt that did commit.
+        assert.equal(second.commandId, first.commandId);
+        assert.equal(second.messageId, first.messageId);
+        yield* TestClock.adjust("1 hour");
+        yield* Effect.yieldNow;
+        assert.equal(yield* Ref.get(attempts), 2);
+
+        // A wake that never lands stops retrying instead of looping forever.
+        yield* Ref.set(attempts, 0);
+        yield* Ref.set(failures, Number.POSITIVE_INFINITY);
+        yield* requests.offer(request());
+        for (let attempt = 0; attempt < 6; attempt++) {
+          yield* Queue.take(dispatched);
+          yield* TestClock.adjust("10 seconds");
+        }
+        yield* TestClock.adjust("1 hour");
+        yield* Effect.yieldNow;
+        assert.equal(yield* Ref.get(attempts), 6);
+      }).pipe(
+        Effect.provide(Layer.merge(ProviderContinuationRequests.layer, layerWorker)),
+        Effect.scoped,
+      );
+    });
+  });
+
   it.effect("dispatches a current request exactly once", () => {
     return Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();

@@ -70,6 +70,7 @@ import {
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
+  backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -3936,6 +3937,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
     }
   });
+
+  // The settlement sweep's own eligibility, re-read inside the command.
+  const automaticSettlementBlocker = Effect.fn("orchestrationV2.automaticSettlementBlocker")(
+    function* (threadId: ThreadId) {
+      const [candidate] = yield* projectionStore
+        .getSettlementCandidates(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      if (candidate === undefined) {
+        return "is no longer a candidate for automatic settlement.";
+      }
+      if (backgroundWorkHoldsCompletion(candidate.pendingBackgroundTasks ?? [])) {
+        return "is waiting on background work and cannot settle automatically.";
+      }
+      const { runs } = yield* projectionStore
+        .getThreadRecords(threadId, ["runs"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      return runs.some((run) => run.status === "queued")
+        ? "has a queued message and cannot settle automatically."
+        : null;
+    },
+  );
 
   const dispatchProviderSessionDetach = Effect.fn("orchestrationV2.dispatch.providerSessionDetach")(
     function* (
@@ -11793,6 +11815,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandId: command.commandId,
             commandType: command.type,
             cause: `Thread ${command.threadId} changed before automatic settlement.`,
+          });
+        }
+        // Settling detaches the provider, which kills its background work, and cancels queued
+        // continuations. Roster changes do not move updatedAt, so recheck both under the lock.
+        const blocker = yield* automaticSettlementBlocker(command.threadId);
+        if (blocker !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} ${blocker}`,
           });
         }
         yield* dispatchThreadMutation(

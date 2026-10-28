@@ -72,11 +72,21 @@ opt-out. The
 requires matching durable run, provider thread, session, and native resume identity.
 Queued runs never started, so recovery holds them and continues the run they wait
 behind. A settled run qualifies only when the restart cancels work the agent waits on
-(a subagent, a background task, or a shell or monitor the agent marked with
-`t3_background_wait`) and its session was live, so stale records from an older crash
-never wake it. Its continuation prompt is the note of what will not report back. An
-unmarked shell or monitor does not wake a settled run: most are dev servers and their
-watchdogs that nobody waits on, so that note waits for the next user message.
+(a subagent, a background task, or an awaited shell or monitor) and its session was
+live, so stale records from an older crash never wake it. Its continuation prompt is
+the note of what will not report back. The Claude adapter marks every shell and monitor
+awaited unless the agent says through `t3_background_wait` that it leaves it running; a
+missed mark then shows as a thread still working instead of a lost deploy or test
+result. A shell or monitor without the mark does not wake a settled run, so its note
+waits for the next user message.
+
+The same record covers a provider session that ends without a restart. Its release
+records awaited work on the run that left it running. A crash or idle release then
+wakes the thread like a restart does; a detach the user caused (settle, archive, a
+workspace or provider change) only leaves the note for the next prompt. Automatic
+settlement rechecks inside its command that nothing awaited is running and no
+continuation is queued, because settling detaches the provider and cancels queued
+continuations.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.

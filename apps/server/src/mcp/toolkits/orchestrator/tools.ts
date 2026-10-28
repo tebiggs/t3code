@@ -118,7 +118,7 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 
 const BackgroundWaitTool = Tool.make("t3_background_wait", {
   description:
-    "Keep this thread in Working while background work runs. Pass its task ID after starting it. Not for work left running (dev server, watcher). `waiting=false` clears. Does not stop the task. Claude only.",
+    "Background commands and Monitors keep this thread in Working until they end. For work you leave running (dev server, watcher), pass its task ID with `waiting=false` before you end your turn. `waiting=true` holds it again. Does not stop the task. Claude only.",
   parameters: Schema.Struct({
     taskIds: Schema.Array(TrimmedNonEmptyString).check(
       Schema.isMinLength(1),

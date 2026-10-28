@@ -56,6 +56,18 @@ describe("backgroundWorkNotification", () => {
     });
   });
 
+  it("reports a failed job even when the waiter watching it exits cleanly", () => {
+    const notification = backgroundWorkNotification([
+      { kind: "command", label: "Wait for deploy", outcome: "completed", exitCode: 0 },
+      { kind: "command", label: "Deploy site", outcome: "failed", exitCode: 1 },
+    ]);
+    assert.deepEqual(notification, {
+      source: { kind: "command" },
+      outcome: "failed",
+      summary: 'Command "Wait for deploy" (exit 0) and command "Deploy site" (exit 1) failed',
+    });
+  });
+
   it("counts work it cannot list", () => {
     const reports = ["a", "b", "c", "d"].map((label) => ({
       kind: "subagent" as const,

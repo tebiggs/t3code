@@ -1,4 +1,3 @@
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -32,8 +31,8 @@ import {
   awaitingProviderThreadId,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
+  latestStartedRunOnProviderThread,
   mergeRestartCancelledBackgroundWork,
-  neverStarted,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderRuntimeRecoveryError extends Schema.TaggedError<ProviderRuntimeRecoveryError>()(
@@ -155,17 +154,7 @@ function latestStartedRun(
   projection: ProjectionStore.ProjectionRuntimeRecoveryState,
   providerThreadId: ProviderThreadId,
 ) {
-  return projection.runs.reduce<OrchestrationV2ThreadProjection["runs"][number] | undefined>(
-    (latest, run) =>
-      run.providerThreadId === providerThreadId &&
-      run.status !== "queued" &&
-      run.status !== "rolled_back" &&
-      !neverStarted(run) &&
-      (latest === undefined || runRanAfter(run, latest))
-        ? run
-        : latest,
-    undefined,
-  );
+  return latestStartedRunOnProviderThread(projection.runs, providerThreadId);
 }
 
 export const make = Effect.gen(function* () {

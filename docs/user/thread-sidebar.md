@@ -120,11 +120,11 @@ open.
 
 Threads that are working or waiting on work they will resume from move into a collapsed
 **Working** section below the active list.
-That includes subagents, watched pull requests, and background commands or monitors the agent
-says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
-there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
-answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
-the pinned section.
+That includes subagents, watched pull requests, and background commands or monitors a Claude
+agent started, such as tests or a deploy, until their results reach the agent. A dev server or other
+process the agent says it leaves running does not keep a thread there. A thread returns to the top
+of the active list when it finishes, fails, or needs an approval or answer. The Working section lists
+the thread you last sent work to first. Pinned threads stay in the pinned section.
 
 This is on by default. Turn it off with **Settings → General → Working section** on web and desktop,
 or **Settings → General → Working section** on iOS and Android. Each device keeps its own
@@ -158,8 +158,9 @@ Press `Escape` while dragging to cancel.
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
 thread. An empty thread's inactivity counts from when it was created.
-Work in progress, pending questions or approvals, and background work the agent
-is waiting on prevent automatic settlement. An open pull request does not prevent inactivity
+Work in progress, pending questions or approvals, background work the agent is
+waiting on, and results still on their way to the agent prevent automatic settlement.
+An open pull request does not prevent inactivity
 settlement unless you turn on **Keep threads with a PR** in **Settings → Threads**,
 but an old closed or merged pull request does not settle work you
 resumed after it closed. Only your own messages count as resuming. A turn that
