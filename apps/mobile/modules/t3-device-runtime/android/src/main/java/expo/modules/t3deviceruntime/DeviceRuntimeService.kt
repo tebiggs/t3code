@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -23,6 +24,7 @@ private const val ACTION_STOP_SERVER = "expo.modules.t3deviceruntime.STOP_SERVER
 private const val CHANNEL_ID = "t3-device-server"
 private const val NOTIFICATION_ID = 3773
 private const val STOP_TIMEOUT_SECONDS = 10L
+private const val EARLY_EXIT_MS = 30_000L
 
 /** Why the runtime needs to keep running, in the order the notification prefers them. */
 enum class Hold { Job, Login, Server }
@@ -60,6 +62,7 @@ object RuntimeForeground {
 /** The T3 server inside the on-device runtime, kept alive by the foreground service. */
 object DeviceServer {
   @Volatile private var guest: GuestProcess? = null
+  @Volatile private var stopRequested = false
 
   val running: Boolean
     get() = guest?.process?.isAlive == true
@@ -68,6 +71,12 @@ object DeviceServer {
 
   @Synchronized
   fun start(context: Context, port: Int) {
+    stopRequested = false
+    launch(context, port, retry = true)
+  }
+
+  @Synchronized
+  private fun launch(context: Context, port: Int, retry: Boolean) {
     if (running) return
     RuntimeForeground.hold(context, Hold.Server, "The server is running on this phone.")
     val log = logFile(context)
@@ -85,21 +94,31 @@ object DeviceServer {
       throw error
     }
     guest = started
+    val startedAt = SystemClock.elapsedRealtime()
     Thread({
-      log.outputStream().use { output ->
+      val code = log.outputStream().use { output ->
         // A forced stop closes the output while it's being copied.
         runCatching { started.process.inputStream.copyTo(output) }
-        output.write("\nT3 Code exited with status ${started.process.waitFor()}.\n".toByteArray())
+        started.process.waitFor().also {
+          output.write("\nT3 Code exited with status $it.\n".toByteArray())
+        }
       }
       started.cleanUp()
       bridge?.stop()
       synchronized(this) { if (guest === started) guest = null }
-      RuntimeForeground.release(Hold.Server)
+      // A first start can fail cleaning up after publishing the environment id: proot
+      // emulates its hard link with a file the temp directory then can't lose. The id is
+      // in place by then, so the second start gets past it.
+      val early = SystemClock.elapsedRealtime() - startedAt < EARLY_EXIT_MS
+      val relaunched = retry && code != 0 && early && !stopRequested &&
+        runCatching { launch(context, port, retry = false) }.isSuccess
+      if (!relaunched) RuntimeForeground.release(Hold.Server)
     }, "t3-device-server").start()
   }
 
   /** Asks the server to shut down and waits until proot has exited. */
   fun stop() {
+    stopRequested = true
     val started = guest ?: return
     started.terminate()
     started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)

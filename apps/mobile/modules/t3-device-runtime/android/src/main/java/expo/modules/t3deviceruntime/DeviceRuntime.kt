@@ -188,6 +188,10 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
       replaceFile(hosts, "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n")
     }
     fakeProc.mkdirs()
+    val sdcard = File(rootfs, "sdcard").toPath()
+    if (!Files.exists(sdcard, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      Os.symlink("/storage/emulated/0", sdcard.toString())
+    }
   }
 
   // Each entry is a file proot-distro also replaces when Android won't let apps read it.
@@ -238,10 +242,10 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
         "/proc/self/fd/1:/dev/stdout",
         "/proc/self/fd/2:/dev/stderr",
         "${shm.path}:/dev/shm",
-        // Phone storage, where Termux setups kept it. Reads fail until the user grants All
-        // files access; the bind is in place already, so the grant needs no restart.
+        // Phone storage, with /sdcard a symlink into it. proot drops a bind whose source it
+        // can't read at start, as /storage/emulated/0 before All files access; /storage it
+        // can, so a later grant works without a restart.
         "/storage",
-        "/storage/emulated/0:/sdcard",
       )) add("--bind=$bind")
       addAll(fakeProcBinds())
       // A clean environment, so nothing of the app's Android one reaches glibc programs.
