@@ -7612,6 +7612,74 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each([
+    { case: "Claude crashes", awaited: true, wakes: true },
+    { case: "Claude exits cleanly", awaited: true, wakes: true },
+    { case: "the job is left running", awaited: false, wakes: false },
+    { case: "T3 releases the session", awaited: true, wakes: false },
+  ] as const)("tells the agent its jobs are gone when $case while idle", (scenario) =>
+    Effect.gen(function* () {
+      const requests = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-process-exit"),
+              text: "Deploy in the background and tell me how it went.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
+          if (!scenario.awaited) {
+            yield* harness.runtime.awaitBackgroundTasks!({
+              providerThread: harness.providerThread,
+              taskIds: [WAKE_TASK_ID],
+              awaited: false,
+            });
+          }
+          if (scenario.case === "T3 releases the session") return harness.continuationRequests;
+
+          // The process takes its shells with it, and no task_notification reports them.
+          yield* scenario.case === "Claude crashes"
+            ? Queue.fail(
+                harness.sdkMessages,
+                new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                  method: "query",
+                  cause: new Error("Claude Code process terminated by signal SIGKILL"),
+                }),
+              )
+            : Queue.end(harness.sdkMessages);
+          yield* harness.until(
+            () =>
+              providerThreadRosterEvents(harness.events).at(-1)?.providerThread
+                .pendingBackgroundTasks?.length === 0,
+          );
+          return harness.continuationRequests;
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      );
+
+      if (!scenario.wakes) {
+        assert.lengthOf(requests, 0);
+        return;
+      }
+      assert.lengthOf(requests, 1);
+      assert.equal(requests[0]?.delivery, "message_text");
+      assert.equal(requests[0]?.notification?.outcome, "cancelled");
+      assert.include(requests[0]?.detail ?? "", `(id ${WAKE_TASK_ID})`);
+      assert.include(requests[0]?.detail ?? "", "never rerun a deploy");
+    }),
+  );
+
   it.effect("keeps a running Claude monitor typed after many newer monitors end", () =>
     Effect.scoped(
       Effect.gen(function* () {

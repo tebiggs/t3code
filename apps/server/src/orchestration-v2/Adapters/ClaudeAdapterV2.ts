@@ -8,6 +8,10 @@ import {
 } from "@t3tools/shared/toolActivity";
 import { field, text } from "../unknownField.ts";
 import {
+  cancelledRosterTaskWork,
+  restartCancelledBackgroundWorkNote,
+} from "../RestartBackgroundNote.ts";
+import {
   initialWorkflowAgentTranscriptCursor,
   readWorkflowAgentTranscript,
   type WorkflowAgentTranscriptCursor,
@@ -7421,6 +7425,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
+        // Session release reports its own lost background work.
+        let sessionClosing = false;
         const finalizeActiveTurnAfterQueryExit = Effect.fnUntraced(function* (
           closedQuery: ClaudeLiveQueryContext,
           cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
@@ -7449,7 +7455,29 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }),
             });
           } else {
+            // A process that dies on its own takes its shells with it, and Claude never reports
+            // them, so the agent must hear that the jobs it waits on are gone.
+            const lost =
+              interrupted || sessionClosing
+                ? []
+                : (yield* pendingBackgroundTasksForNativeThread(closedQuery.nativeThreadId)).filter(
+                    (task) => task.awaited === true && task.parentTaskId === undefined,
+                  );
             yield* resetBackgroundTaskStateForNativeThreadProcess(closedQuery.nativeThreadId);
+            if (lost.length > 0) {
+              yield* continuationRequests.offer({
+                threadId: context.input.providerThread.appThreadId,
+                providerThreadId: context.input.providerThread.id,
+                driver: CLAUDE_PROVIDER,
+                detail: restartCancelledBackgroundWorkNote(lost.map(cancelledRosterTaskWork)),
+                notification: {
+                  source: { kind: "background_task" },
+                  outcome: "cancelled",
+                  summary: "Background work stopped before it reported back",
+                },
+                delivery: "message_text",
+              });
+            }
           }
           // Preserve buffered outcomes before Stop clears the wake buffer.
           for (const [taskId, subagent] of subagents) {
@@ -10519,6 +10547,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          sessionClosing = true;
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);

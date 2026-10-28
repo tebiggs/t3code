@@ -83,7 +83,10 @@ waits for the next user message.
 The same record covers a provider session that ends without a restart. Its release
 records awaited work on the run that left it running. A crash or idle release then
 wakes the thread like a restart does; a detach the user caused (settle, archive, a
-workspace or provider change) only leaves the note for the next prompt. Automatic
+workspace or provider change) only leaves the note for the next prompt. A Claude process
+that dies on its own while idle takes its shells with it and never reports them, so the
+adapter wakes the thread with the same note; Stop and session release close the process
+themselves and do not. Automatic
 settlement rechecks inside its command that nothing awaited is running and no
 continuation is queued, because settling detaches the provider and cancels queued
 continuations.
