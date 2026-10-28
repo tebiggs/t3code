@@ -174,7 +174,11 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
         .mapNotNull { it.hostAddress }
     }.getOrDefault(emptyList())
     val servers = (dns + listOf("1.1.1.1", "8.8.8.8")).distinct().take(3)
-    replaceFile(File(rootfs, "etc/resolv.conf"), servers.joinToString("") { "nameserver $it\n" })
+    // Short timeouts with retries: the first server can be one a mobile network won't answer.
+    replaceFile(
+      File(rootfs, "etc/resolv.conf"),
+      servers.joinToString("") { "nameserver $it\n" } + "options timeout:2 attempts:3\n",
+    )
     val hosts = File(rootfs, "etc/hosts")
     if (!hosts.isFile || hosts.length() == 0L) {
       replaceFile(hosts, "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n")

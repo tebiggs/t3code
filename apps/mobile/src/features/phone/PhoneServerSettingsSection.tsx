@@ -15,19 +15,35 @@ import {
   usePhoneServerRuntime,
 } from "./phone-server";
 import { UPSTREAM_SERVER_WARNING, type PhoneScriptStatus } from "./phone-setup";
+import { inspectDeviceRuntime } from "../device-runtime/device-runtime";
 import { openTermux } from "./termux";
 
-// The on-device runtime only installs this fork's builds.
-function useInstalledServerBuild(termux: boolean) {
+interface ClaudeSignIn {
+  readonly signedIn: boolean;
+  readonly plan: string | null;
+}
+
+// The on-device runtime only installs this fork's builds, so only Termux reports one.
+function usePhoneServerStatus(termux: boolean) {
   const [build, setBuild] = useState<PhoneScriptStatus["t3Build"]>(null);
+  const [claude, setClaude] = useState<ClaudeSignIn | null>(null);
   const check = useCallback(() => {
-    if (!termux) return;
-    void probePhone().then((probe) => {
-      if (probe.kind === "ok") setBuild(probe.status.t3Build);
-    });
+    if (termux) {
+      void probePhone().then((probe) => {
+        if (probe.kind !== "ok") return;
+        setBuild(probe.status.t3Build);
+        setClaude({ signedIn: probe.status.claudeSignedIn, plan: probe.status.claudePlan });
+      });
+    } else {
+      inspectDeviceRuntime().then(
+        (inspection) =>
+          setClaude({ signedIn: inspection.claudeSignedIn, plan: inspection.claudePlan }),
+        () => undefined,
+      );
+    }
   }, [termux]);
   useFocusEffect(check);
-  return { build, check };
+  return { build, claude, check };
 }
 
 /** Settings → Environments → <this phone>: the server phone setup runs in Termux or in this app. */
@@ -41,7 +57,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
   const [busy, setBusy] = useState<"stopping" | "updating" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const termux = settings?.host !== "device";
-  const server = useInstalledServerBuild(termux);
+  const server = usePhoneServerStatus(termux);
   if (settings === null || settings.environmentId !== props.environmentId) return null;
   const connected = environment?.connectionState === "connected";
 
@@ -51,6 +67,9 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
       footer={
         actionError ??
         runtime.error ??
+        (server.claude?.signedIn === false
+          ? "Claude Code is signed out on this phone, so Claude threads here will fail. Sign in from phone setup."
+          : null) ??
         (server.build === "upstream" ? UPSTREAM_SERVER_WARNING : null) ??
         (termux
           ? "T3 Code runs as a background task in Termux. Stop it here or with t3-phone stop in Termux; exiting Termux from its notification leaves it running. Its log is ~/.t3-phone/server.log."
@@ -67,6 +86,20 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
         }
         onPress={() => navigation.navigate("PhoneSetup")}
       />
+      {server.claude ? (
+        <ListRow
+          icon="person.crop.circle"
+          label="Claude Code"
+          description={
+            server.claude.signedIn
+              ? server.claude.plan
+                ? `Signed in · ${server.claude.plan}`
+                : "Signed in"
+              : "Signed out. Sign in from phone setup."
+          }
+          onPress={() => navigation.navigate("PhoneSetup")}
+        />
+      ) : null}
       <SettingsSwitchRow
         icon="play"
         label="Start when T3 Code opens"

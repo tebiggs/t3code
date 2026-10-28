@@ -6,6 +6,20 @@ import java.io.IOException
 private val MANUAL_URL = Regex("""visit:\s*(https://\S+)""")
 private const val BROWSER_WAIT_MS = 3_000L
 private const val POLL_MS = 250L
+private const val CODE_PROMPT = "Paste code here if prompted >"
+private val NETWORK_ERROR = Regex("""getaddrinfo|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET""")
+
+/** Claude's last words after its code prompt, without the URL it printed before. */
+internal fun failureMessage(output: String, code: Int): String {
+  val reason = output.substringAfterLast(CODE_PROMPT, output).lines()
+    .map { it.trim() }.lastOrNull { it.isNotEmpty() }
+    ?: return "Sign-in exited with status $code."
+  return if (NETWORK_ERROR.containsMatchIn(reason)) {
+    "Couldn't reach Claude's servers ($reason). Check the connection, then sign in again."
+  } else {
+    reason
+  }
+}
 
 /**
  * `claude auth login` inside the runtime. Claude hands its sign-in URL to $BROWSER, which
@@ -93,8 +107,7 @@ class ClaudeLogin(
     } else if (cancelled) {
       onState(mapOf("state" to "cancelled"))
     } else {
-      val tail = output.lines().map { it.trim() }.filter { it.isNotEmpty() }.takeLast(3).joinToString("\n")
-      onState(mapOf("state" to "failed", "message" to tail.ifEmpty { "Sign-in exited with status $code." }))
+      onState(mapOf("state" to "failed", "message" to failureMessage(output.toString(), code)))
     }
   }
 }

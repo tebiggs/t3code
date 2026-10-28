@@ -8,12 +8,12 @@
 
   <application>
     <service
-      android:name="expo.modules.t3deviceruntime.DeviceServerService"
+      android:name="expo.modules.t3deviceruntime.DeviceRuntimeService"
       android:exported="false"
       android:foregroundServiceType="specialUse">
       <property
         android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-        android:value="Runs a T3 Code server and coding agents on the phone for the app to connect to over loopback." />
+        android:value="Installs and runs a T3 Code server and coding agents on the phone, for the app to connect to over loopback." />
     </service>
   </application>
 </manifest>

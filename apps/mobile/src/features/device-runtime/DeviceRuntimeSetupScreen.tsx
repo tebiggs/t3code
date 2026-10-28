@@ -1,6 +1,6 @@
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Linking, View } from "react-native";
+import { Linking, PermissionsAndroid, Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
@@ -10,7 +10,12 @@ import { ListRow } from "../../components/ui/ListRow";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments } from "../../state/workspace";
-import { connectPhoneServer, stopPhoneServerWhenSettled } from "../phone/phone-server";
+import { confirmPhoneServerReplacement } from "../phone/confirmPhoneServerReplacement";
+import {
+  connectPhoneServer,
+  forgetPhoneEnvironments,
+  stopPhoneServerWhenSettled,
+} from "../phone/phone-server";
 import { StepRow, StepText } from "../phone/SetupStep";
 import { getTermuxStatus, openDeveloperSettings } from "../phone/termux";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
@@ -34,6 +39,14 @@ const STEP_TITLES: Record<StepId, string> = {
   signIn: "Sign in to Claude",
   connect: "Connect this phone",
 };
+
+/** Progress shows in a notification while T3 Code is in the background; Android 13+ asks first. */
+function requestNotifications(): Promise<unknown> {
+  if (Platform.OS !== "android" || Platform.Version < 33) return Promise.resolve();
+  return PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(
+    () => undefined,
+  );
+}
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
@@ -115,8 +128,15 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
   };
   // A failed install shows its error in the install step, from the job's state.
   const installRuntime = () =>
-    native.install(getTermuxStatus().deviceName).then(inspect, () => undefined);
+    requestNotifications()
+      .then(() => native.install(getTermuxStatus().deviceName))
+      .then(inspect, () => undefined);
   const install = () => run("install", installRuntime);
+  // The server's environment goes with Ubuntu: its id lives in the deleted files.
+  const forgetDeviceServer = async () => {
+    if (settings?.host === "device") setPhoneServerSettings(null);
+    await forgetPhoneEnvironments(DEVICE_SERVER_PORT);
+  };
   const reinstall = () =>
     Dialog.alert(
       "Reinstall?",
@@ -130,6 +150,7 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
             void run("install", async () => {
               await stopPhoneServerWhenSettled(deviceServerHost);
               await native.remove();
+              await forgetDeviceServer();
               native.setEnabled(true);
               setInspection(null);
               await installRuntime();
@@ -148,11 +169,12 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
           style: "destructive",
           onPress: () =>
             void run("remove", async () => {
-              if (settings?.host === "device")
+              if (settings?.host === "device") {
                 setPhoneServerSettings({ ...settings, autoStart: false });
+              }
               await stopPhoneServerWhenSettled(deviceServerHost);
               await native.remove();
-              if (settings?.host === "device") setPhoneServerSettings(null);
+              await forgetDeviceServer();
               navigation.goBack();
             }),
         },
@@ -189,7 +211,9 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
           tone="primary"
           loading={busy === "connect"}
           onPress={() =>
-            void run("connect", () => connectPhoneServer(deviceServerHost, DEVICE_SERVER_PORT))
+            confirmPhoneServerReplacement(DEVICE_SERVER_PORT, () => {
+              void run("connect", () => connectPhoneServer(deviceServerHost, DEVICE_SERVER_PORT));
+            })
           }
         />
       </>
@@ -320,8 +344,8 @@ function InstallStepBody(props: {
     return (
       <>
         <StepText>
-          Step {job.stepNumber} of {job.stepCount}: {job.stepTitle}. Keep T3 Code open until it
-          finishes; it takes a few minutes.
+          Step {job.stepNumber} of {job.stepCount}: {job.stepTitle}. It takes a few minutes; you can
+          leave T3 Code, and a notification shows the progress.
         </StepText>
         <Button label="Cancel" tone="text" onPress={props.onCancel} />
       </>
@@ -335,7 +359,7 @@ function InstallStepBody(props: {
         </Text>
       ) : null}
       <StepText>
-        Keep T3 Code open while it installs. Running it again skips finished parts.
+        It runs in the background, with a notification. Running it again skips finished parts.
       </StepText>
       <Button
         label={job?.error ? "Try again" : "Install"}
@@ -404,7 +428,11 @@ function SignInStepBody(props: {
       <StepText>
         Use the Claude account that has Claude Code. Your browser opens to sign in.
       </StepText>
-      <Button label="Sign in" tone="primary" onPress={() => native.startLogin()} />
+      <Button
+        label="Sign in"
+        tone="primary"
+        onPress={() => void requestNotifications().then(() => native.startLogin())}
+      />
     </>
   );
 }

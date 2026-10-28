@@ -16,6 +16,7 @@ import { DeviceRuntimeSetupScreen } from "../device-runtime/DeviceRuntimeSetupSc
 import { deviceRuntime, supportsDeviceRuntime } from "../device-runtime/device-runtime";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
 import { connectPhoneServer, probePhone } from "./phone-server";
+import { confirmPhoneServerReplacement } from "./confirmPhoneServerReplacement";
 import { termuxHost } from "./phone-server-host";
 import { StepRow, StepText } from "./SetupStep";
 import {
@@ -117,7 +118,8 @@ function usePhoneEnvironment(status: PhoneScriptStatus | null) {
     environments.find((candidate) => candidate.environmentId === environmentId) ?? null;
   // oxlint-disable-next-line t3code/react-effect-budget -- persists the pairing once Termux and the connection both report it
   useEffect(() => {
-    if (environment === null || status === null) return;
+    // The app's own runtime holds the phone's pairing; Termux takes it back only by connecting.
+    if (environment === null || status === null || settings?.host === "device") return;
     if (settings?.environmentId === environment.environmentId && settings.port === status.port) {
       return;
     }
@@ -275,8 +277,10 @@ function PhoneSetupScreen(props: { readonly hostSwitch: ReactNode }) {
           tone="primary"
           loading={busy === "connect"}
           onPress={() =>
-            void run("connect", async () => {
-              await connectPhoneServer(termuxHost, status.port);
+            confirmPhoneServerReplacement(status.port, () => {
+              void run("connect", async () => {
+                await connectPhoneServer(termuxHost, status.port);
+              });
             })
           }
         />

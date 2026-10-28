@@ -15,10 +15,10 @@ import {
   usePhoneServerSettings,
 } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
-import { deviceServerHost } from "../device-runtime/device-runtime";
+import { DEVICE_SERVER_PORT, deviceServerHost } from "../device-runtime/device-runtime";
 import type { PhoneServerHostKind } from "../../persistence/mobile-preferences";
 import { termuxHost, type PhoneServerHost } from "./phone-server-host";
-import { parsePhoneScriptStatus, type PhoneProbe } from "./phone-setup";
+import { parsePhoneScriptStatus, phoneServerPort, type PhoneProbe } from "./phone-setup";
 import { runPhoneScript, supportsPhoneSetup, termuxErrorMessage } from "./termux";
 
 const STATUS_TIMEOUT_MS = 60_000;
@@ -32,6 +32,52 @@ const AUTO_START_INTERVAL_MS = 60_000;
 
 export function phoneServerHost(kind: PhoneServerHostKind | undefined): PhoneServerHost {
   return kind === "device" ? deviceServerHost : termuxHost;
+}
+
+/** Environments served from this phone, whichever host runs them. */
+function phoneEnvironments() {
+  return appAtomRegistry
+    .get(workspaceConnections.environmentsAtom)
+    .filter((environment) => phoneServerPort(environment.displayUrl) !== null);
+}
+
+/**
+ * The phone's other servers, which connecting a server on `port` replaces: this phone runs
+ * one at a time, so switching between Termux and the app's runtime doesn't leave two.
+ */
+export function replacedPhoneEnvironments(port: number) {
+  return phoneEnvironments().filter(
+    (environment) => phoneServerPort(environment.displayUrl) !== port,
+  );
+}
+
+function removeEnvironment(environmentId: EnvironmentId) {
+  return runAtomCommand(appAtomRegistry, environmentCatalog.remove, environmentId, {
+    reportFailure: false,
+  });
+}
+
+/** Stops the phone's other servers and forgets every phone environment but `keep`. */
+async function retireOtherPhoneEnvironments(keep: EnvironmentId, port: number) {
+  for (const environment of phoneEnvironments()) {
+    if (environment.environmentId === keep) continue;
+    const environmentPort = phoneServerPort(environment.displayUrl);
+    // An entry on the same port is a server this one replaced, such as before a reinstall.
+    if (environmentPort !== port) {
+      const host = environmentPort === DEVICE_SERVER_PORT ? deviceServerHost : termuxHost;
+      await host.stop().catch(() => undefined);
+    }
+    await removeEnvironment(environment.environmentId);
+  }
+}
+
+/** Forgets the environments of the phone's server on `port`, once that server is gone. */
+export async function forgetPhoneEnvironments(port: number): Promise<void> {
+  for (const environment of phoneEnvironments()) {
+    if (phoneServerPort(environment.displayUrl) === port) {
+      await removeEnvironment(environment.environmentId);
+    }
+  }
 }
 
 /** Starting the server from the home chip, the detail page or on app open. */
@@ -191,6 +237,7 @@ export async function connectPhoneServer(
     autoStart: previous?.autoStart ?? true,
     host: host.kind,
   });
+  await retireOtherPhoneEnvironments(environmentId, port);
   return environmentId;
 }
 

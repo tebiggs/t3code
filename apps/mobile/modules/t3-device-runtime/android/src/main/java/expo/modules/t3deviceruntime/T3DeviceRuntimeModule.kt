@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.view.WindowManager
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
@@ -141,11 +140,19 @@ class T3DeviceRuntimeModule : Module() {
       if (login?.running == true) return@Function null
       val created = ClaudeLogin(DeviceRuntime(context) {}, ::openUrl) { state ->
         Log.i(TAG, "Claude sign-in: ${state["state"]}")
+        if (state["state"] in setOf("done", "cancelled", "failed")) RuntimeForeground.release(Hold.Login)
         loginState = state
         mainHandler.post { sendEvent("onLogin", state) }
       }
       login = created
-      created.start()
+      // The browser takes the screen while the user signs in; Claude has to keep running.
+      RuntimeForeground.hold(context, Hold.Login, "Signing in to Claude…")
+      try {
+        created.start()
+      } catch (error: Throwable) {
+        RuntimeForeground.release(Hold.Login)
+        throw error
+      }
     }
 
     Function("submitLoginCode") { code: String -> login?.submitCode(code) }
@@ -204,7 +211,8 @@ class T3DeviceRuntimeModule : Module() {
       activeJob = runtime
     }
     synchronized(jobLog) { jobLog.clear() }
-    setKeepScreenOn(true)
+    // Held from here, while T3 Code is on screen: Android won't start it from the background.
+    RuntimeForeground.hold(context, Hold.Job, "Starting…")
     jobs.execute {
       var failure: String? = null
       try {
@@ -227,13 +235,17 @@ class T3DeviceRuntimeModule : Module() {
         failure = error.message ?: error.javaClass.simpleName
       }
       synchronized(this) { activeJob = null }
-      setKeepScreenOn(false)
+      RuntimeForeground.release(Hold.Job)
       setJobState(kind, false, null, steps.size, steps.size, failure)
       if (failure == null) promise.resolve(null) else promise.reject(RuntimeJobFailed(failure))
     }
   }
 
   private fun setJobState(kind: String, running: Boolean, step: JobStep?, index: Int, count: Int, error: String?) {
+    if (running && step != null) {
+      val context = appContext.reactContext
+      if (context != null) RuntimeForeground.hold(context, Hold.Job, "${step.title} (step ${index + 1} of $count)…")
+    }
     val state = mapOf(
       "kind" to kind,
       "running" to running,
@@ -260,15 +272,6 @@ class T3DeviceRuntimeModule : Module() {
     mainHandler.post {
       runCatching { (appContext.currentActivity ?: requireContext()).startActivity(intent) }
         .onFailure { Log.w(TAG, "Couldn't open the sign-in page", it) }
-    }
-  }
-
-  // The app's processes, proot's included, freeze once it leaves the screen.
-  private fun setKeepScreenOn(on: Boolean) {
-    mainHandler.post {
-      val window = appContext.currentActivity?.window ?: return@post
-      if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-      else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
   }
 }
