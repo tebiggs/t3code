@@ -1,10 +1,8 @@
 import { requireOptionalNativeModule, type NativeModule } from "expo";
 import { useCallback, useEffect, useState } from "react";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 
-import type { PhoneServerHost } from "../phone/phone-server-host";
-
-/** Away from Termux's 3773, so both servers can run while someone moves between them. */
+/** Not Termux setup's old 3773, which may still be serving on phones that used it. */
 export const DEVICE_SERVER_PORT = 3774;
 
 export interface DeviceRuntimeJob {
@@ -28,8 +26,8 @@ export type DeviceRuntimeLogin =
 export interface DeviceRuntimeStatus {
   /** A 64-bit ARM phone, or an x86_64 emulator, with proot in the APK. */
   readonly supported: boolean;
-  /** Phone setup uses this runtime instead of Termux. */
-  readonly enabled: boolean;
+  /** All files access, which phone storage at /sdcard needs. */
+  readonly storageAccess: boolean;
   readonly installed: boolean;
   readonly serverRunning: boolean;
   readonly job: DeviceRuntimeJob | null;
@@ -52,8 +50,9 @@ type DeviceRuntimeEvents = {
 
 declare class T3DeviceRuntimeModule extends NativeModule<DeviceRuntimeEvents> {
   getStatus(): DeviceRuntimeStatus;
-  setEnabled(enabled: boolean): void;
-  install(deviceName: string): Promise<void>;
+  install(): Promise<void>;
+  openStorageSettings(): void;
+  openDeveloperSettings(): void;
   update(): Promise<void>;
   cancelJob(): void;
   getJobLog(): ReadonlyArray<string>;
@@ -108,33 +107,39 @@ export function useDeviceRuntimeStatus() {
   const native = requireDeviceRuntime();
   const [status, setStatus] = useState<DeviceRuntimeStatus>(() => native.getStatus());
   const refresh = useCallback(() => setStatus(native.getStatus()), [native]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- follows the native installer and sign-in
+  // oxlint-disable-next-line t3code/react-effect-budget -- follows the native installer and sign-in, and storage grants made in system settings
   useEffect(() => {
     const job = native.addListener("onJob", () => setStatus(native.getStatus()));
     const login = native.addListener("onLogin", () => setStatus(native.getStatus()));
+    const app = AppState.addEventListener("change", (state) => {
+      if (state === "active") setStatus(native.getStatus());
+    });
     return () => {
       job.remove();
       login.remove();
+      app.remove();
     };
   }, [native]);
   return { status, refresh };
 }
 
-export const deviceServerHost: PhoneServerHost = {
-  kind: "device",
-  where: "on this phone",
-  logLocation: "the server log in phone setup",
-  unavailable() {
+/** The phone's T3 server, as phone-server.ts starts, pairs, updates and stops it. */
+export const deviceServer = {
+  /** Why the server can't start right now, or null when it can. */
+  unavailable(): string | null {
     const status = deviceRuntime?.getStatus();
     if (!status?.installed) return "T3 Code isn't installed on this phone anymore.";
     if (status.job?.running) return "Setup or an update is still running.";
     return null;
   },
-  launch(port) {
+  /** Starts the server in the background; callers wait for its port to answer. */
+  launch(port: number) {
     requireDeviceRuntime().startServer(port);
   },
   stop: () => requireDeviceRuntime().stopServer(),
+  /** Mints a pairing token inside Ubuntu. */
   pairingUrl: () => requireDeviceRuntime().pair(),
+  /** Installs the newest server build and Claude Code. */
   update: () => requireDeviceRuntime().update(),
-  logTail: async () => requireDeviceRuntime().serverLog(15),
+  logTail: () => requireDeviceRuntime().serverLog(15),
 };

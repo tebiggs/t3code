@@ -3,8 +3,10 @@ package expo.modules.t3deviceruntime
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
@@ -52,7 +54,7 @@ class T3DeviceRuntimeModule : Module() {
       val runtime = DeviceRuntime(requireContext()) {}
       mapOf(
         "supported" to runtime.supported,
-        "enabled" to enabledMarker(runtime).isFile,
+        "storageAccess" to hasStorageAccess(requireContext()),
         "installed" to installedMarker(runtime).isFile,
         "serverRunning" to DeviceServer.running,
         "job" to jobState,
@@ -60,13 +62,32 @@ class T3DeviceRuntimeModule : Module() {
       )
     }
 
-    Function("setEnabled") { enabled: Boolean ->
-      val marker = enabledMarker(DeviceRuntime(requireContext()) {})
-      if (enabled) marker.apply { parentFile?.mkdirs() }.writeText("") else marker.delete()
+    // Android 11+ grants phone storage only as All files access, from system settings.
+    Function("openStorageSettings") {
+      val context = requireContext()
+      val intent = Intent(
+        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+        Uri.parse("package:${context.packageName}"),
+      ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      runCatching { (appContext.currentActivity ?: context).startActivity(intent) }
+        .recoverCatching {
+          context.startActivity(
+            Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+          )
+        }
     }
 
-    AsyncFunction("install") { deviceName: String, promise: Promise ->
+    Function("openDeveloperSettings") {
       val context = requireContext()
+      val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      runCatching { (appContext.currentActivity ?: context).startActivity(intent) }
+        .recoverCatching { context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
+
+    AsyncFunction("install") { promise: Promise ->
+      val context = requireContext()
+      val deviceName = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+        ?.takeIf { it.isNotBlank() } ?: Build.MODEL
       startJob(context, "install", INSTALL_STEPS, promise) { runtime, step, script ->
         when (step.id) {
           "ubuntu" -> {
@@ -180,8 +201,6 @@ class T3DeviceRuntimeModule : Module() {
 
   private fun requireContext(): Context =
     appContext.reactContext ?: throw CodedException("ERR_NO_CONTEXT", "The React context isn't ready.", null)
-
-  private fun enabledMarker(runtime: DeviceRuntime) = File(runtime.home, "enabled")
 
   private fun installedMarker(runtime: DeviceRuntime) = File(runtime.home, "setup.done")
 

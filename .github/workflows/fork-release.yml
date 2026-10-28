@@ -240,8 +240,8 @@ jobs:
       resource_key: linux-x64
       cli_archive: true
 
-  # The arm64 server archive is what the Android app's phone setup installs in
-  # Termux. node-pty compiles from source there, so it builds on arm64 hardware.
+  # The arm64 server archive is what the Android app's phone setup installs on
+  # the phone. node-pty compiles from source there, so it builds on arm64 hardware.
   linux_arm64:
     name: Linux arm64
     needs: [prepare, bundle]

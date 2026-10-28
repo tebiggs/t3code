@@ -2,7 +2,7 @@ import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 
-// Paths as Ubuntu inside Termux sees them; proot-distro binds phone storage at /sdcard.
+// Paths as the phone's Ubuntu sees them; the runtime binds phone storage at /sdcard.
 const SHORTCUTS = [
   { label: "Phone storage", path: "/sdcard/" },
   { label: "Downloads", path: "/sdcard/Download/" },

@@ -17,12 +17,10 @@ import {
   stopPhoneServerWhenSettled,
 } from "../phone/phone-server";
 import { StepRow, StepText } from "../phone/SetupStep";
-import { getTermuxStatus, openDeveloperSettings } from "../phone/termux";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import {
   DEVICE_SERVER_PORT,
-  deviceServerHost,
   inspectDeviceRuntime,
   requireDeviceRuntime,
   useDeviceRuntimeStatus,
@@ -48,12 +46,27 @@ function requestNotifications(): Promise<unknown> {
   );
 }
 
+/**
+ * Android 11+ grants phone storage as All files access in system settings; older versions
+ * ask with a dialog. Ubuntu sees it at /sdcard either way, once the grant lands.
+ */
+function requestStorageAccess(): Promise<unknown> {
+  if (Platform.OS !== "android") return Promise.resolve();
+  if (Platform.Version >= 30) {
+    requireDeviceRuntime().openStorageSettings();
+    return Promise.resolve();
+  }
+  return PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE).catch(
+    () => undefined,
+  );
+}
+
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
-/** Phone setup without Termux: Ubuntu, Claude Code and the server run inside this app. */
-export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode }) {
+/** Phone setup: Ubuntu, Claude Code and the server run inside this app. */
+export function DeviceRuntimeSetupScreen() {
   const native = requireDeviceRuntime();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -65,8 +78,7 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
   const settings = usePhoneServerSettings();
   const environment =
     useWorkspaceEnvironments().find(
-      (candidate) =>
-        settings?.host === "device" && candidate.environmentId === settings.environmentId,
+      (candidate) => candidate.environmentId === settings?.environmentId,
     ) ?? null;
   const connected = environment?.connectionState === "connected";
 
@@ -129,12 +141,12 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
   // A failed install shows its error in the install step, from the job's state.
   const installRuntime = () =>
     requestNotifications()
-      .then(() => native.install(getTermuxStatus().deviceName))
+      .then(() => native.install())
       .then(inspect, () => undefined);
   const install = () => run("install", installRuntime);
   // The server's environment goes with Ubuntu: its id lives in the deleted files.
   const forgetDeviceServer = async () => {
-    if (settings?.host === "device") setPhoneServerSettings(null);
+    setPhoneServerSettings(null);
     await forgetPhoneEnvironments(DEVICE_SERVER_PORT);
   };
   const reinstall = () =>
@@ -148,10 +160,9 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
           style: "destructive",
           onPress: () =>
             void run("install", async () => {
-              await stopPhoneServerWhenSettled(deviceServerHost);
+              await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();
-              native.setEnabled(true);
               setInspection(null);
               await installRuntime();
             }),
@@ -161,7 +172,7 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
   const remove = () =>
     Dialog.alert(
       "Remove from this phone?",
-      "Stops the server and deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone. Phone setup goes back to Termux.",
+      "Stops the server and deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -169,10 +180,8 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
           style: "destructive",
           onPress: () =>
             void run("remove", async () => {
-              if (settings?.host === "device") {
-                setPhoneServerSettings({ ...settings, autoStart: false });
-              }
-              await stopPhoneServerWhenSettled(deviceServerHost);
+              if (settings) setPhoneServerSettings({ ...settings, autoStart: false });
+              await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();
               navigation.goBack();
@@ -212,7 +221,7 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
           loading={busy === "connect"}
           onPress={() =>
             confirmPhoneServerReplacement(DEVICE_SERVER_PORT, () => {
-              void run("connect", () => connectPhoneServer(deviceServerHost, DEVICE_SERVER_PORT));
+              void run("connect", () => connectPhoneServer(DEVICE_SERVER_PORT));
             })
           }
         />
@@ -229,10 +238,10 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <Text className="px-2 text-sm leading-normal text-foreground-muted">
-          Claude Code and a T3 Code server run in an Ubuntu system inside T3 Code, without Termux.
-          Setup downloads about 400 MB and uses about 1.1 GB of storage. Use Wi-Fi.
+          Claude Code and a T3 Code server run in an Ubuntu system inside T3 Code, so agents can
+          work with your phone's files. Setup downloads about 400 MB and uses about 1.1 GB of
+          storage. Use Wi-Fi.
         </Text>
-        {props.hostSwitch}
 
         {current === "ready" && environment ? (
           <SettingsSection title="Ready">
@@ -286,18 +295,21 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
           </Text>
         ) : null}
 
-        {status.installed || status.job !== null ? (
+        {status.installed ? (
           <SettingsSection
-            title="Manage"
+            title="Keep it running"
             footer="While the server runs, T3 Code shows a notification and keeps the phone awake. Android may stop agents when many processes run; the child process setting lifts that limit."
           >
             <ListRow
-              icon="terminal"
-              label={showLog ? "Hide log" : "Show log"}
-              description={installing ? "Setup output" : "Setup output and the server's log"}
-              onPress={() => setShowLog((value) => !value)}
+              icon="internaldrive"
+              label="Phone storage"
+              description={
+                status.storageAccess
+                  ? "Allowed. Agents can reach /sdcard."
+                  : "Not allowed. Agents can't reach your files."
+              }
+              onPress={() => void requestStorageAccess()}
             />
-            {showLog ? <LogView installing={installing} /> : null}
             <ListRow
               icon="bolt.circle"
               label="Battery use"
@@ -308,8 +320,20 @@ export function DeviceRuntimeSetupScreen(props: { readonly hostSwitch: ReactNode
               icon="terminal"
               label="Child process limit"
               description='In Developer options, turn on "Disable child process restrictions".'
-              onPress={() => openDeveloperSettings()}
+              onPress={() => native.openDeveloperSettings()}
             />
+          </SettingsSection>
+        ) : null}
+
+        {status.installed || status.job !== null ? (
+          <SettingsSection title="Manage">
+            <ListRow
+              icon="terminal"
+              label={showLog ? "Hide log" : "Show log"}
+              description={installing ? "Setup output" : "Setup output and the server's log"}
+              onPress={() => setShowLog((value) => !value)}
+            />
+            {showLog ? <LogView installing={installing} /> : null}
             {status.installed ? (
               <ListRow
                 icon="arrow.clockwise"

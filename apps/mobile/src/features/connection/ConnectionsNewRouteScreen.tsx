@@ -35,8 +35,7 @@ import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { CloudEnvironmentRows } from "./CloudEnvironmentRows";
 import { splitEnvironmentSections } from "./environmentSections";
 import { usePhoneServerSettings } from "../../state/phone-server-settings";
-import { deviceRuntime } from "../device-runtime/device-runtime";
-import { getTermuxStatus, supportsPhoneSetup } from "../phone/termux";
+import { deviceRuntime, supportsDeviceRuntime } from "../device-runtime/device-runtime";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { leaveSettingsPage } from "../settings/settings-navigation";
 import { workspaceHasColumns } from "../workspace/workspace-selection-store";
@@ -277,7 +276,7 @@ export function ConnectionsNewRouteScreen({
           </View>
 
           {hasCloudPublicConfig() ? <T3ConnectSection /> : null}
-          {Platform.OS === "android" && supportsPhoneSetup() ? <PhoneSection /> : null}
+          {deviceRuntime !== null ? <PhoneSection /> : null}
         </View>
       </ScrollView>
     </SettingsScreen>
@@ -417,14 +416,13 @@ function PhoneSection() {
   const phone = useWorkspaceEnvironments().find(
     (environment) => environment.environmentId === settings?.environmentId,
   );
-  const [supported] = useState(() => getTermuxStatus().supportedAbi);
-  const [onDevice] = useState(() => deviceRuntime?.getStatus().enabled === true);
+  const [supported] = useState(supportsDeviceRuntime);
   const rippleStyle = useResolveClassNames("bg-subtle-strong");
   const description = !supported
     ? "Needs a 64-bit phone"
     : phone
       ? `Set up as ${phone.environmentLabel}`
-      : `Claude Code ${onDevice ? "inside T3 Code" : "in Termux"}, no other computer needed`;
+      : "Claude Code on this phone, no other computer needed";
   return (
     <View collapsable={false} className="gap-2">
       <Text className="px-4 text-sm font-t3-medium text-foreground-muted">

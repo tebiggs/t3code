@@ -8,45 +8,32 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
 import {
-  probePhone,
   startAndReconnectPhoneServer,
   stopPhoneServerWhenSettled,
   updatePhoneServer,
   usePhoneServerRuntime,
 } from "./phone-server";
-import { UPSTREAM_SERVER_WARNING, type PhoneScriptStatus } from "./phone-setup";
 import { inspectDeviceRuntime } from "../device-runtime/device-runtime";
-import { openTermux } from "./termux";
 
 interface ClaudeSignIn {
   readonly signedIn: boolean;
   readonly plan: string | null;
 }
 
-// The on-device runtime only installs this fork's builds, so only Termux reports one.
-function usePhoneServerStatus(termux: boolean) {
-  const [build, setBuild] = useState<PhoneScriptStatus["t3Build"]>(null);
+function useClaudeSignIn() {
   const [claude, setClaude] = useState<ClaudeSignIn | null>(null);
   const check = useCallback(() => {
-    if (termux) {
-      void probePhone().then((probe) => {
-        if (probe.kind !== "ok") return;
-        setBuild(probe.status.t3Build);
-        setClaude({ signedIn: probe.status.claudeSignedIn, plan: probe.status.claudePlan });
-      });
-    } else {
-      inspectDeviceRuntime().then(
-        (inspection) =>
-          setClaude({ signedIn: inspection.claudeSignedIn, plan: inspection.claudePlan }),
-        () => undefined,
-      );
-    }
-  }, [termux]);
+    inspectDeviceRuntime().then(
+      (inspection) =>
+        setClaude({ signedIn: inspection.claudeSignedIn, plan: inspection.claudePlan }),
+      () => undefined,
+    );
+  }, []);
   useFocusEffect(check);
-  return { build, claude, check };
+  return { claude, check };
 }
 
-/** Settings → Environments → <this phone>: the server phone setup runs in Termux or in this app. */
+/** Settings → Environments → <this phone>: the server phone setup runs inside this app. */
 export function PhoneServerSettingsSection(props: { readonly environmentId: EnvironmentId }) {
   const navigation = useNavigation();
   const settings = usePhoneServerSettings();
@@ -56,8 +43,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
   );
   const [busy, setBusy] = useState<"stopping" | "updating" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const termux = settings?.host !== "device";
-  const server = usePhoneServerStatus(termux);
+  const server = useClaudeSignIn();
   if (settings === null || settings.environmentId !== props.environmentId) return null;
   const connected = environment?.connectionState === "connected";
 
@@ -70,20 +56,13 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
         (server.claude?.signedIn === false
           ? "Claude Code is signed out on this phone, so Claude threads here will fail. Sign in from phone setup."
           : null) ??
-        (server.build === "upstream" ? UPSTREAM_SERVER_WARNING : null) ??
-        (termux
-          ? "T3 Code runs as a background task in Termux. Stop it here or with t3-phone stop in Termux; exiting Termux from its notification leaves it running. Its log is ~/.t3-phone/server.log."
-          : "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification.")
+        "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification."
       }
     >
       <ListRow
         icon="iphone"
         label="Setup and checks"
-        description={
-          termux
-            ? "Install, Claude sign-in and keep-alive settings"
-            : "Install, Claude sign-in, log and removal"
-        }
+        description="Install, Claude sign-in, phone storage and removal"
         onPress={() => navigation.navigate("PhoneSetup")}
       />
       {server.claude ? (
@@ -103,7 +82,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
       <SettingsSwitchRow
         icon="play"
         label="Start when T3 Code opens"
-        subtitle={`Starts the server ${termux ? "in Termux" : "on this phone"} if it isn't running.`}
+        subtitle="Starts the server on this phone if it isn't running."
         value={settings.autoStart}
         onValueChange={(autoStart) => setPhoneServerSettings({ ...settings, autoStart })}
       />
@@ -136,20 +115,8 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
       )}
       <ListRow
         icon="arrow.down.circle"
-        label={
-          busy === "updating"
-            ? "Updating…"
-            : termux
-              ? "Update T3 Code"
-              : "Update T3 Code and Claude Code"
-        }
-        description={
-          !termux
-            ? "Installs the newest server build and Claude Code, then restarts the server."
-            : server.build === "upstream"
-              ? "Runs upstream's server. Installs this app's newest server build, then restarts."
-              : "Installs the newest server build, then restarts the server."
-        }
+        label={busy === "updating" ? "Updating…" : "Update T3 Code and Claude Code"}
+        description="Installs the newest server build and Claude Code, then restarts the server."
         disabled={busy !== null || runtime.starting}
         onPress={() => {
           setBusy("updating");
@@ -164,7 +131,6 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
             });
         }}
       />
-      {termux ? <ListRow icon="terminal" label="Open Termux" onPress={() => openTermux()} /> : null}
     </SettingsSection>
   );
 }

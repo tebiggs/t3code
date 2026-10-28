@@ -45,29 +45,23 @@ T3 Code uses the Claude configuration on the connected server.
 
 The Android app can run Claude Code on the phone itself, so agents can work with the
 phone's files without another computer. In **Settings > Environments**, add an
-environment and choose **Run agents on this phone**, then follow the checklist. It
-needs Termux from F-Droid (the Play Store build can't run Ubuntu), a 64-bit phone,
-about 3 GB of storage and 20 minutes. Claude Code and a T3 Code server run in Ubuntu
-inside Termux, and the phone becomes an environment named after the device.
+environment and choose **Run agents on this phone**, then follow the checklist. It needs a
+64-bit phone and about 1.1 GB of storage; setup downloads about 400 MB and takes a few
+minutes. Claude Code and a T3 Code server run in an Ubuntu system inside T3 Code, and the
+phone becomes an environment named after the device.
 
-- Phone storage is at `/sdcard`. It keeps no file permissions or symlinks, so keep git
-  repositories in Ubuntu's home folder.
-- If you set up Ubuntu and Claude Code in Termux yourself, the checklist finds them and
-  keeps your Claude sign-in.
-- Android stops background apps. The checklist's **Keep it running** section links to
-  the battery and developer settings that keep Termux alive. When the server isn't
-  running, the app starts it when you open it, unless you stopped it.
-- The phone's T3 Code server doesn't update itself. Use **Update T3 Code** on the
-  phone's environment page in **Settings > Environments**.
-- In Termux, `t3-phone shell` opens Ubuntu.
-- **Without Termux** (experimental) at the top of the checklist runs Ubuntu inside
-  T3 Code instead. Setup downloads about 400 MB and takes a few minutes; it keeps going
-  if you leave the app, with a notification. **Sign in** opens your browser; if it shows
-  a code instead of returning, paste the code into the app. The phone runs one server at
-  a time, so connecting this one replaces a Termux server, and the reverse. **Update T3
-  Code and Claude Code** on the phone's environment page updates both. Agents can't reach
-  phone storage in this mode yet. **Remove from this phone** deletes it, including the
-  threads stored on the phone.
+- Setup and Claude sign-in keep going if you leave the app, with a notification. **Sign
+  in** opens your browser; if it shows a code instead of returning, paste the code into
+  the app.
+- Allow **Phone storage** in the checklist's **Keep it running** section so agents can
+  reach your files at `/sdcard`. Phone storage keeps no file permissions or symlinks, so
+  keep git repositories in Ubuntu's home folder.
+- The server shows a notification while it runs and keeps the phone awake. The app starts
+  it when you open it, unless you stopped it.
+- The phone's server doesn't update itself. **Update T3 Code and Claude Code** on the
+  phone's environment page in **Settings > Environments** updates both.
+- **Remove from this phone** in the checklist deletes Ubuntu, including the threads stored
+  on the phone.
 
 ## Compact long conversations
 

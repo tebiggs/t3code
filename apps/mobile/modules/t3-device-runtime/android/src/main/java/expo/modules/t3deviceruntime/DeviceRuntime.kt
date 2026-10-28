@@ -1,7 +1,11 @@
 package expo.modules.t3deviceruntime
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.os.Build
+import android.os.Environment
 import android.os.SystemClock
 import android.system.Os
 import android.system.OsConstants
@@ -234,6 +238,10 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
         "/proc/self/fd/1:/dev/stdout",
         "/proc/self/fd/2:/dev/stderr",
         "${shm.path}:/dev/shm",
+        // Phone storage, where Termux setups kept it. Reads fail until the user grants All
+        // files access; the bind is in place already, so the grant needs no restart.
+        "/storage",
+        "/storage/emulated/0:/sdcard",
       )) add("--bind=$bind")
       addAll(fakeProcBinds())
       // A clean environment, so nothing of the app's Android one reaches glibc programs.
@@ -572,3 +580,11 @@ private fun InputStream.copyEntry(output: OutputStream?, size: Long) {
 
 private fun InputStream.readEntry(size: Long): ByteArray =
   ByteArrayOutputStream().also { copyEntry(it, size) }.toByteArray()
+
+/** All files access on Android 11+, the storage permission before it. */
+fun hasStorageAccess(context: Context): Boolean =
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+    Environment.isExternalStorageManager()
+  } else {
+    context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+  }
