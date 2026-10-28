@@ -36,6 +36,7 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -952,6 +953,23 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const { run } = yield* waitForThread({ ...input, timeoutMs: SETTLE_AFTER_RUN_WAIT_MS });
     if (run?.status !== "completed") return;
+    // Settling detaches the provider and cancels queued wakes, which would lose work the agent
+    // still waits on. Its wake turn can settle again once that work reports back.
+    const { providerThreads, runs } = yield* getProjectThreadRecords(input, [
+      "providerThreads",
+      "runs",
+    ]);
+    if (
+      backgroundWorkHoldsCompletion(
+        providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
+      ) ||
+      runs.some((candidate) => candidate.status === "queued")
+    ) {
+      return yield* Effect.logInfo("Not settling after the run: it still waits on work", {
+        threadId: input.threadId,
+        runId: input.runId,
+      });
+    }
     yield* dispatch({
       type: "thread.settle",
       commandId: CommandId.make(`server:settle-after-run:${input.runId}`),
