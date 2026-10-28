@@ -88,7 +88,7 @@ object AgentAccess {
   fun check(context: Context, command: String) {
     val category = categories.firstOrNull { command in it.commands } ?: return
     if (policy(context, category) == AccessPolicy.Deny) {
-      throw BridgeError("${category.label} is set to Deny for agents in $ACCESS_SETTINGS.", 403)
+      throw BridgeError("${category.label} is set to Never for agents in $ACCESS_SETTINGS.", 403)
     }
     if (!granted(context, category)) throw BridgeError("Allow ${category.label} in $ACCESS_SETTINGS.", 403)
   }
