@@ -264,8 +264,9 @@ export const layer = Layer.effectDiscard(
           );
         const retryOnFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           effect.pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : retryWake(wake, cause),
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) => retryWake(wake, cause),
             ),
           );
         if (request.dispatchIfCurrent === undefined) {

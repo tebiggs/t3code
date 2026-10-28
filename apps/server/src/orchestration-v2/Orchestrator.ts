@@ -3941,22 +3941,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // The settlement sweep's own eligibility, re-read inside the command.
   const automaticSettlementBlocker = Effect.fn("orchestrationV2.automaticSettlementBlocker")(
     function* (threadId: ThreadId) {
-      const [candidate] = yield* projectionStore
-        .getSettlementCandidates(threadId)
-        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const [candidate] = yield* projectionStore.getSettlementCandidates(threadId);
       if (candidate === undefined) {
         return "is no longer a candidate for automatic settlement.";
       }
       if (backgroundWorkHoldsCompletion(candidate.pendingBackgroundTasks ?? [])) {
         return "is waiting on background work and cannot settle automatically.";
       }
-      const { runs } = yield* projectionStore
-        .getThreadRecords(threadId, ["runs"])
-        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
       return runs.some((run) => run.status === "queued")
         ? "has a queued message and cannot settle automatically."
         : null;
     },
+    (effect, threadId) =>
+      effect.pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
   );
 
   const dispatchProviderSessionDetach = Effect.fn("orchestrationV2.dispatch.providerSessionDetach")(

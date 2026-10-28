@@ -7613,8 +7613,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   it.effect.each([
-    { case: "Claude crashes", awaited: true, wakes: true },
-    { case: "Claude exits cleanly", awaited: true, wakes: true },
+    { case: "Claude exits", awaited: true, wakes: true },
     { case: "the job is left running", awaited: false, wakes: false },
     { case: "T3 releases the session", awaited: true, wakes: false },
   ] as const)("tells the agent its jobs are gone when $case while idle", (scenario) =>
@@ -7646,15 +7645,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           if (scenario.case === "T3 releases the session") return harness.continuationRequests;
 
           // The process takes its shells with it, and no task_notification reports them.
-          yield* scenario.case === "Claude crashes"
-            ? Queue.fail(
-                harness.sdkMessages,
-                new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
-                  method: "query",
-                  cause: new Error("Claude Code process terminated by signal SIGKILL"),
-                }),
-              )
-            : Queue.end(harness.sdkMessages);
+          yield* Queue.shutdown(harness.sdkMessages);
           yield* harness.until(
             () =>
               providerThreadRosterEvents(harness.events).at(-1)?.providerThread

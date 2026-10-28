@@ -7455,18 +7455,26 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }),
             });
           } else {
-            // A process that dies on its own takes its shells with it, and Claude never reports
-            // them, so the agent must hear that the jobs it waits on are gone.
+            // A process that dies on its own takes its running shells with it, and Claude never
+            // reports them, so the agent must hear that the jobs it waits on are gone. Finished
+            // jobs awaiting delivery keep their buffered result.
             const lost =
               interrupted || sessionClosing
                 ? []
-                : (yield* pendingBackgroundTasksForNativeThread(closedQuery.nativeThreadId)).filter(
-                    (task) => task.awaited === true && task.parentTaskId === undefined,
-                  );
+                : claudePendingBackgroundTasksFromRoster(
+                    rosterForNativeThread(
+                      yield* Ref.get(pendingBackgroundTasksByNativeThread),
+                      closedQuery.nativeThreadId,
+                    ),
+                    taskIdSetForNativeThread(
+                      yield* Ref.get(unawaitedBackgroundTasksByNativeThread),
+                      closedQuery.nativeThreadId,
+                    ),
+                  ).filter((task) => task.awaited === true && task.parentTaskId === undefined);
             yield* resetBackgroundTaskStateForNativeThreadProcess(closedQuery.nativeThreadId);
             if (lost.length > 0) {
               yield* continuationRequests.offer({
-                threadId: context.input.providerThread.appThreadId,
+                threadId: context.input.threadId,
                 providerThreadId: context.input.providerThread.id,
                 driver: CLAUDE_PROVIDER,
                 detail: restartCancelledBackgroundWorkNote(lost.map(cancelledRosterTaskWork)),
