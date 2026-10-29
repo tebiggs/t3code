@@ -17,9 +17,12 @@ export function LabsSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection id="beta" title="Beta">
         <BoringSidebarRow />
+        <BoringSidebarMultilineRow />
+        <ThreadDetailsUsageRow />
         {/* Clerk is only mounted when this build has T3 Connect. */}
         {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
         <LinkedEnvironmentsRow />
+        <SimlockHostsRow />
       </SettingsSection>
       <LegacyFeaturesSection />
     </SettingsPageContainer>
@@ -41,6 +44,46 @@ function BoringSidebarRow() {
             updateSettings({ boringSidebarEnabled: Boolean(checked), legacySidebarEnabled: false })
           }
           aria-label="Boring sidebar (group by project)"
+        />
+      }
+    />
+  );
+}
+
+function BoringSidebarMultilineRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("boring-sidebar-multiline")}
+      description="In the boring sidebar, show folder threads on two lines: the title, then the branch, pull request, and agent."
+      control={
+        <Switch
+          checked={settings.boringSidebarMultilineRows}
+          onCheckedChange={(checked) =>
+            updateSettings({ boringSidebarMultilineRows: Boolean(checked) })
+          }
+          aria-label="Two-line folder rows"
+        />
+      }
+    />
+  );
+}
+
+function ThreadDetailsUsageRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("thread-details-usage")}
+      description="Show the current provider's usage limits and the thread's context window at the bottom of the thread details card."
+      control={
+        <Switch
+          checked={settings.threadDetailsUsageEnabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ threadDetailsUsageEnabled: Boolean(checked) })
+          }
+          aria-label="Usage in thread details"
         />
       }
     />
@@ -122,6 +165,46 @@ function LinkedEnvironmentsRow() {
             updateSettings({ linkedEnvironmentsEnabled: Boolean(checked) })
           }
           aria-label="Linked environments"
+        />
+      }
+    />
+  );
+}
+
+function SimlockHostsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("simlock-hosts")}
+      settingKeys={["simlockDeviceHostsEnabled"]}
+      description={
+        <>
+          Let the Device panel lease simulators and emulators from your own{" "}
+          <a
+            href="https://incubator.callstack.com/simlock/"
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+          >
+            Simlock
+          </a>{" "}
+          pool, added in{" "}
+          <Link to="/settings/devices" className="underline underline-offset-2">
+            Devices
+          </Link>
+          . An alpha that may change or break. T3 Code never installs Simlock.
+        </>
+      }
+      control={
+        <ScopedSwitch
+          settingKeys={["simlockDeviceHostsEnabled"]}
+          checked={settings.simlockDeviceHostsEnabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ simlockDeviceHostsEnabled: Boolean(checked) })
+          }
+          aria-label="Simlock device hosts"
         />
       }
     />
