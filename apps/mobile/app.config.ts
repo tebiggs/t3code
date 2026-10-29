@@ -379,6 +379,7 @@ const config: ExpoConfig = {
         recordAudioAndroid: false,
       },
     ],
+    "./plugins/withAndroidRecordAudio.cjs",
     ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
     [
       "expo-splash-screen",
@@ -404,6 +405,8 @@ const config: ExpoConfig = {
       {
         android: {
           minSdkVersion: 24,
+          // The on-device runtime executes proot from the extracted native library directory.
+          useLegacyPackaging: true,
           // SDK 58 lacks Kotlin 2.3's runtime-inert annotation. R8 needs explicit InputMerger constructors for widgets.
           extraProguardRules: [
             "-dontwarn kotlin.MustUseReturnValues",

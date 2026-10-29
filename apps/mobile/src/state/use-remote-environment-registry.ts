@@ -201,7 +201,7 @@ export function useRemoteConnections() {
       return;
     }
     if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
-      // Removing only the connection would leave the server running in Termux with a wake
+      // Removing only the connection would leave the server running on the phone with a wake
       // lock and nothing in the app pointing at it, so a failed stop keeps everything.
       const forgetPhone = () => {
         setPhoneServerSettings(null);
@@ -212,14 +212,14 @@ export function useRemoteConnections() {
         const previous = appAtomRegistry.get(phoneServerSettingsAtom);
         if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
         try {
-          // Loaded on demand: the Termux bridge pulls in the expo runtime.
+          // Loaded on demand: the phone server pulls in the expo runtime.
           const phoneServer = await import("../features/phone/phone-server");
           await phoneServer.stopPhoneServerWhenSettled();
           forgetPhone();
         } catch (error) {
           Dialog.alert(
             "The server didn't stop",
-            `${error instanceof Error ? error.message : "Termux didn't stop it."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server in Termux first.`,
+            `${error instanceof Error ? error.message : "It didn't stop."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server from its notification first.`,
             [
               {
                 text: "Keep",
@@ -235,7 +235,7 @@ export function useRemoteConnections() {
       };
       Dialog.alert(
         "Remove this phone?",
-        `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay in Termux; phone setup can connect them again.`,
+        `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay on the phone; phone setup can connect them again.`,
         [
           { text: "Cancel", style: "cancel" },
           { text: "Remove only", onPress: forgetPhone },

@@ -29,7 +29,7 @@ export function PhoneServerChip(props: { readonly className?: string }) {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${phone.environmentLabel}, ${label}`}
-        accessibilityHint={runtime.error ? "Opens phone setup" : "Starts the server in Termux"}
+        accessibilityHint={runtime.error ? "Opens phone setup" : "Starts the server"}
         disabled={runtime.starting}
         onPress={() => {
           if (runtime.error) navigation.navigate("PhoneSetup");

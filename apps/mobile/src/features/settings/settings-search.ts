@@ -95,7 +95,19 @@ const SETTINGS_SEARCH_TERMS = {
     "terms",
     "open source licenses",
   ],
-} satisfies Partial<Record<SettingsPageTarget | "account", readonly string[]>>;
+  AgentAccess: [
+    "phone",
+    "permissions",
+    "location",
+    "camera",
+    "microphone",
+    "contacts",
+    "text messages",
+    "sms",
+    "call log",
+    "notifications",
+  ],
+} satisfies Partial<Record<SettingsPageTarget | "account" | "AgentAccess", readonly string[]>>;
 const termsById: ReadonlyMap<string, readonly string[]> = new Map(
   Object.entries(SETTINGS_SEARCH_TERMS),
 );

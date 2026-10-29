@@ -63,13 +63,15 @@ export type EnvironmentPowerSettings = typeof EnvironmentPowerSettings.Type;
 
 const EnvironmentPowerPreferences = Schema.Record(Schema.String, EnvironmentPowerSettings);
 
-/** The T3 server that phone setup runs in Termux on this device. */
+/** The T3 server that phone setup runs inside this app on this device. */
 export const PhoneServerSettings = Schema.Struct({
   environmentId: EnvironmentId,
-  /** Loopback port the server listens on inside Termux. */
+  /** Loopback port the server listens on. */
   port: Schema.Number,
-  /** Start the server in Termux when the app opens and it isn't running. Stop turns it off. */
+  /** Start the server when the app opens and it isn't running. Stop turns it off. */
   autoStart: Schema.Boolean,
+  /** Marks settings from the in-app runtime; the retired Termux setup's had no host. */
+  host: Schema.optional(Schema.Literal("device")),
 });
 export type PhoneServerSettings = typeof PhoneServerSettings.Type;
 
@@ -392,7 +394,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (isEnvironmentPowerPreferences(parsed.environmentPower)) {
     preferences.environmentPower = parsed.environmentPower;
   }
-  if (isPhoneServerSettings(parsed.phoneServer)) {
+  // A Termux-era server isn't one this app can start, so its settings are dropped.
+  if (isPhoneServerSettings(parsed.phoneServer) && parsed.phoneServer.host === "device") {
     preferences.phoneServer = parsed.phoneServer;
   }
   if (isWorkspaceSelections(parsed.workspaceSelections)) {

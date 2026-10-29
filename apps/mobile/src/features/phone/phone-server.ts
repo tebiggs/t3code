@@ -15,18 +15,9 @@ import {
   usePhoneServerSettings,
 } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
-import { parsePhoneScriptStatus, readPairingUrl, type PhoneProbe } from "./phone-setup";
-import {
-  getTermuxStatus,
-  runPhoneScript,
-  startPhoneScriptInBackground,
-  stopPhoneServer,
-  supportsPhoneSetup,
-  termuxErrorMessage,
-} from "./termux";
+import { deviceRuntime, deviceServer } from "../device-runtime/device-runtime";
+import { phoneServerPort } from "./phone-setup";
 
-const STATUS_TIMEOUT_MS = 60_000;
-const PAIR_TIMEOUT_MS = 60_000;
 // The first start migrates a fresh database inside proot, which is slow on a phone.
 const SERVER_START_TIMEOUT_MS = 90_000;
 const SERVER_POLL_INTERVAL_MS = 1_000;
@@ -34,8 +25,42 @@ const SERVER_POLL_INTERVAL_MS = 1_000;
 // hold a probe forever.
 const SERVER_PROBE_TIMEOUT_MS = 3_000;
 const AUTO_START_INTERVAL_MS = 60_000;
-// Downloads a ~90 MB server archive over the phone's connection.
-const UPDATE_TIMEOUT_MS = 20 * 60_000;
+
+/** Environments served from this phone's loopback, including ones left from Termux setup. */
+function phoneEnvironments() {
+  return appAtomRegistry
+    .get(workspaceConnections.environmentsAtom)
+    .filter((environment) => phoneServerPort(environment.displayUrl) !== null);
+}
+
+/** The phone's other servers' environments, which connecting a server on `port` replaces. */
+export function replacedPhoneEnvironments(port: number) {
+  return phoneEnvironments().filter(
+    (environment) => phoneServerPort(environment.displayUrl) !== port,
+  );
+}
+
+function removeEnvironment(environmentId: EnvironmentId) {
+  return runAtomCommand(appAtomRegistry, environmentCatalog.remove, environmentId, {
+    reportFailure: false,
+  });
+}
+
+/** Forgets every phone environment but `keep`, such as one from before a reinstall. */
+async function retireOtherPhoneEnvironments(keep: EnvironmentId) {
+  for (const environment of phoneEnvironments()) {
+    if (environment.environmentId !== keep) await removeEnvironment(environment.environmentId);
+  }
+}
+
+/** Forgets the environments of the phone's server on `port`, once that server is gone. */
+export async function forgetPhoneEnvironments(port: number): Promise<void> {
+  for (const environment of phoneEnvironments()) {
+    if (phoneServerPort(environment.displayUrl) === port) {
+      await removeEnvironment(environment.environmentId);
+    }
+  }
+}
 
 /** Starting the server from the home chip, the detail page or on app open. */
 export interface PhoneServerRuntime {
@@ -57,34 +82,6 @@ export function usePhoneServerRuntime(): PhoneServerRuntime {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
-}
-
-function isTimeout(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ERR_TERMUX_TIMEOUT"
-  );
-}
-
-/** Runs `t3-phone status` in Termux. Never throws. */
-export async function probePhone(): Promise<PhoneProbe> {
-  try {
-    const result = await runPhoneScript(["status"], STATUS_TIMEOUT_MS);
-    const refused = termuxErrorMessage(result);
-    if (refused !== null) return { kind: "refused", message: refused };
-    if (result.exitCode !== 0) {
-      return {
-        kind: "failed",
-        message: result.stderr.trim() || `The status check exited with ${result.exitCode}.`,
-      };
-    }
-    return { kind: "ok", status: parsePhoneScriptStatus(result.stdout) };
-  } catch (error) {
-    if (isTimeout(error)) return { kind: "timeout" };
-    return { kind: "failed", message: errorMessage(error, "Termux couldn't run the check.") };
-  }
 }
 
 /** The environment a T3 server on this port reports, or null when nothing answers. */
@@ -115,31 +112,19 @@ async function waitForServer(port: number, deadline: number): Promise<Environmen
   return null;
 }
 
-async function serverLogTail(): Promise<string> {
-  try {
-    const result = await runPhoneScript(["log", "15"], STATUS_TIMEOUT_MS);
-    return termuxErrorMessage(result) === null ? result.stdout.trim() : "";
-  } catch {
-    return "";
-  }
-}
-
 let pendingStart: Promise<EnvironmentId> | null = null;
-// While an update restarts the server, any other start would race it for serve.lock.
+// While an update restarts the server, another start would race it.
 let updating = false;
 
-/**
- * Stops the server once any start in flight has settled: a start already handed to Termux
- * takes its lock only later, so stopping first would miss it and let it come up afterwards.
- */
+/** Stops the server once any start in flight has settled, so it can't come up afterwards. */
 export async function stopPhoneServerWhenSettled(): Promise<void> {
   await pendingStart?.catch(() => undefined);
-  await stopPhoneServer();
+  await deviceServer.stop();
 }
 
 /**
- * Starts the server as a Termux background task unless it already answers, and resolves
- * with its environment id. Callers share one start in flight, so Connect, the Home chip and
+ * Starts the server in the background unless it already answers, and resolves with its
+ * environment id. Callers share one start in flight, so Connect, the Home chip and
  * auto-start never launch two servers. `stillWanted` is checked just before launching.
  */
 export function startPhoneServer(
@@ -157,14 +142,14 @@ async function launchPhoneServer(port: number, stillWanted: () => boolean): Prom
   const running = await readPhoneServerEnvironmentId(port);
   if (running !== null) return running;
   if (!stillWanted()) throw new Error("Starting T3 Code was cancelled.");
-  startPhoneScriptInBackground(["serve"]);
+  deviceServer.launch(port);
   const started = await waitForServer(port, deadline);
   if (started === null) {
-    const log = await serverLogTail();
+    const log = deviceServer.logTail();
     throw new Error(
       log.length > 0
         ? `T3 Code didn't start on port ${port}:\n${log}`
-        : `T3 Code didn't start on port ${port}. Its log is ~/.t3-phone/server.log in Termux.`,
+        : `T3 Code didn't start on port ${port}. Its log is under Show log in phone setup.`,
     );
   }
   return started;
@@ -178,13 +163,7 @@ async function launchPhoneServer(port: number, stillWanted: () => boolean): Prom
 export async function connectPhoneServer(port: number): Promise<EnvironmentId> {
   if (updating) throw new Error("T3 Code is restarting after an update. Try again in a moment.");
   const environmentId = await startPhoneServer(port);
-  const result = await runPhoneScript(["pair"], PAIR_TIMEOUT_MS);
-  const pairingUrl = termuxErrorMessage(result) === null ? readPairingUrl(result.stdout) : null;
-  if (pairingUrl === null) {
-    throw new Error(
-      termuxErrorMessage(result) ?? (result.stderr.trim() || "T3 Code didn't give a pairing link."),
-    );
-  }
+  const pairingUrl = await deviceServer.pairingUrl();
   const connected = await runAtomCommand(
     appAtomRegistry,
     connectPairingUrl,
@@ -193,7 +172,13 @@ export async function connectPhoneServer(port: number): Promise<EnvironmentId> {
   );
   if (AsyncResult.isFailure(connected)) throw squashAtomCommandFailure(connected);
   const previous = appAtomRegistry.get(phoneServerSettingsAtom);
-  setPhoneServerSettings({ environmentId, port, autoStart: previous?.autoStart ?? true });
+  setPhoneServerSettings({
+    environmentId,
+    port,
+    autoStart: previous?.autoStart ?? true,
+    host: "device",
+  });
+  await retireOtherPhoneEnvironments(environmentId);
   return environmentId;
 }
 
@@ -219,7 +204,7 @@ export async function startAndReconnectPhoneServer(
   } catch (error) {
     appAtomRegistry.set(phoneServerRuntimeAtom, {
       starting: false,
-      error: errorMessage(error, "T3 Code couldn't start in Termux."),
+      error: errorMessage(error, "T3 Code couldn't start on this phone."),
     });
     return false;
   }
@@ -231,27 +216,12 @@ function reconnect(environmentId: EnvironmentId) {
   });
 }
 
-/** Installs the newest server build in Ubuntu, then restarts the server on it. */
+/** Installs the newest server build and Claude Code, then restarts the server on them. */
 export async function updatePhoneServer(settings: PhoneServerSettings): Promise<void> {
   if (updating) return;
   updating = true;
   try {
-    const result = await runPhoneScript(["update"], UPDATE_TIMEOUT_MS).catch((error: unknown) => {
-      if (!isTimeout(error)) throw error;
-      // The installer keeps going in Termux; a later Update restarts on whatever it installed.
-      throw new Error(
-        "The update is still downloading in Termux. Tap Update again in a few minutes.",
-      );
-    });
-    const refused = termuxErrorMessage(result);
-    if (refused !== null) throw new Error(refused);
-    if (result.exitCode !== 0) {
-      const output = (result.stderr.trim() || result.stdout.trim())
-        .split("\n")
-        .slice(-5)
-        .join("\n");
-      throw new Error(output || "The update didn't finish.");
-    }
+    await deviceServer.update();
     await stopPhoneServerWhenSettled();
     const started = await startPhoneServer(settings.port);
     if (started !== settings.environmentId) {
@@ -264,7 +234,7 @@ export async function updatePhoneServer(settings: PhoneServerSettings): Promise<
 }
 
 async function autoStartPhoneServer() {
-  // Starting Termux from the background would fail or surprise; the next foreground retries.
+  // Starting the server from the background would fail or surprise; the next foreground retries.
   if (AppState.currentState !== "active" || updating) return;
   const settings = appAtomRegistry.get(phoneServerSettingsAtom);
   if (settings === null || !settings.autoStart) return;
@@ -274,14 +244,9 @@ async function autoStartPhoneServer() {
   if (!environment?.isEnabled || environment.connectionState === "connected") return;
   if (Date.now() - lastAutoStartAt < AUTO_START_INTERVAL_MS) return;
   lastAutoStartAt = Date.now();
-  const termux = getTermuxStatus();
-  if (!termux.installed || !termux.permissionGranted) {
-    appAtomRegistry.set(phoneServerRuntimeAtom, {
-      starting: false,
-      error: termux.installed
-        ? "T3 Code isn't allowed to run commands in Termux anymore."
-        : "Termux isn't installed anymore.",
-    });
+  const unavailable = deviceServer.unavailable();
+  if (unavailable !== null) {
+    appAtomRegistry.set(phoneServerRuntimeAtom, { starting: false, error: unavailable });
     return;
   }
   // Stop or Remove may switch auto-start off while this one is still probing the port.
@@ -304,13 +269,13 @@ export function usePhoneServerWorker() {
     phone !== undefined &&
     phone.connectionState !== "connected" &&
     phone.connectionState !== "connecting";
-  // oxlint-disable-next-line t3code/react-effect-budget -- starts Termux's server when its connection drops
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the phone's server when its connection drops
   useEffect(() => {
-    if (supportsPhoneSetup() && down) void autoStartPhoneServer();
+    if (deviceRuntime !== null && down) void autoStartPhoneServer();
   }, [down]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- subscribes to the app returning to the foreground
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the app returning to the foreground
   useEffect(() => {
-    if (!supportsPhoneSetup()) return;
+    if (deviceRuntime === null) return;
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") void autoStartPhoneServer();
     });
