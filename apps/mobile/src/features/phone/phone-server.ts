@@ -269,11 +269,11 @@ export function usePhoneServerWorker() {
     phone !== undefined &&
     phone.connectionState !== "connected" &&
     phone.connectionState !== "connecting";
-  // oxlint-disable-next-line t3code/react-effect-budget -- starts the phone's server when its connection drops
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the phone's server when its connection drops
   useEffect(() => {
     if (deviceRuntime !== null && down) void autoStartPhoneServer();
   }, [down]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- subscribes to the app returning to the foreground
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the app returning to the foreground
   useEffect(() => {
     if (deviceRuntime === null) return;
     const subscription = AppState.addEventListener("change", (state) => {

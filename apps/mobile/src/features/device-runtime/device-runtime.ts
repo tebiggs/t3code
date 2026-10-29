@@ -122,7 +122,7 @@ export function useDeviceRuntimeStatus() {
   const native = requireDeviceRuntime();
   const [status, setStatus] = useState<DeviceRuntimeStatus>(() => native.getStatus());
   const refresh = useCallback(() => setStatus(native.getStatus()), [native]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- follows the native installer and sign-in, and storage grants made in system settings
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- follows the native installer and sign-in, and storage grants made in system settings
   useEffect(() => {
     const job = native.addListener("onJob", () => setStatus(native.getStatus()));
     const login = native.addListener("onLogin", () => setStatus(native.getStatus()));

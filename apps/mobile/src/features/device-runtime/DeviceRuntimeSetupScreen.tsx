@@ -98,7 +98,7 @@ export function DeviceRuntimeSetupScreen() {
       inspect();
     }, [refresh, inspect]),
   );
-  // oxlint-disable-next-line t3code/react-effect-budget -- re-reads Ubuntu once setup or sign-in finishes natively
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- re-reads Ubuntu once setup or sign-in finishes natively
   useEffect(() => {
     const job = native.addListener("onJob", (next) => {
       if (!next.running) inspect();

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ListRow } from "../../components/ui/ListRow";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { SettingsChoiceRow } from "../settings/components/SettingsChoiceRow";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { deviceRuntime, type AgentAccessCategory, type AgentAccessPolicy } from "./device-runtime";
@@ -61,7 +61,7 @@ export function AgentAccessRouteScreen() {
   const insets = useSafeAreaInsets();
   const read = useCallback(() => deviceRuntime?.getAgentAccess() ?? [], []);
   const [categories, setCategories] = useState(read);
-  // oxlint-disable-next-line t3code/react-effect-budget -- re-reads grants made in Android's settings
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- re-reads grants made in Android's settings
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") setCategories(read());
@@ -105,7 +105,7 @@ export function AgentAccessRouteScreen() {
               }
             >
               {POLICIES.map((choice, index) => (
-                <SettingsChoiceRow
+                <ListChoiceRow
                   key={choice.policy}
                   label={choice.label}
                   description={choice.description}
