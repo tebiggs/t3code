@@ -16,8 +16,10 @@ vi.mock("react-native", () => ({
   View: Children,
   Pressable: Children,
   Linking: { openSettings: vi.fn() },
+  Platform: { OS: "ios" },
   StyleSheet: { absoluteFill: {} },
 }));
+vi.mock("uniwind", () => ({ useResolveClassNames: () => ({}) }));
 vi.mock("react-native-svg", () => ({
   default: Children,
   Defs: Children,
@@ -43,6 +45,9 @@ vi.mock("expo-haptics", () => ({
   NotificationFeedbackType: { Success: "success", Error: "error" },
 }));
 vi.mock("../../components/ui/ListRow", () => ({ ListRow: () => null }));
+vi.mock("../../components/ui/RowPressable", () => ({ RowPressable: Children }));
+vi.mock("../../state/phone-server-settings", () => ({ usePhoneServerSettings: () => null }));
+vi.mock("../../state/workspace", () => ({ useWorkspaceEnvironments: () => [] }));
 vi.mock("../../components/ui/Dialog", () => ({ alert: vi.fn() }));
 vi.mock("../../components/ui/ScreenScrollView", () => ({ ScreenScrollView: Children }));
 vi.mock("../../components/ui/AppText", () => ({
@@ -62,6 +67,10 @@ vi.mock("../settings/settings-navigation", () => ({
 }));
 vi.mock("../workspace/workspace-selection-store", () => ({ workspaceHasColumns: () => false }));
 vi.mock("../cloud/publicConfig", () => ({ hasCloudPublicConfig: () => false }));
+vi.mock("../device-runtime/device-runtime", () => ({
+  deviceRuntime: null,
+  supportsDeviceRuntime: () => false,
+}));
 vi.mock("./CloudEnvironmentRows", () => ({ CloudEnvironmentRows: () => null }));
 vi.mock("./environmentSections", () => ({
   splitEnvironmentSections: () => ({ connectedCloudEnvironments: [] }),
