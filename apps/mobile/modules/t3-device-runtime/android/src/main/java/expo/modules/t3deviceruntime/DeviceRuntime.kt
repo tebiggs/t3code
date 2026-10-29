@@ -45,7 +45,7 @@ private const val EXECUTABLE = 0x1ED
 class RuntimeCancelled : IOException("Cancelled")
 
 /** A command running in the guest. `process` is proot itself. */
-class GuestProcess(val process: Process, private val pidFile: File) {
+class GuestProcess(val process: Process, private val pidFile: File, private val prootPidFile: File) {
   /**
    * proot ignores SIGTERM and SIGQUIT, and Android's destroyForcibly() only sends SIGTERM.
    * The guest's own process does take signals, and once it exits proot (--kill-on-exit)
@@ -55,27 +55,21 @@ class GuestProcess(val process: Process, private val pidFile: File) {
     Thread({
       val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TERMINATE_GRACE_SECONDS)
       // A stop right after the start can come before the guest has written its pids.
-      var pids = readPids()?.also { signal(it.first, OsConstants.SIGTERM) }
+      var guestPid = readPid(pidFile)?.also { signal(it, OsConstants.SIGTERM) }
       while (process.isAlive && System.nanoTime() < deadline) {
-        if (pids == null) pids = readPids()?.also { signal(it.first, OsConstants.SIGTERM) }
+        if (guestPid == null) guestPid = readPid(pidFile)?.also { signal(it, OsConstants.SIGTERM) }
         process.waitFor(PID_POLL_MS, TimeUnit.MILLISECONDS)
       }
       if (!process.isAlive) return@Thread
-      val last = pids ?: readPids()
-      Log.w(TAG, "Guest ${last?.first} outlived SIGTERM; killing it and proot ${last?.second}")
-      if (last == null) {
-        process.destroyForcibly()
-      } else {
-        signal(last.first, OsConstants.SIGKILL)
-        signal(last.second, OsConstants.SIGKILL)
-      }
+      val prootPid = readPid(prootPidFile)
+      Log.w(TAG, "Guest $guestPid outlived SIGTERM; killing it and proot $prootPid")
+      guestPid?.let { signal(it, OsConstants.SIGKILL) }
+      // destroyForcibly() only sends SIGTERM, which proot ignores, so it's the last resort.
+      if (prootPid != null) signal(prootPid, OsConstants.SIGKILL) else process.destroyForcibly()
     }, "t3-guest-terminate").start()
   }
 
-  private fun readPids(): Pair<Int, Int>? = runCatching {
-    val (guest, proot) = pidFile.readText().trim().split(' ').map { it.toInt() }
-    guest to proot
-  }.getOrNull()
+  private fun readPid(file: File): Int? = runCatching { file.readText().trim().split(' ').first().toInt() }.getOrNull()
 
   private fun signal(pid: Int, signal: Int) {
     runCatching { Os.kill(pid, signal) }
@@ -83,6 +77,7 @@ class GuestProcess(val process: Process, private val pidFile: File) {
 
   internal fun cleanUp() {
     pidFile.delete()
+    prootPidFile.delete()
   }
 }
 
@@ -280,10 +275,12 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     writeGuestConfig()
     prootTmp.mkdirs()
     val token = "${System.nanoTime()}"
-    // Records the guest's pid, which exec keeps, and its parent's, proot's. The pids are
-    // real ones: proot doesn't namespace them.
-    val command = listOf("/bin/sh", "-c", "echo \$\$ \$PPID > /tmp/.t3-pids.$token && exec \"\$@\"", "sh") + guestCommand
-    val builder = ProcessBuilder(prootCommand(command, environment))
+    // Records the guest's pid, which exec keeps; proot doesn't namespace pids. The host
+    // shell records proot's own before exec'ing it, so a stop can always reach proot.
+    val command = listOf("/bin/sh", "-c", "echo \$\$ > /tmp/.t3-pids.$token && exec \"\$@\"", "sh") + guestCommand
+    val prootPidFile = File(prootTmp, "proot.$token.pid")
+    val recordPid = listOf("/system/bin/sh", "-c", "echo \$\$ > \"\$0\" && exec \"\$@\"", prootPidFile.path)
+    val builder = ProcessBuilder(recordPid + prootCommand(command, environment))
       .directory(home)
       .redirectErrorStream(true)
     builder.environment().apply {
@@ -291,7 +288,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
       put("PROOT_TMP_DIR", prootTmp.path)
       remove("LD_PRELOAD")
     }
-    return GuestProcess(builder.start(), File(rootfs, "tmp/.t3-pids.$token"))
+    return GuestProcess(builder.start(), File(rootfs, "tmp/.t3-pids.$token"), prootPidFile)
   }
 
   /** Runs a command in the guest, passing each output line on, and returns its exit status. */

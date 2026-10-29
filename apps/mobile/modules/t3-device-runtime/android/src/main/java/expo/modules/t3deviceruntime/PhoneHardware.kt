@@ -345,6 +345,8 @@ internal class PhoneHardware(private val context: Context, private val hostFile:
 
   private fun startRecording(body: JSONObject): String {
     if (recorder != null) throw BridgeError("Recording already in progress!")
+    // Under the lock stopRecording takes, so a switch to Never either refuses this or stops it.
+    AgentAccess.check(context, "microphone-record")
     requireOnScreen("use the microphone")
     val encoders = mutableMapOf(
       "aac" to MediaRecorder.AudioEncoder.AAC,

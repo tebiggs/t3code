@@ -14,10 +14,12 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 private const val ACTION_STOP_SERVER = "expo.modules.t3deviceruntime.STOP_SERVER"
@@ -105,14 +107,18 @@ object DeviceServer {
       }
       started.cleanUp()
       bridge?.stop()
-      synchronized(this) { if (guest === started) guest = null }
-      // A first start can fail cleaning up after publishing the environment id: proot
-      // emulates its hard link with a file the temp directory then can't lose. The id is
-      // in place by then, so the second start gets past it.
-      val early = SystemClock.elapsedRealtime() - startedAt < EARLY_EXIT_MS
-      val relaunched = retry && code != 0 && early && !stopRequested &&
-        runCatching { launch(context, port, retry = false) }.isSuccess
-      if (!relaunched) RuntimeForeground.release(Hold.Server)
+      synchronized(this) {
+        // A server started since this one exited owns the hold now.
+        if (guest !== started) return@Thread
+        guest = null
+        // A first start can fail cleaning up after publishing the environment id: proot
+        // emulates its hard link with a file the temp directory then can't lose. The id is
+        // in place by then, so the second start gets past it.
+        val early = SystemClock.elapsedRealtime() - startedAt < EARLY_EXIT_MS
+        val relaunched = retry && code != 0 && early && !stopRequested &&
+          runCatching { launch(context, port, retry = false) }.isSuccess
+        if (!relaunched) RuntimeForeground.release(Hold.Server)
+      }
     }, "t3-device-server").start()
   }
 
@@ -121,7 +127,9 @@ object DeviceServer {
     stopRequested = true
     val started = guest ?: return
     started.terminate()
-    started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    if (!started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      throw IOException("The server didn't stop within $STOP_TIMEOUT_SECONDS seconds.")
+    }
   }
 }
 
@@ -139,7 +147,9 @@ class DeviceRuntimeService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP_SERVER) {
-      Thread({ DeviceServer.stop() }, "t3-device-server-stop").start()
+      Thread({
+        runCatching { DeviceServer.stop() }.onFailure { Log.w(TAG, "Stopping the server failed", it) }
+      }, "t3-device-server-stop").start()
       return START_NOT_STICKY
     }
     // A service started with startForegroundService must call startForeground, even when

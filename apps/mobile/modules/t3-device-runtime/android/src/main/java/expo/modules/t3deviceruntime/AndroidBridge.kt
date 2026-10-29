@@ -236,7 +236,11 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     val bytes = readBody(input, request.headers, deadline)
     val body = if (bytes.isEmpty()) JSONObject() else JSONObject(String(bytes, Charsets.UTF_8))
     Log.i(TAG, "Android bridge: $command")
-    AgentAccess.check(context, command)?.let(::requireGranted)
+    AgentAccess.check(context, command)?.let {
+      requireGranted(it)
+      // The user can choose Never while Android's prompt waits for an answer.
+      AgentAccess.check(context, command)
+    }
     if (command in WAITING_COMMANDS) return perform(command, body)
     // Toasts need a looper, and the rest of Android's UI APIs expect the main thread.
     return onMainThread { perform(command, body) }
