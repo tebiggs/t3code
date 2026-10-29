@@ -7579,37 +7579,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
 
           yield* Queue.offer(harness.sdkMessages, emptyRoster);
-          // The subagent's shell clears; the root job waits for the wake turn that reports it.
           yield* harness.until(() =>
             providerThreadRosterEvents(harness.events).some(
               (event) =>
                 event.providerThread.status === "idle" &&
-                event.providerThread.pendingBackgroundTasks?.length === 1 &&
-                event.providerThread.pendingBackgroundTasks[0]?.taskId === WAKE_TASK_ID,
+                (event.providerThread.pendingBackgroundTasks?.length ?? 0) === 0,
             ),
           );
           assert.isFalse(yield* harness.hasPendingBackgroundWork);
-
-          yield* harness.offerAndWait(wakeNotification);
-          yield* harness.offerAndWait(wakeTurnInit);
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now,
-              attemptId: RunAttemptId.make("attempt-claude-roster-fallback-wake"),
-              text: "Background task completed.",
-              attachments: [],
-              providerTurnOrdinal: 2,
-              messageCreatedBy: "agent",
-              messageCreationSource: "provider",
-            }),
-          );
-          yield* harness.until(
-            () =>
-              providerThreadRosterEvents(harness.events).at(-1)?.providerThread
-                .pendingBackgroundTasks?.length === 0,
-          );
         }).pipe(
           Effect.provide(
             Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -7618,7 +7595,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect("holds background tasks until they end, except ones the agent will not wait on", () =>
+  it.effect("holds only the background tasks the agent marks awaited, until they end", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
@@ -7665,19 +7642,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           harness.sdkMessages,
           roster([WAKE_TASK_ID, "dev-server"], "00000000-0000-4000-8000-000000000301"),
         );
-        assert.deepStrictEqual(marks(yield* nextRoster((tasks) => tasks.length === 2)), [
-          [WAKE_TASK_ID, true],
-          ["dev-server", true],
-        ]);
+        yield* nextRoster((tasks) => tasks.length === 2);
 
-        const released = yield* awaitBackgroundTasks({
+        const marked = yield* awaitBackgroundTasks({
           providerThread: harness.providerThread,
-          taskIds: ["dev-server", "already-finished"],
-          awaited: false,
+          taskIds: [WAKE_TASK_ID, "already-finished"],
+          awaited: true,
         });
-        assert.deepStrictEqual(released.matched, ["dev-server"]);
+        assert.deepStrictEqual(marked.matched, [WAKE_TASK_ID]);
         assert.deepStrictEqual(
-          marks(yield* nextRoster((tasks) => tasks.some((task) => task.awaited !== true))),
+          marks(yield* nextRoster((tasks) => tasks.some((task) => task.awaited === true))),
           [
             [WAKE_TASK_ID, true],
             ["dev-server", false],
@@ -7686,7 +7660,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         yield* Queue.take(harness.terminalReceipts);
 
-        // A replacing level rebuilds every entry; the agent's mark must survive it.
+        // A replacing level rebuilds every entry; the mark must survive it.
         yield* Queue.offer(
           harness.sdkMessages,
           roster(["dev-server", WAKE_TASK_ID], "00000000-0000-4000-8000-000000000302"),
@@ -7699,41 +7673,48 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ],
         );
 
-        // A service that ends while idle reports nothing the agent waits on, so nothing holds it.
+        // A task that leaves the roster while idle stays held for the wake turn that reports
+        // it, and a reused id starts unmarked.
         yield* Queue.offer(
           harness.sdkMessages,
-          roster([WAKE_TASK_ID], "00000000-0000-4000-8000-000000000303"),
+          roster(["dev-server"], "00000000-0000-4000-8000-000000000303"),
         );
-        assert.deepStrictEqual(marks(yield* nextRoster((tasks) => tasks.length === 1)), [
+        assert.deepStrictEqual(marks(yield* nextRoster((tasks) => tasks.length === 2)), [
+          ["dev-server", false],
           [WAKE_TASK_ID, true],
         ]);
-        // A reused id starts as a job the agent waits on again.
         yield* Queue.offer(
           harness.sdkMessages,
           roster(["dev-server", WAKE_TASK_ID], "00000000-0000-4000-8000-000000000304"),
         );
         assert.deepStrictEqual(marks(yield* nextRoster((tasks) => tasks.length === 2)), [
-          ["dev-server", true],
-          [WAKE_TASK_ID, true],
+          ["dev-server", false],
+          [WAKE_TASK_ID, false],
         ]);
 
         yield* awaitBackgroundTasks({
           providerThread: harness.providerThread,
           taskIds: ["dev-server"],
-          awaited: false,
-        });
-        yield* nextRoster((tasks) => tasks.some((task) => task.awaited !== true));
-        const held = yield* awaitBackgroundTasks({
-          providerThread: harness.providerThread,
-          taskIds: ["dev-server"],
           awaited: true,
         });
-        assert.deepStrictEqual(held.matched, ["dev-server"]);
         assert.deepStrictEqual(
-          marks(yield* nextRoster((tasks) => tasks.every((task) => task.awaited === true))),
+          marks(yield* nextRoster((tasks) => tasks.some((task) => task.awaited === true))),
           [
             ["dev-server", true],
-            [WAKE_TASK_ID, true],
+            [WAKE_TASK_ID, false],
+          ],
+        );
+        const released = yield* awaitBackgroundTasks({
+          providerThread: harness.providerThread,
+          taskIds: ["dev-server"],
+          awaited: false,
+        });
+        assert.deepStrictEqual(released.matched, ["dev-server"]);
+        assert.deepStrictEqual(
+          marks(yield* nextRoster((tasks) => !tasks.some((task) => task.awaited === true))),
+          [
+            ["dev-server", false],
+            [WAKE_TASK_ID, false],
           ],
         );
       }).pipe(
@@ -7744,82 +7725,92 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect("keeps a finished background job listed until the wake turn reporting it starts", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
-        const now = yield* DateTime.now;
-        const lastProviderThread = () =>
-          providerThreadRosterEvents(harness.events).at(-1)?.providerThread;
+  it.effect(
+    "keeps a finished job the agent waits on listed until the wake turn reporting it starts",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          const lastProviderThread = () =>
+            providerThreadRosterEvents(harness.events).at(-1)?.providerThread;
 
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-delivery-1"),
+              text: "Deploy in the background and tell me how it went.",
+              attachments: [],
+            }),
+          );
+          yield* harness.offerAndWait(wakeTaskStarted);
+          yield* harness.runtime.awaitBackgroundTasks!({
             providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-delivery-1"),
-            text: "Deploy in the background and tell me how it went.",
-            attachments: [],
-          }),
-        );
-        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
-        yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        yield* harness.awaitTerminal(1);
-        assert.deepStrictEqual(lastProviderThread()?.pendingBackgroundTasks, [
-          {
-            taskId: WAKE_TASK_ID,
-            kind: "command",
-            description: WAKE_TASK_DESCRIPTION,
+            taskIds: [WAKE_TASK_ID],
             awaited: true,
-          },
-        ]);
+          });
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
+          assert.deepStrictEqual(lastProviderThread()?.pendingBackgroundTasks, [
+            {
+              taskId: WAKE_TASK_ID,
+              kind: "command",
+              description: WAKE_TASK_DESCRIPTION,
+              awaited: true,
+            },
+          ]);
 
-        // Claude ends the job before it opens the wake turn. Clearing it here would show the
-        // thread Done, send a completion notice, and let automatic settlement kill the wake.
-        yield* harness.offerAndWait(wakeNotification);
-        yield* harness.until(() => lastProviderThread()?.status === "idle");
-        assert.isFalse(yield* harness.hasPendingBackgroundWork);
-        assert.deepStrictEqual(
-          lastProviderThread()?.pendingBackgroundTasks?.map((task) => [task.taskId, task.awaited]),
-          [[WAKE_TASK_ID, true]],
-        );
+          // Claude ends the job before it opens the wake turn. Clearing it here would show the
+          // thread Done, send a completion notice, and let automatic settlement kill the wake.
+          yield* harness.offerAndWait(wakeNotification);
+          yield* harness.until(() => lastProviderThread()?.status === "idle");
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          assert.deepStrictEqual(
+            lastProviderThread()?.pendingBackgroundTasks?.map((task) => [
+              task.taskId,
+              task.awaited,
+            ]),
+            [[WAKE_TASK_ID, true]],
+          );
 
-        yield* harness.offerAndWait(wakeTurnInit);
-        assert.lengthOf(harness.continuationRequests, 1);
-        assert.lengthOf(lastProviderThread()?.pendingBackgroundTasks ?? [], 1);
+          yield* harness.offerAndWait(wakeTurnInit);
+          assert.lengthOf(harness.continuationRequests, 1);
+          assert.lengthOf(lastProviderThread()?.pendingBackgroundTasks ?? [], 1);
 
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-delivery-2"),
-            text: "Background task completed.",
-            attachments: [],
-            providerTurnOrdinal: 2,
-            messageCreatedBy: "agent",
-            messageCreationSource: "provider",
-          }),
-        );
-        yield* harness.until(() => lastProviderThread()?.pendingBackgroundTasks?.length === 0);
-        assert.notEqual(lastProviderThread()?.status, "idle");
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-delivery-2"),
+              text: "Background task completed.",
+              attachments: [],
+              providerTurnOrdinal: 2,
+              messageCreatedBy: "agent",
+              messageCreationSource: "provider",
+            }),
+          );
+          yield* harness.until(() => lastProviderThread()?.pendingBackgroundTasks?.length === 0);
+          assert.notEqual(lastProviderThread()?.status, "idle");
 
-        yield* harness.offerAndWait(wakeAssistant);
-        yield* harness.offerAndWait(wakeResult);
-        yield* harness.awaitTerminal(2);
-        assert.equal(harness.terminalEvents()[1]?.status, "completed");
-        assert.deepStrictEqual(lastProviderThread()?.pendingBackgroundTasks, []);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          yield* harness.offerAndWait(wakeAssistant);
+          yield* harness.offerAndWait(wakeResult);
+          yield* harness.awaitTerminal(2);
+          assert.equal(harness.terminalEvents()[1]?.status, "completed");
+          assert.deepStrictEqual(lastProviderThread()?.pendingBackgroundTasks, []);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
         ),
       ),
-    ),
   );
 
   it.effect.each([
     { case: "Claude exits", awaited: true, wakes: true },
-    { case: "the job is left running", awaited: false, wakes: false },
+    { case: "the job is not waited on", awaited: false, wakes: false },
     { case: "T3 releases the session", awaited: true, wakes: false },
   ] as const)("tells the agent its jobs are gone when $case while idle", (scenario) =>
     Effect.gen(function* () {
@@ -7837,16 +7828,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               attachments: [],
             }),
           );
-          yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
-          yield* Queue.offer(harness.sdkMessages, turnOneResult);
-          yield* harness.awaitTerminal(1);
-          if (!scenario.awaited) {
+          yield* harness.offerAndWait(wakeTaskStarted);
+          if (scenario.awaited) {
             yield* harness.runtime.awaitBackgroundTasks!({
               providerThread: harness.providerThread,
               taskIds: [WAKE_TASK_ID],
-              awaited: false,
+              awaited: true,
             });
           }
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
           if (scenario.case === "T3 releases the session") return harness.continuationRequests;
 
           // The process takes its shells with it, and no task_notification reports them.
@@ -8002,7 +7993,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const roster = providerThreadRosterEvents(harness.events).at(-1)?.providerThread
           .pendingBackgroundTasks;
         assert.deepEqual(roster, [
-          { taskId: longRunning.taskId, kind: "monitor", description: "Monitor 0", awaited: true },
+          { taskId: longRunning.taskId, kind: "monitor", description: "Monitor 0" },
         ]);
       }).pipe(
         Effect.provide(
@@ -8422,7 +8413,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event) => event.providerThread.id === providerThreadA.id,
           )?.providerThread.pendingBackgroundTasks;
           assert.deepEqual(rosterAAfterSettle ?? [], [
-            { taskId: taskA, description: "work on A", kind: "command", awaited: true },
+            { taskId: taskA, description: "work on A", kind: "command" },
           ]);
           assert.isTrue(yield* hasPendingBackgroundWork);
           assert.isTrue(yield* hasPendingBackgroundWorkForThread(providerThreadA));
