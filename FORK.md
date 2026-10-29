@@ -36,7 +36,7 @@ adds the feature, and remove it in the PR that drops the feature.
   (`unawaitedBackgroundTasksByNativeThread`, `deliveringBackgroundTasksByNativeThread`),
   `mcp/toolkits/orchestrator/tools.ts`, `Orchestrator.ts` (`automaticSettlementBlocker`),
   `ThreadManagementService.ts` (`settleAfterRun`), `ProviderSessionManager.ts`,
-  `ProviderContinuationService.ts`.
+  `ProviderContinuationService.ts`, `evals/mcp-tool-use/cases/background-work.ndjson`.
 - #4 The Android app's Home shows whether a desktop is awake and can put it to
   sleep or wake it, sending Wake-on-LAN through another connected environment
   on the same LAN: `apps/mobile/src/features/power/`,
