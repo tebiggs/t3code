@@ -9,7 +9,7 @@ There is no Termux, Termux:API app or `pkg`: install packages with `apt-get` (ru
   `[ -w /sdcard ]` reports false, but writing works.
 - `ip`, `ifconfig` and `dumpsys` aren't available, and Android blocks `/proc/net`. Use
   `termux-wifi-connectioninfo` for network details; the network name and BSSID come back
-  redacted unless T3 Code has Location and Location is on.
+  redacted unless Location is set to Always allow and Location is on.
 - Android is reached through commands with Termux:API's names, flags and output (`-h` shows
   usage):
   - No permission needed: `termux-open`, `termux-open-url` (also `xdg-open`),

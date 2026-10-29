@@ -78,6 +78,7 @@ object AgentAccess {
     preferences(context).edit().putString(category.id, parsed.id).apply()
     val rootfs = DeviceRuntime(context) {}.rootfs
     if (rootfs.isDirectory) writeManagedSettings(context, rootfs)
+    if (parsed == AccessPolicy.Deny) AndroidBridge.current?.denied(category)
   }
 
   fun granted(context: Context, category: AccessCategory): Boolean =

@@ -32,6 +32,7 @@ private const val CLAUDE_KEY_URL = "https://downloads.claude.ai/keys/claude-code
 private const val CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 private const val CONNECT_ATTEMPTS = 3
 private const val TERMINATE_GRACE_SECONDS = 5L
+private const val PID_POLL_MS = 100L
 internal const val TAG = "T3DeviceRuntime"
 const val GUEST_PATH = "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -51,16 +52,33 @@ class GuestProcess(val process: Process, private val pidFile: File) {
    * kills any other guest process and exits too.
    */
   fun terminate() {
-    val pids = runCatching { pidFile.readText().trim().split(' ').map { it.toInt() } }.getOrNull()
-    val guestPid = pids?.getOrNull(0)
-    val prootPid = pids?.getOrNull(1)
-    if (guestPid != null) runCatching { Os.kill(guestPid, OsConstants.SIGTERM) }
     Thread({
-      if (!process.waitFor(TERMINATE_GRACE_SECONDS, TimeUnit.SECONDS)) {
-        Log.w(TAG, "Guest $guestPid outlived SIGTERM; killing it and proot $prootPid")
-        for (pid in listOfNotNull(guestPid, prootPid)) runCatching { Os.kill(pid, OsConstants.SIGKILL) }
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TERMINATE_GRACE_SECONDS)
+      // A stop right after the start can come before the guest has written its pids.
+      var pids = readPids()?.also { signal(it.first, OsConstants.SIGTERM) }
+      while (process.isAlive && System.nanoTime() < deadline) {
+        if (pids == null) pids = readPids()?.also { signal(it.first, OsConstants.SIGTERM) }
+        process.waitFor(PID_POLL_MS, TimeUnit.MILLISECONDS)
+      }
+      if (!process.isAlive) return@Thread
+      val last = pids ?: readPids()
+      Log.w(TAG, "Guest ${last?.first} outlived SIGTERM; killing it and proot ${last?.second}")
+      if (last == null) {
+        process.destroyForcibly()
+      } else {
+        signal(last.first, OsConstants.SIGKILL)
+        signal(last.second, OsConstants.SIGKILL)
       }
     }, "t3-guest-terminate").start()
+  }
+
+  private fun readPids(): Pair<Int, Int>? = runCatching {
+    val (guest, proot) = pidFile.readText().trim().split(' ').map { it.toInt() }
+    guest to proot
+  }.getOrNull()
+
+  private fun signal(pid: Int, signal: Int) {
+    runCatching { Os.kill(pid, signal) }
   }
 
   internal fun cleanUp() {

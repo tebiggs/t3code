@@ -377,10 +377,10 @@ const COMMANDS = {
     ...jsonCommand("wifi-connectioninfo"),
     print: (result) => {
       printJson(result);
-      // Android redacts these without Location; say so, so agents don't guess at the cause.
+      // These locate the phone, so they're redacted without Location; say so, so agents don't guess why.
       if (result?.ssid === "<unknown ssid>") {
         process.stderr.write(
-          `${COMMAND}: Android hides the network name and BSSID until T3 Code has Location: allow it in Settings > Agent access > Location, and turn Location on.\n`,
+          `${COMMAND}: the network name and BSSID are hidden unless Location is Always allow in Settings > Agent access > Location, Android allows T3 Code Location, and Location is on.\n`,
         );
       }
     },

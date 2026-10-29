@@ -46,6 +46,7 @@ import java.util.UUID
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -109,6 +110,8 @@ private const val REQUEST_CHANNEL = "t3-agent-requests"
 private const val NOTIFICATION_TAG = "t3-agent:"
 private const val REQUEST_TAG = "t3-agent-request"
 private const val MAX_LINE = 8 * 1024
+private const val MAX_HEADERS = 64
+private const val MAX_CONNECTIONS = 16
 private const val MAX_BODY = 1 shl 20
 private const val MAX_VIBRATE_MS = 60_000L
 private const val SOCKET_TIMEOUT_MS = 10_000
@@ -121,7 +124,7 @@ class GuestFileProvider : FileProvider()
 /** A request the bridge turns down, with the HTTP status it answers. */
 internal class BridgeError(message: String, val status: Int = 400) : Exception(message)
 
-private class Request(val method: String, val path: String, val headers: Map<String, String>, val body: ByteArray)
+private class RequestHead(val method: String, val path: String, val headers: Map<String, String>)
 
 /**
  * Lets agents in the guest reach Android through Termux:API-style commands: a loopback
@@ -137,6 +140,8 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   private val server = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
   private val token = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
   private val connections = Executors.newCachedThreadPool()
+  // Any app can connect to loopback, so connections are capped before the token is checked.
+  private val connectionSlots = Semaphore(MAX_CONNECTIONS)
   private val requestIds = AtomicInteger()
 
   init {
@@ -147,9 +152,11 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
       throw error
     }
     Thread(::serve, "t3-android-bridge").start()
+    current = this
   }
 
   fun stop() {
+    if (current === this) current = null
     // The next server's bridge may have written its own endpoint already.
     if (runCatching { endpoint.readText() }.getOrNull()?.contains(token) == true) endpoint.delete()
     runCatching { server.close() }
@@ -175,14 +182,29 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
       } catch (error: IOException) {
         break
       }
-      runCatching { connections.execute { client.use { answer(it) } } }.onFailure { client.close() }
+      if (!connectionSlots.tryAcquire()) {
+        client.close()
+        continue
+      }
+      runCatching {
+        connections.execute {
+          try {
+            client.use { answer(it) }
+          } finally {
+            connectionSlots.release()
+          }
+        }
+      }.onFailure {
+        connectionSlots.release()
+        client.close()
+      }
     }
   }
 
   private fun answer(client: Socket) {
     client.soTimeout = SOCKET_TIMEOUT_MS
     val (status, reply) = try {
-      200 to JSONObject().put("ok", true).put("result", handle(readRequest(client.getInputStream())) ?: JSONObject.NULL)
+      200 to JSONObject().put("ok", true).put("result", handle(client.getInputStream()) ?: JSONObject.NULL)
     } catch (error: BridgeError) {
       error.status to failure(error.message)
     } catch (error: JSONException) {
@@ -203,12 +225,16 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     }
   }
 
-  private fun handle(request: Request): Any? {
+  private fun handle(stream: InputStream): Any? {
+    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SOCKET_TIMEOUT_MS.toLong())
+    val input = stream.buffered()
+    val request = readHead(input, deadline)
     val authorization = request.headers["authorization"].orEmpty().toByteArray()
     if (!MessageDigest.isEqual(authorization, "Bearer $token".toByteArray())) throw BridgeError("Unauthorized", 401)
     if (request.method != "POST") throw BridgeError("Use POST", 405)
     val command = request.path.removePrefix("/")
-    val body = if (request.body.isEmpty()) JSONObject() else JSONObject(String(request.body, Charsets.UTF_8))
+    val bytes = readBody(input, request.headers, deadline)
+    val body = if (bytes.isEmpty()) JSONObject() else JSONObject(String(bytes, Charsets.UTF_8))
     Log.i(TAG, "Android bridge: $command")
     AgentAccess.check(context, command)?.let(::requireGranted)
     if (command in WAITING_COMMANDS) return perform(command, body)
@@ -524,7 +550,15 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     manager.notify(tag, id, notification)
   }
 
+  /** Called when the user sets a category to Never, so nothing it started keeps running. */
+  fun denied(category: AccessCategory) {
+    if (category.id == "microphone") hardware.stopRecording()
+  }
+
   companion object {
+    @Volatile var current: AndroidBridge? = null
+      private set
+
     /** Starts the bridge and installs its commands in the guest; without it the server runs anyway. */
     fun start(context: Context): AndroidBridge? = try {
       val rootfs = DeviceRuntime(context) {}.rootfs
@@ -611,32 +645,43 @@ private fun reason(status: Int) = when (status) {
   else -> "Internal Server Error"
 }
 
-private fun readRequest(input: InputStream): Request {
-  val buffered = input.buffered()
-  val requestLine = readLine(buffered).split(' ')
+private fun readHead(input: InputStream, deadline: Long): RequestHead {
+  val requestLine = readLine(input, deadline).split(' ')
   if (requestLine.size != 3) throw BridgeError("Malformed request line")
   val headers = HashMap<String, String>()
   while (true) {
-    val line = readLine(buffered)
+    val line = readLine(input, deadline)
     if (line.isEmpty()) break
+    if (headers.size >= MAX_HEADERS) throw BridgeError("Too many request headers", 413)
     val colon = line.indexOf(':')
     if (colon > 0) headers[line.substring(0, colon).trim().lowercase()] = line.substring(colon + 1).trim()
   }
+  return RequestHead(requestLine[0], requestLine[1], headers)
+}
+
+private fun readBody(input: InputStream, headers: Map<String, String>, deadline: Long): ByteArray {
   val length = headers["content-length"]?.toIntOrNull() ?: 0
   if (length !in 0..MAX_BODY) throw BridgeError("The request is too large", 413)
   val body = ByteArray(length)
   var read = 0
   while (read < length) {
-    val count = buffered.read(body, read, length - read)
+    checkDeadline(deadline)
+    val count = input.read(body, read, length - read)
     if (count < 0) throw BridgeError("The request ended early")
     read += count
   }
-  return Request(requestLine[0], requestLine[1], headers, body)
+  return body
 }
 
-private fun readLine(input: InputStream): String {
+// The socket timeout bounds each read; this bounds a client that sends a byte at a time.
+private fun checkDeadline(deadline: Long) {
+  if (System.nanoTime() > deadline) throw BridgeError("The request took too long to arrive")
+}
+
+private fun readLine(input: InputStream, deadline: Long): String {
   val line = ByteArrayOutputStream()
   while (true) {
+    checkDeadline(deadline)
     val byte = input.read()
     if (byte < 0) throw BridgeError("The request ended early")
     if (byte == '\n'.code) break

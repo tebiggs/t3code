@@ -60,6 +60,9 @@ private const val DEFAULT_RECORDING_MS = 15 * 60 * 1000
 private const val MIN_RECORDING_MS = 1000
 private const val MAX_IMAGE_BYTES = 64 shl 20
 private const val DOWNLOAD_TIMEOUT_MS = 30_000
+// Android's own values for a network hidden from apps without location access.
+private const val REDACTED_SSID = "<unknown ssid>"
+private const val REDACTED_BSSID = "02:00:00:00:00:00"
 
 // In the order Termux:API lists them, which is Android's stream numbers.
 private val VOLUME_STREAMS = linkedMapOf(
@@ -153,15 +156,17 @@ internal class PhoneHardware(private val context: Context, private val hostFile:
     val info = context.getSystemService(WifiManager::class.java).connectionInfo
       ?: return JSONObject().put("API_ERROR", "No current connection")
     val ip = info.ipAddress
+    // The network's name and BSSID can locate the phone, so agents get them only with Location on Always allow.
+    val located = AgentAccess.allowed(context, "location")
     return JSONObject()
-      .put("bssid", orNull(info.bssid))
+      .put("bssid", if (located) orNull(info.bssid) else REDACTED_BSSID)
       .put("frequency_mhz", info.frequency)
       .put("ip", "${ip and 0xff}.${ip shr 8 and 0xff}.${ip shr 16 and 0xff}.${ip shr 24 and 0xff}")
       .put("link_speed_mbps", info.linkSpeed)
       .put("mac_address", orNull(info.macAddress))
       .put("network_id", info.networkId)
       .put("rssi", info.rssi)
-      .put("ssid", info.ssid.replace("\"", ""))
+      .put("ssid", if (located) info.ssid.replace("\"", "") else REDACTED_SSID)
       .put("ssid_hidden", info.hiddenSSID)
       .put("supplicant_state", info.supplicantState.toString())
   }

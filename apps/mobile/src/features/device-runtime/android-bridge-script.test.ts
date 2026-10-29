@@ -140,7 +140,9 @@ describe("android-bridge.mjs", () => {
     }));
     const { code, stderr } = await bridge.run("termux-wifi-connectioninfo", []);
     expect(code).toBe(0);
-    expect(stderr).toContain("allow it in Settings > Agent access > Location");
+    expect(stderr).toContain(
+      "unless Location is Always allow in Settings > Agent access > Location",
+    );
   });
 
   it("fails with the reason on stderr", async () => {

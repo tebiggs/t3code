@@ -379,6 +379,7 @@ const config: ExpoConfig = {
         recordAudioAndroid: false,
       },
     ],
+    "./plugins/withAndroidRecordAudio.cjs",
     ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
     [
       "expo-splash-screen",
