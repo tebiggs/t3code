@@ -52,6 +52,13 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  cancelledRosterTaskWork,
+  latestStartedRunOnProviderThread,
+  mergeRestartCancelledBackgroundWork,
+} from "./RestartBackgroundNote.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -317,6 +324,7 @@ export const layerWithOptions = (
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
       const agentScope = yield* AgentScope;
       const agentAccessSettings = Effect.fn("ProviderSessionManagerV2.agentAccessSettings")(
         function* (threadId: ThreadId) {
@@ -767,8 +775,12 @@ export const layerWithOptions = (
       >[number];
 
       // Dead processes cannot report task endings; stale rosters keep threads Waiting.
+      // Work the agent waited on is recorded on its run, so the agent hears about it on its
+      // next turn and status reads show the run interrupted. A crash or idle release, which
+      // nobody asked for, also wakes the agent to check what that work left behind.
       const writeReleasedBackgroundWorkEvents = (
         released: ReadonlyArray<ReleasedBackgroundTasks>,
+        reason: ProviderSessionReleaseReason,
       ) =>
         Effect.forEach(
           released,
@@ -777,6 +789,7 @@ export const layerWithOptions = (
               for (let attempt = 0; attempt < 3; attempt++) {
                 const projection = yield* projectionStore.getThreadRecords(threadId, [
                   "providerThreads",
+                  "runs",
                 ]);
                 const providerThread = projection.providerThreads.find(
                   (candidate) => candidate.id === providerThreadId,
@@ -784,6 +797,13 @@ export const layerWithOptions = (
                 const tasks = providerThread?.pendingBackgroundTasks ?? [];
                 const remaining = tasks.filter((task) => !taskIds.has(task.taskId));
                 if (providerThread === undefined || remaining.length === tasks.length) return;
+                const lost = tasks.filter(
+                  (task) => taskIds.has(task.taskId) && backgroundWorkHoldsCompletion([task]),
+                );
+                const noteRun =
+                  lost.length === 0
+                    ? undefined
+                    : latestStartedRunOnProviderThread(projection.runs, providerThreadId);
                 const now = yield* DateTime.now;
                 const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
                   expected: providerThread,
@@ -801,9 +821,58 @@ export const layerWithOptions = (
                         updatedAt: now,
                       },
                     },
+                    ...(noteRun === undefined
+                      ? []
+                      : [
+                          {
+                            id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
+                            type: "run.background-work-cancelled" as const,
+                            threadId,
+                            runId: noteRun.id,
+                            providerInstanceId: noteRun.providerInstanceId,
+                            occurredAt: now,
+                            payload: {
+                              runId: noteRun.id,
+                              restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
+                                noteRun.restartCancelledBackgroundWork ?? [],
+                                lost.map(cancelledRosterTaskWork),
+                              ),
+                            },
+                          },
+                        ]),
                   ],
                 });
-                if (committed) return;
+                if (!committed) continue;
+                const latestRun = projection.runs.findLast((run) => run.status !== "queued");
+                const snoozedUntil = projection.thread.snoozedUntil;
+                // Restart recovery's rule: parked threads learn about it with the next message.
+                const parked =
+                  projection.thread.archivedAt !== null ||
+                  projection.thread.settledOverride === "settled" ||
+                  (snoozedUntil != null &&
+                    DateTime.toEpochMillis(snoozedUntil) > DateTime.toEpochMillis(now));
+                if (
+                  noteRun !== undefined &&
+                  !parked &&
+                  (reason === "runtime_error" || reason === "idle_timeout") &&
+                  latestRun?.id === noteRun.id &&
+                  (noteRun.status === "completed" || noteRun.status === "waiting")
+                ) {
+                  yield* continuationRequests.offer({
+                    threadId,
+                    providerThreadId,
+                    driver: providerThread.driver,
+                    detail:
+                      "The agent session ended before background work you were waiting on reported back.",
+                    notification: {
+                      source: { kind: "background_task" },
+                      outcome: "cancelled",
+                      summary: "Background work stopped before it reported back",
+                    },
+                    delivery: "message_text",
+                  });
+                }
+                return;
               }
               yield* Effect.logWarning(
                 "orchestration-v2.provider-session-release-roster-conflict",
@@ -834,7 +903,9 @@ export const layerWithOptions = (
                 input.entry.requestEventPermit.withPermits(1),
               ),
             ),
-            Effect.exit(writeReleasedBackgroundWorkEvents(input.releasedBackgroundTasks)),
+            Effect.exit(
+              writeReleasedBackgroundWorkEvents(input.releasedBackgroundTasks, input.reason),
+            ),
           ],
           { concurrency: 1 },
         ).pipe(Effect.flatMap(Exit.asVoidAll));

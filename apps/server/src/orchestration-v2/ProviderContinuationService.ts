@@ -1,4 +1,9 @@
-import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import {
+  CommandId,
+  type MessageId,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -9,6 +14,8 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
+// Wakes carry results the agent is waiting on; a lost one leaves the thread looking done.
+const MAX_WAKE_DISPATCH_ATTEMPTS = 6;
 
 function delegatedCompletionText(taskIds: ReadonlyArray<string>): string {
   const taskList = taskIds.join(", ");
@@ -65,13 +72,49 @@ export const layer = Layer.effectDiscard(
         return updated;
       });
 
-    const nextRetryDelay = (key: string) =>
+    const nextRetryAttempt = (key: string) =>
       Ref.modify(retryAttempts, (current) => {
         const attempt = current.get(key) ?? 0;
         const updated = new Map(current);
         updated.set(key, attempt + 1);
-        return [Math.min(100 * 2 ** Math.min(attempt, 6), 5_000), updated] as const;
+        return [
+          { attempt: attempt + 1, delayMs: Math.min(100 * 2 ** Math.min(attempt, 6), 5_000) },
+          updated,
+        ] as const;
       });
+    const nextRetryDelay = (key: string) =>
+      nextRetryAttempt(key).pipe(Effect.map(({ delayMs }) => delayMs));
+
+    // The message id is fixed before the first attempt, so a retry reuses its command id and
+    // the orchestrator's command receipt turns a dispatch that did commit into a no-op.
+    const retryWake = Effect.fnUntraced(function* (
+      request: ProviderContinuationRequests.ProviderContinuationRequest & {
+        readonly messageId: MessageId;
+      },
+      cause: Cause.Cause<unknown>,
+    ) {
+      const key = `wake:${request.threadId}:${request.messageId}`;
+      const { attempt, delayMs } = yield* nextRetryAttempt(key);
+      if (attempt >= MAX_WAKE_DISPATCH_ATTEMPTS) {
+        yield* clearRetryAttempt(key);
+        return yield* Effect.logError("orchestration-v2.provider-continuation.dispatch-abandoned", {
+          threadId: request.threadId,
+          providerThreadId: request.providerThreadId,
+          attempts: attempt,
+          cause,
+        });
+      }
+      yield* Effect.logWarning("orchestration-v2.provider-continuation.dispatch-retrying", {
+        threadId: request.threadId,
+        providerThreadId: request.providerThreadId,
+        attempt,
+        cause,
+      });
+      yield* Effect.sleep(`${delayMs} millis`).pipe(
+        Effect.andThen(requests.offer(request)),
+        Effect.forkScoped,
+      );
+    });
 
     const dispatchContinuation = Effect.fn("ProviderContinuationService.dispatchContinuation")(
       function* (request: ProviderContinuationRequests.ProviderContinuationRequest) {
@@ -186,6 +229,7 @@ export const layer = Layer.effectDiscard(
             threadId: request.threadId,
             ordinal: projection.messages.length + 1,
           }));
+        const wake = { ...request, messageId };
         const commandId = CommandId.make(`provider-continuation:${messageId}`);
         const dispatch = threads.dispatch({
           type: "message.dispatch",
@@ -218,11 +262,20 @@ export const layer = Layer.effectDiscard(
               request.clearIfCurrent !== undefined ? request.clearIfCurrent() : Effect.void,
             ),
           );
+        const retryOnFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) => retryWake(wake, cause),
+            ),
+          );
         if (request.dispatchIfCurrent === undefined) {
           yield* dispatch.pipe(
             Effect.catchTags({
               ThreadManagementProviderInstanceDisabledError: logInstanceDisabled,
             }),
+            Effect.andThen(clearRetryAttempt(`wake:${request.threadId}:${messageId}`)),
+            retryOnFailure,
           );
           return;
         }
@@ -230,6 +283,8 @@ export const layer = Layer.effectDiscard(
           Effect.catchTags({
             ThreadManagementProviderInstanceDisabledError: logInstanceDisabled,
           }),
+          Effect.andThen(clearRetryAttempt(`wake:${request.threadId}:${messageId}`)),
+          retryOnFailure,
         );
       },
     );

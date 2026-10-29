@@ -7673,12 +7673,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ],
         );
 
-        // Once the task leaves the roster, a reused id starts unmarked.
+        // A task that leaves the roster while idle stays held for the wake turn that reports
+        // it, and a reused id starts unmarked.
         yield* Queue.offer(
           harness.sdkMessages,
           roster(["dev-server"], "00000000-0000-4000-8000-000000000303"),
         );
-        yield* nextRoster((tasks) => tasks.length === 1);
+        assert.deepStrictEqual(marks(yield* nextRoster((tasks) => tasks.length === 2)), [
+          ["dev-server", false],
+          [WAKE_TASK_ID, true],
+        ]);
         yield* Queue.offer(
           harness.sdkMessages,
           roster(["dev-server", WAKE_TASK_ID], "00000000-0000-4000-8000-000000000304"),
@@ -7719,6 +7723,148 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "keeps a finished job the agent waits on listed until the wake turn reporting it starts",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          const lastProviderThread = () =>
+            providerThreadRosterEvents(harness.events).at(-1)?.providerThread;
+
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-delivery-1"),
+              text: "Deploy in the background and tell me how it went.",
+              attachments: [],
+            }),
+          );
+          yield* harness.offerAndWait(wakeTaskStarted);
+          yield* harness.runtime.awaitBackgroundTasks!({
+            providerThread: harness.providerThread,
+            taskIds: [WAKE_TASK_ID],
+            awaited: true,
+          });
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
+          assert.deepStrictEqual(lastProviderThread()?.pendingBackgroundTasks, [
+            {
+              taskId: WAKE_TASK_ID,
+              kind: "command",
+              description: WAKE_TASK_DESCRIPTION,
+              awaited: true,
+            },
+          ]);
+
+          // Claude ends the job before it opens the wake turn. Clearing it here would show the
+          // thread Done, send a completion notice, and let automatic settlement kill the wake.
+          yield* harness.offerAndWait(wakeNotification);
+          yield* harness.until(() => lastProviderThread()?.status === "idle");
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          assert.deepStrictEqual(
+            lastProviderThread()?.pendingBackgroundTasks?.map((task) => [
+              task.taskId,
+              task.awaited,
+            ]),
+            [[WAKE_TASK_ID, true]],
+          );
+
+          yield* harness.offerAndWait(wakeTurnInit);
+          assert.lengthOf(harness.continuationRequests, 1);
+          assert.lengthOf(lastProviderThread()?.pendingBackgroundTasks ?? [], 1);
+
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-delivery-2"),
+              text: "Background task completed.",
+              attachments: [],
+              providerTurnOrdinal: 2,
+              messageCreatedBy: "agent",
+              messageCreationSource: "provider",
+            }),
+          );
+          yield* harness.until(() => lastProviderThread()?.pendingBackgroundTasks?.length === 0);
+          assert.notEqual(lastProviderThread()?.status, "idle");
+
+          yield* harness.offerAndWait(wakeAssistant);
+          yield* harness.offerAndWait(wakeResult);
+          yield* harness.awaitTerminal(2);
+          assert.equal(harness.terminalEvents()[1]?.status, "completed");
+          assert.deepStrictEqual(lastProviderThread()?.pendingBackgroundTasks, []);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each([
+    { case: "Claude exits", awaited: true, wakes: true },
+    { case: "the job is not waited on", awaited: false, wakes: false },
+    { case: "T3 releases the session", awaited: true, wakes: false },
+  ] as const)("tells the agent its jobs are gone when $case while idle", (scenario) =>
+    Effect.gen(function* () {
+      const requests = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-process-exit"),
+              text: "Deploy in the background and tell me how it went.",
+              attachments: [],
+            }),
+          );
+          yield* harness.offerAndWait(wakeTaskStarted);
+          if (scenario.awaited) {
+            yield* harness.runtime.awaitBackgroundTasks!({
+              providerThread: harness.providerThread,
+              taskIds: [WAKE_TASK_ID],
+              awaited: true,
+            });
+          }
+          yield* Queue.offer(harness.sdkMessages, turnOneResult);
+          yield* harness.awaitTerminal(1);
+          if (scenario.case === "T3 releases the session") return harness.continuationRequests;
+
+          // The process takes its shells with it, and no task_notification reports them.
+          yield* Queue.shutdown(harness.sdkMessages);
+          yield* harness.until(
+            () =>
+              providerThreadRosterEvents(harness.events).at(-1)?.providerThread
+                .pendingBackgroundTasks?.length === 0,
+          );
+          return harness.continuationRequests;
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      );
+
+      if (!scenario.wakes) {
+        assert.lengthOf(requests, 0);
+        return;
+      }
+      assert.lengthOf(requests, 1);
+      assert.equal(requests[0]?.delivery, "message_text");
+      assert.equal(requests[0]?.notification?.outcome, "cancelled");
+      assert.include(requests[0]?.detail ?? "", `(id ${WAKE_TASK_ID})`);
+      assert.include(requests[0]?.detail ?? "", "never rerun a deploy");
+    }),
   );
 
   it.effect("keeps a running Claude monitor typed after many newer monitors end", () =>

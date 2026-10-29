@@ -2672,7 +2672,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect.each(["manual", "automatic"])("settling ends every pull request watch: %s", (mode) =>
+  it.effect.each(["manual", "automatic"])("settle ends watches; auto-settle waits: %s", (mode) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
@@ -2707,10 +2707,28 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const started = before?.pullRequests?.[0]?.watch;
       assert.isDefined(started);
       if (started === undefined || before === null) return;
+      if (mode === "automatic") {
+        // A watch is work the agent waits on, so automatic settlement leaves it running.
+        const refused = yield* orchestrator
+          .dispatch({
+            type: "thread.auto-settle",
+            commandId: CommandId.make(`pr-watch-settle-${mode}`),
+            threadId,
+            snapshotAt: before.updatedAt,
+          })
+          .pipe(Effect.flip);
+        assert.equal(
+          refused.cause,
+          `Thread ${threadId} is waiting on background work and cannot settle automatically.`,
+        );
+        assert.deepEqual(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests,
+          before.pullRequests,
+        );
+        return;
+      }
       yield* orchestrator.dispatch({
-        ...(mode === "manual"
-          ? { type: "thread.settle" as const }
-          : { type: "thread.auto-settle" as const, snapshotAt: before.updatedAt }),
+        type: "thread.settle",
         commandId: CommandId.make(`pr-watch-settle-${mode}`),
         threadId,
       });
@@ -4197,6 +4215,220 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(
         error.cause,
         `Thread ${threadId} has a queued message. Send it or remove it from the queue before settling.`,
+      );
+    }),
+  );
+
+  it.effect("automatic settlement never detaches a provider whose job the agent waits on", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-auto-settle-held-work");
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("auto-settle-held-create"),
+        threadId,
+        projectId: ProjectId.make("auto-settle-held-project"),
+        title: "Deploy after merge",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-auto-settle-held",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("auto-settle-held-message"),
+        threadId,
+        messageId: MessageId.make("auto-settle-held-message"),
+        text: "Merge it and deploy.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const started = yield* orchestrator.getThreadProjection(threadId);
+      const run = started.runs[0];
+      const providerThread = started.providerThreads.find(
+        (candidate) => candidate.id === run?.providerThreadId,
+      );
+      if (run === undefined || providerThread === undefined) {
+        return yield* Effect.die(new Error("Run or provider thread missing."));
+      }
+      const writeRoster = (
+        id: string,
+        pendingBackgroundTasks: NonNullable<typeof providerThread.pendingBackgroundTasks>,
+      ) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          yield* eventSink.write({
+            commandId: CommandId.make(id),
+            events: [
+              {
+                id: EventId.make(id),
+                type: "provider-thread.updated",
+                threadId,
+                driver: providerThread.driver,
+                providerInstanceId: providerThread.providerInstanceId,
+                occurredAt: now,
+                payload: { ...providerThread, pendingBackgroundTasks, updatedAt: now },
+              },
+            ],
+          });
+        });
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        commandId: CommandId.make("auto-settle-held-run-completed"),
+        events: [
+          {
+            id: EventId.make("auto-settle-held-run-completed"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* writeRoster("auto-settle-held-roster", [
+        { taskId: "dev", kind: "command", description: "vp run dev --share" },
+        { taskId: "deploy", kind: "command", description: "Wait for deploy", awaited: true },
+      ]);
+
+      // The sweep's snapshot predates the deploy: roster changes do not move updatedAt.
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      if (shell === null) return yield* Effect.die(new Error("Shell missing."));
+      const autoSettle = (id: string) =>
+        orchestrator.dispatch({
+          type: "thread.auto-settle",
+          commandId: CommandId.make(id),
+          threadId,
+          snapshotAt: shell.updatedAt,
+        });
+      const refused = yield* autoSettle("auto-settle-held-refused").pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+      assert.equal(
+        refused.cause,
+        `Thread ${threadId} is waiting on background work and cannot settle automatically.`,
+      );
+      const held = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNull(held.thread.settledOverride);
+      assert.deepEqual(
+        held.providerThreads.find((candidate) => candidate.id === providerThread.id)
+          ?.pendingBackgroundTasks,
+        [
+          { taskId: "dev", kind: "command", description: "vp run dev --share" },
+          { taskId: "deploy", kind: "command", description: "Wait for deploy", awaited: true },
+        ],
+      );
+
+      // Once only the dev server is left, the merge may settle the thread.
+      yield* writeRoster("auto-settle-held-roster-service", [
+        { taskId: "dev", kind: "command", description: "vp run dev --share" },
+      ]);
+      yield* autoSettle("auto-settle-held-settled");
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+        "settled",
+      );
+    }),
+  );
+
+  it.effect("automatic settlement leaves a held continuation for the user", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-auto-settle-held-continuation");
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("auto-settle-continuation-create"),
+        threadId,
+        projectId: ProjectId.make("auto-settle-continuation-project"),
+        title: "Continuation awaiting delivery",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-auto-settle-continuation",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("auto-settle-continuation-active"),
+        threadId,
+        messageId: MessageId.make("auto-settle-continuation-active"),
+        text: "Deploy it.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "provider",
+        notification: {
+          source: { kind: "background_task" },
+          outcome: "completed",
+          summary: 'Command "Wait for deploy" finished',
+        },
+        commandId: CommandId.make("auto-settle-continuation-wake"),
+        threadId,
+        messageId: MessageId.make("auto-settle-continuation-wake"),
+        text: "Background task completed.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "queue_after_active" },
+      });
+      // A restart cancels the active run and holds the wake queued behind it.
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const now = yield* DateTime.now;
+      yield* eventSink.commitCommand({
+        commandId: CommandId.make("auto-settle-continuation-restart"),
+        threadId,
+        commandType: "provider-runtime.reconcile",
+        acceptedAt: now,
+        events: projection.runs.map((run) => ({
+          id: EventId.make(`auto-settle-continuation-restart:${run.id}`),
+          type: "run.updated" as const,
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload:
+            run.status === "queued"
+              ? { ...run, queueHeld: true }
+              : { ...run, status: "cancelled" as const, completedAt: now },
+        })),
+        effects: [],
+      });
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      if (shell === null) return yield* Effect.die(new Error("Shell missing."));
+
+      const refused = yield* orchestrator
+        .dispatch({
+          type: "thread.auto-settle",
+          commandId: CommandId.make("auto-settle-continuation-refused"),
+          threadId,
+          snapshotAt: shell.updatedAt,
+        })
+        .pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+      assert.equal(
+        refused.cause,
+        `Thread ${threadId} has a queued message and cannot settle automatically.`,
+      );
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNull(after.thread.settledOverride);
+      assert.deepEqual(
+        after.runs.map((run) => run.status),
+        ["cancelled", "queued"],
       );
     }),
   );

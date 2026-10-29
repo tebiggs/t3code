@@ -35,7 +35,7 @@ const SESSION_ID = "cca274e4-25ae-4171-b972-bbb31118517e";
 const FIRST_AFTER_RESTART = "Is the background subagent done yet?";
 const SECOND_AFTER_RESTART = "Thanks. Anything else?";
 const NOTE = [
-  "Note: the T3 server restarted, and this background work was cancelled before it finished. It will not report back on its own, so resume or restart what you still need and wait for its result:",
+  "Note: this background work stopped before it reported back, because the T3 server restarted or the agent session ended. It will not report back on its own. It may have finished or changed state first, so check its output or what it changes before you start it again, and never rerun a deploy or other job with side effects until you know it did not complete. Then resume what you still need and wait for its result:",
   "- subagent: Background subagent test (id a2995bfced8019363)",
 ].join("\n");
 

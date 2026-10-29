@@ -29,6 +29,13 @@ adds the feature, and remove it in the PR that drops the feature.
 - #2 Servers and clients update from this fork's releases instead of
   upstream's: `packages/shared/src/cliRelease.ts`,
   `apps/web/src/state/npmRelease.ts`.
+- #14 Background work an agent waits on keeps its thread working until the result reaches the
+  agent; settling cannot detach that work, wake dispatches retry, and work lost with a provider
+  session or Claude process is reported: `ClaudeAdapterV2.ts`
+  (`deliveringBackgroundTasksByNativeThread`, `finalizeActiveTurnAfterQueryExit`),
+  `Orchestrator.ts` (`automaticSettlementBlocker`), `ThreadManagementService.ts`
+  (`settleAfterRun`), `ProviderSessionManager.ts`, `ProviderContinuationService.ts`,
+  `evals/mcp-tool-use/cases/background-work.ndjson`.
 - #4 The Android app's Home shows whether a desktop is awake and can put it to
   sleep or wake it, sending Wake-on-LAN through another connected environment
   on the same LAN: `apps/mobile/src/features/power/`,

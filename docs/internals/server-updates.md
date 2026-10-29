@@ -78,6 +78,17 @@ never wake it. Its continuation prompt is the note of what will not report back.
 unmarked shell or monitor does not wake a settled run: most are dev servers and their
 watchdogs that nobody waits on, so that note waits for the next user message.
 
+The same record covers a provider session that ends without a restart. Its release
+records awaited work on the run that left it running. A crash or idle release then
+wakes the thread like a restart does; a detach the user caused (settle, archive, a
+workspace or provider change) only leaves the note for the next prompt. A Claude process
+that dies on its own while idle takes its shells with it and never reports them, so the
+adapter wakes the thread with the same note; Stop and session release close the process
+themselves and do not. Automatic
+settlement rechecks inside its command that nothing awaited is running and no
+continuation is queued, because settling detaches the provider and cancels queued
+continuations.
+
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.
 Continuation effects wait for activation; a slow provider must not delay the server's

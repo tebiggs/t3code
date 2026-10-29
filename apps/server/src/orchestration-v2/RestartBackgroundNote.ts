@@ -122,7 +122,7 @@ const MAX_NOTE_ENTRIES = 10;
 export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): string {
   const omitted = work.length - MAX_NOTE_ENTRIES;
   return [
-    "Note: the T3 server restarted, and this background work was cancelled before it finished. It will not report back on its own, so resume or restart what you still need and wait for its result:",
+    "Note: this background work stopped before it reported back, because the T3 server restarted or the agent session ended. It will not report back on its own. It may have finished or changed state first, so check its output or what it changes before you start it again, and never rerun a deploy or other job with side effects until you know it did not complete. Then resume what you still need and wait for its result:",
     ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
   ].join("\n");
@@ -165,6 +165,31 @@ export function runOutcome(
     (run.restartCancelledBackgroundWork ?? []).some(isAwaitedWork)
     ? "interrupted"
     : run.status;
+}
+
+/** The run whose turn left this provider thread's background work running. */
+export function latestStartedRunOnProviderThread<
+  Run extends Pick<
+    OrchestrationV2Run,
+    | "providerThreadId"
+    | "status"
+    | "startedAt"
+    | "restartContinuationOfRunId"
+    | "ordinal"
+    | "completedAt"
+  >,
+>(runs: ReadonlyArray<Run>, providerThreadId: OrchestrationV2Run["providerThreadId"]) {
+  return runs.reduce<Run | undefined>(
+    (latest, run) =>
+      run.providerThreadId === providerThreadId &&
+      run.status !== "queued" &&
+      run.status !== "rolled_back" &&
+      !neverStarted(run) &&
+      (latest === undefined || runRanAfter(run, latest))
+        ? run
+        : latest,
+    undefined,
+  );
 }
 
 /** Unstarted runs have no lost work to continue, except prepared continuations carrying a source run. */
