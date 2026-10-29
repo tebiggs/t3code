@@ -36,6 +36,11 @@
   </queries>
 
   <application>
+    <activity
+      android:name="expo.modules.t3deviceruntime.AccessPromptActivity"
+      android:exported="false"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     <service
       android:name="expo.modules.t3deviceruntime.DeviceRuntimeService"
       android:exported="false"

@@ -79,6 +79,12 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
           onPress={() => navigation.navigate("PhoneSetup")}
         />
       ) : null}
+      <ListRow
+        icon="exclamationmark.shield"
+        label="Agent access"
+        description="Location, contacts, messages and more: ask, allow or never"
+        onPress={() => navigation.navigate("AgentAccess")}
+      />
       <SettingsSwitchRow
         icon="play"
         label="Start when T3 Code opens"

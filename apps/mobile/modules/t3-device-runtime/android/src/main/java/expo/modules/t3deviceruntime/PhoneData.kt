@@ -187,7 +187,7 @@ internal class PhoneData(private val context: Context) {
     }
     if (slot == null) return default
     if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-      throw BridgeError("Allow Phone in $ACCESS_SETTINGS to choose a SIM slot.", 403)
+      throw BridgeError("Choosing a SIM slot needs Phone calls and device info, allowed in $ACCESS_SETTINGS.", 403)
     }
     val subscription = context.getSystemService(SubscriptionManager::class.java).activeSubscriptionInfoList
       ?.firstOrNull { it.simSlotIndex == slot } ?: throw BridgeError("No active SIM in slot $slot.")

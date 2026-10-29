@@ -18,13 +18,14 @@ There is no Termux, Termux:API app or `pkg`: install packages with `apt-get` (ru
     `termux-toast`, `termux-vibrate`, `termux-torch`, `termux-tts-speak`,
     `termux-tts-engines`, `termux-volume`, `termux-sensor`, `termux-wallpaper`,
     `termux-battery-status`, `termux-wifi-connectioninfo`, `termux-camera-info`.
-  - The user decides each of these in Run on this phone > Agent access (ask each time,
+  - The user decides each of these in T3 Code's Settings > Agent access (ask each time,
     always allow or never): `termux-location`, `termux-telephony-cellinfo`,
     `termux-camera-photo`, `termux-microphone-record`, `termux-contact-list`,
     `termux-sms-list`, `termux-sms-send`, `termux-call-log`, `termux-telephony-call`,
     `termux-telephony-deviceinfo`, `termux-notification-list`. Run them by name so the user
-    is asked. If one fails because it's set to Never or Android hasn't granted it, tell the
-    user where to change it instead of working around it.
+    is asked. The first use also shows Android's own permission prompt on the phone. If one
+    fails because it's set to Never or Android wasn't allowed, pass on the place the error
+    names instead of working around it.
 - While T3 Code isn't on screen, the clipboard can't be read, the camera, microphone and
   location fail, and links, files, shares and calls arrive as a notification for the user
   to tap.

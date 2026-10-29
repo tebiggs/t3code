@@ -99,14 +99,7 @@ class T3DeviceRuntimeModule : Module() {
 
     Function("openNotificationAccessSettings") {
       val context = requireContext()
-      val listener = AgentNotificationListener.component(context).flattenToString()
-      val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
-          .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, listener)
-      } else {
-        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-      }
-      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      val intent = AgentAccess.notificationAccessIntent(context)
       runCatching { (appContext.currentActivity ?: context).startActivity(intent) }
         .recoverCatching {
           context.startActivity(

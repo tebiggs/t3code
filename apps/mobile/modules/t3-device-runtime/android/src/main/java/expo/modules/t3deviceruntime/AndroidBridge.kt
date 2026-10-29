@@ -210,7 +210,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     val command = request.path.removePrefix("/")
     val body = if (request.body.isEmpty()) JSONObject() else JSONObject(String(request.body, Charsets.UTF_8))
     Log.i(TAG, "Android bridge: $command")
-    AgentAccess.check(context, command)
+    AgentAccess.check(context, command)?.let(::requireGranted)
     if (command in WAITING_COMMANDS) return perform(command, body)
     // Toasts need a looper, and the rest of Android's UI APIs expect the main thread.
     return onMainThread { perform(command, body) }
@@ -373,6 +373,42 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     return file
   }
 
+  /** The user let the agent run this, or always allows it; Android still has to let T3 Code. */
+  private fun requireGranted(category: AccessCategory) {
+    if (AgentAccess.granted(context, category)) return
+    val label = category.label
+    if (category.permissions.isEmpty()) {
+      // Notification access is a system settings page, not a prompt.
+      startOrNotify(
+        AgentAccess.notificationAccessIntent(context),
+        "Allow notification access",
+        "An agent on this phone wants to read its notifications. Turn on T3 Code here.",
+      )
+      throw BridgeError(
+        "Android hasn't given T3 Code notification access. The user can turn it on in the settings page " +
+          "T3 Code opened (or from its notification), then run this again.",
+        403,
+      )
+    }
+    if (!onScreen()) {
+      val id = requestIds.incrementAndGet()
+      val tap = PendingIntent.getActivity(context, id, AccessPrompt.intent(context, category), PendingIntent.FLAG_IMMUTABLE)
+      notify(REQUEST_CHANNEL, REQUEST_TAG, id, "Allow $label?", "An agent on this phone wants $label. Tap to answer Android's prompt.", tap)
+      throw BridgeError(
+        "Android hasn't given T3 Code $label, and can only ask while T3 Code is on screen. The user can tap " +
+          "T3 Code's notification to allow it, then run this again.",
+        403,
+      )
+    }
+    if (!AccessPrompt.request(context, category)) {
+      throw BridgeError(
+        "The user didn't allow $label in Android's prompt, or Android has stopped asking. " +
+          "It can be allowed in ${AgentAccess.where(category)}.",
+        403,
+      )
+    }
+  }
+
   /** Android blocks activity starts from the background, but a notification's tap can start one. */
   private fun startOrNotify(intent: Intent, title: String, text: String): Any? {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -468,8 +504,8 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
       },
     )
     manager.createNotificationChannel(
-      NotificationChannel(REQUEST_CHANNEL, "Links and shares from agents", NotificationManager.IMPORTANCE_HIGH).apply {
-        description = "Links and shares that agents ask for while T3 Code isn't on screen."
+      NotificationChannel(REQUEST_CHANNEL, "Requests from agents", NotificationManager.IMPORTANCE_HIGH).apply {
+        description = "Links, shares and permissions that agents ask for while T3 Code isn't on screen."
       },
     )
     val blocked = manager.getNotificationChannel(channel)

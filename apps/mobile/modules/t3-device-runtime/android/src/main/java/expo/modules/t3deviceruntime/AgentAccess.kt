@@ -3,7 +3,10 @@ package expo.modules.t3deviceruntime
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
@@ -16,7 +19,7 @@ import java.nio.file.Files
 
 private const val PREFERENCES = "t3-agent-access"
 private const val MANAGED_SETTINGS = "etc/claude-code/managed-settings.json"
-internal const val ACCESS_SETTINGS = "Run on this phone > Agent access"
+internal const val ACCESS_SETTINGS = "Settings > Agent access"
 private const val NOTIFICATIONS = "notifications"
 
 enum class AccessPolicy(val id: String) {
@@ -46,14 +49,14 @@ object AgentAccess {
     AccessCategory("contacts", "Contacts", listOf("contact-list"), listOf(Manifest.permission.READ_CONTACTS)),
     AccessCategory(
       "sms",
-      "SMS",
+      "Text messages",
       listOf("sms-list", "sms-send"),
       listOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS),
     ),
     AccessCategory("call-log", "Call log", listOf("call-log"), listOf(Manifest.permission.READ_CALL_LOG)),
     AccessCategory(
       "phone",
-      "Phone",
+      "Phone calls and device info",
       listOf("telephony-call", "telephony-deviceinfo"),
       listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE),
     ),
@@ -84,13 +87,27 @@ object AgentAccess {
       category.permissions.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
     }
 
-  /** Turns a command down when the user denied its category or Android hasn't granted it. */
-  fun check(context: Context, command: String) {
-    val category = categories.firstOrNull { command in it.commands } ?: return
+  /** The category behind a command, after turning the command down when the user chose Never. */
+  fun check(context: Context, command: String): AccessCategory? {
+    val category = categories.firstOrNull { command in it.commands } ?: return null
     if (policy(context, category) == AccessPolicy.Deny) {
-      throw BridgeError("${category.label} is set to Never for agents in $ACCESS_SETTINGS.", 403)
+      throw BridgeError("${category.label} is set to Never in ${where(category)}.", 403)
     }
-    if (!granted(context, category)) throw BridgeError("Allow ${category.label} in $ACCESS_SETTINGS.", 403)
+    return category
+  }
+
+  /** Where the app shows a category's setting. */
+  fun where(category: AccessCategory) = "$ACCESS_SETTINGS > ${category.label}"
+
+  fun notificationAccessIntent(context: Context): Intent {
+    val listener = AgentNotificationListener.component(context).flattenToString()
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+        .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, listener)
+    } else {
+      Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+    }
+    return intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
   }
 
   /** Whether agents may read this category's data as a side detail of another command's output. */

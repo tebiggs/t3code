@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AppState, PermissionsAndroid } from "react-native";
+import { AppState, Linking, PermissionsAndroid } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -45,10 +45,18 @@ function requestAndroidAccess(category: AgentAccessCategory): Promise<unknown> {
     deviceRuntime?.openNotificationAccessSettings();
     return Promise.resolve();
   }
-  return PermissionsAndroid.requestMultiple([...category.permissions]).catch(() => undefined);
+  return PermissionsAndroid.requestMultiple([...category.permissions]).then(
+    (results) => {
+      // Android stops asking after two refusals; then only T3 Code's App info can allow it.
+      if (Object.values(results).includes(PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN)) {
+        void Linking.openSettings();
+      }
+    },
+    () => undefined,
+  );
 }
 
-/** Run on this phone → Agent access: what agents on this phone may reach through Android. */
+/** Settings → Agent access: what agents on this phone may reach through Android. */
 export function AgentAccessRouteScreen() {
   const insets = useSafeAreaInsets();
   const read = useCallback(() => deviceRuntime?.getAgentAccess() ?? [], []);

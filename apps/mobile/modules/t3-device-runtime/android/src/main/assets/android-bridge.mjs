@@ -380,7 +380,7 @@ const COMMANDS = {
       // Android redacts these without Location; say so, so agents don't guess at the cause.
       if (result?.ssid === "<unknown ssid>") {
         process.stderr.write(
-          `${COMMAND}: Android hides the network name and BSSID until T3 Code has Location: allow it in Run on this phone > Agent access, and turn Location on.\n`,
+          `${COMMAND}: Android hides the network name and BSSID until T3 Code has Location: allow it in Settings > Agent access > Location, and turn Location on.\n`,
         );
       }
     },

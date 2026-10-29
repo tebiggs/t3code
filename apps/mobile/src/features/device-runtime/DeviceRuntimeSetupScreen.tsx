@@ -328,7 +328,7 @@ export function DeviceRuntimeSetupScreen() {
         {status.installed ? (
           <SettingsSection>
             <ListRow
-              icon="person.crop.circle"
+              icon="exclamationmark.shield"
               label="Agent access"
               description="Location, contacts, messages and more: ask, allow or never"
               onPress={() => navigation.navigate("AgentAccess")}
