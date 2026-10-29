@@ -495,10 +495,20 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
       // Without the access rules agents would reach phone data unasked, so no rules, no bridge.
       AgentAccess.writeManagedSettings(context, rootfs)
       installCommands(context, rootfs)
+      installGuide(context, rootfs)
       AndroidBridge(context, rootfs)
     } catch (error: Exception) {
       Log.w(TAG, "The Android bridge couldn't start", error)
       null
+    }
+
+    // Claude Code loads its managed CLAUDE.md in every session; the user's own stays theirs.
+    private fun installGuide(context: Context, rootfs: File) {
+      val guide = File(rootfs, "etc/claude-code/CLAUDE.md")
+      guide.parentFile?.mkdirs()
+      context.assets.open("phone-agent-guide.md").use { input ->
+        guide.outputStream().use { input.copyTo(it) }
+      }
     }
 
     private fun installCommands(context: Context, rootfs: File) {

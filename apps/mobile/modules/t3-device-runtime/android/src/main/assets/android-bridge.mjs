@@ -373,7 +373,18 @@ const COMMANDS = {
     },
     print: () => printLine("Wallpaper set successfully!"),
   },
-  "termux-wifi-connectioninfo": jsonCommand("wifi-connectioninfo"),
+  "termux-wifi-connectioninfo": {
+    ...jsonCommand("wifi-connectioninfo"),
+    print: (result) => {
+      printJson(result);
+      // Android redacts these without Location; say so, so agents don't guess at the cause.
+      if (result?.ssid === "<unknown ssid>") {
+        process.stderr.write(
+          `${COMMAND}: Android hides the network name and BSSID until T3 Code has Location: allow it in Run on this phone > Agent access, and turn Location on.\n`,
+        );
+      }
+    },
+  },
   "termux-camera-info": jsonCommand("camera-info"),
   "termux-camera-photo": {
     usage: "[-c camera-id] <output-file>",

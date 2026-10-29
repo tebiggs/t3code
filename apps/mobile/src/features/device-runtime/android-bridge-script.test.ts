@@ -133,6 +133,16 @@ describe("android-bridge.mjs", () => {
     });
   });
 
+  it("says what to allow when Android hides the Wi-Fi network's name", async () => {
+    await using bridge = await startBridge(() => ({
+      ok: true,
+      result: { ssid: "<unknown ssid>", rssi: -50 },
+    }));
+    const { code, stderr } = await bridge.run("termux-wifi-connectioninfo", []);
+    expect(code).toBe(0);
+    expect(stderr).toContain("allow it in Run on this phone > Agent access");
+  });
+
   it("fails with the reason on stderr", async () => {
     await using bridge = await startBridge(() => ({
       ok: false,
