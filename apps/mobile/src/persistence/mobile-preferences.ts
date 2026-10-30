@@ -85,7 +85,6 @@ export const PhoneSharingRecord = Schema.Struct({
   accountId: Schema.NullOr(Schema.String),
   /** on: shared. stopping: the server's tunnel and sessions must go. listed: only the listing. */
   phase: Schema.Literals(["on", "stopping", "listed"]),
-  failedShare: Schema.optional(Schema.Boolean),
 });
 export type PhoneSharingRecord = typeof PhoneSharingRecord.Type;
 

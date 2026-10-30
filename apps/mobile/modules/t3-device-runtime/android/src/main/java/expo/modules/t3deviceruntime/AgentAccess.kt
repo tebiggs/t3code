@@ -33,8 +33,10 @@ class AccessCategory(val id: String, val label: String, val commands: List<Strin
 
 /**
  * The user's policy per category, enforced by the bridge, outside the guest. Never refuses and
- * Ask prompts on the phone, for any provider and however the command is written. Claude Code's
- * managed settings add allow and deny rules so it doesn't ask again or try a refused command.
+ * Ask prompts on the phone, for any provider and however a termux-* command is spelled. It covers
+ * this bridge only: guest processes run as this app's Android user, so it isn't a hard barrier
+ * against a terminal in the guest. Claude Code's managed settings add allow and deny rules so it
+ * doesn't ask again or try a refused command.
  */
 object AgentAccess {
   val categories = listOf(

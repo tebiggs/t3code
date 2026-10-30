@@ -18,14 +18,13 @@ import { AsyncResult, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import type { SavedRemoteConnection } from "../../lib/connection";
-import type { PhoneSharingRecord } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
   phoneServerSettingsAtom,
   phoneSharingRecordAtom,
   setPhoneSharingRecord,
 } from "../../state/phone-server-settings";
-import { mobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { savedRemoteConnectionAtom } from "../../state/use-remote-environment-registry";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
 import {
@@ -38,6 +37,11 @@ import {
 import { createPhoneSharingController } from "./phone-sharing-controller";
 
 const PAIRING_LINKS_TIMEOUT = Duration.seconds(10);
+const HYDRATION_TIMEOUT = Duration.seconds(10);
+// A deadline per step keeps one stalled call from holding up every later stop, sign-out included.
+const RELAY_CLIENT_TIMEOUT = Duration.minutes(5);
+const LINK_TIMEOUT = Duration.seconds(60);
+const DEREGISTER_TIMEOUT = Duration.seconds(30);
 
 const pairingLinkIds = Effect.fn("PhoneSharing.pairingLinkIds")(function* (
   environmentId: EnvironmentId,
@@ -88,7 +92,7 @@ const ensureRelayClient = createRuntimeCommand(connectionAtomRuntime, {
         message: "The T3 Connect relay client didn't install.",
       });
     }
-  }),
+  }, Effect.timeout(RELAY_CLIENT_TIMEOUT)),
 });
 
 const linkServer = createRuntimeCommand(connectionAtomRuntime, {
@@ -97,19 +101,13 @@ const linkServer = createRuntimeCommand(connectionAtomRuntime, {
     readonly connection: SavedRemoteConnection;
     readonly clerkToken: string;
     readonly liveActivitiesEnabled: boolean;
-  }) => linkEnvironmentToCloudWithPreference(input),
+  }) => linkEnvironmentToCloudWithPreference(input).pipe(Effect.timeout(LINK_TIMEOUT)),
 });
 
 const stopOnServer = createRuntimeCommand(connectionAtomRuntime, {
   label: "phone-server:stop-sharing",
-  execute: (input: {
-    readonly connection: SavedRemoteConnection;
-    readonly revokeAccess: boolean;
-  }) =>
-    stopServerSharing(input.connection, {
-      revokeAccess: input.revokeAccess,
-      pairingLinkIds: pairingLinkIds(input.connection.environmentId),
-    }),
+  execute: (connection: SavedRemoteConnection) =>
+    stopServerSharing(connection, pairingLinkIds(connection.environmentId)),
 });
 
 const deregisterPhone = createRuntimeCommand(connectionAtomRuntime, {
@@ -117,7 +115,15 @@ const deregisterPhone = createRuntimeCommand(connectionAtomRuntime, {
   execute: (
     input: { readonly accountId: string; readonly environmentId: EnvironmentId },
     registry,
-  ) => deregisterManagedRelayEnvironment(registry, input),
+  ) =>
+    deregisterManagedRelayEnvironment(registry, input).pipe(
+      // Deregistering is the goal, and an account with no such listing has reached it.
+      Effect.catchIf(
+        (error) => error._tag === "ManagedRelayRequestFailedError" && error.status === 404,
+        () => Effect.void,
+      ),
+      Effect.timeout(DEREGISTER_TIMEOUT),
+    ),
 });
 
 export const readPhoneSharing = createRuntimeCommand(connectionAtomRuntime, {
@@ -140,21 +146,21 @@ const failureText = (
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 };
 
-// Saving is asynchronous, and the controller reads back what it just saved.
-let lastSaved: PhoneSharingRecord | null | undefined;
-
 const controller = createPhoneSharingController({
   hydrated: () =>
     Effect.runPromise(
       AtomRegistry.getResult(appAtomRegistry, mobilePreferencesAtom, {
         suspendOnWaiting: true,
-      }).pipe(Effect.ignore),
+      }).pipe(Effect.timeoutOption(HYDRATION_TIMEOUT), Effect.ignore),
     ),
-  loadRecord: () =>
-    lastSaved === undefined ? appAtomRegistry.get(phoneSharingRecordAtom) : lastSaved,
-  saveRecord: (record) => {
-    lastSaved = record;
+  loadRecord: () => appAtomRegistry.get(phoneSharingRecordAtom),
+  saveRecord: async (record) => {
     setPhoneSharingRecord(record);
+    await Effect.runPromise(
+      AtomRegistry.getResult(appAtomRegistry, updateMobilePreferencesAtom, {
+        suspendOnWaiting: true,
+      }),
+    );
   },
   phoneEnvironmentId: () => appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId ?? null,
   connectionFor: (environmentId) => appAtomRegistry.get(savedRemoteConnectionAtom(environmentId)),
@@ -172,14 +178,9 @@ const controller = createPhoneSharingController({
       }),
       "Couldn't set up the T3 Connect relay client.",
     ),
-  stopOnServer: async (connection, { revokeAccess }) =>
+  stopOnServer: async (connection) =>
     failureText(
-      await runAtomCommand(
-        appAtomRegistry,
-        stopOnServer,
-        { connection, revokeAccess },
-        { reportFailure: false },
-      ),
+      await runAtomCommand(appAtomRegistry, stopOnServer, connection, { reportFailure: false }),
       "Couldn't stop sharing this phone.",
     ),
   deregister: async (accountId, environmentId) =>

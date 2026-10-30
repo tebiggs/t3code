@@ -11,19 +11,18 @@ export interface PhoneSharingEffects {
   /** Resolves once saved preferences are loaded, so a decision never reads an empty record. */
   readonly hydrated: () => Promise<void>;
   readonly loadRecord: () => PhoneSharingRecord | null;
-  readonly saveRecord: (record: PhoneSharingRecord | null) => void;
+  /** Rejects when the record couldn't be saved. */
+  readonly saveRecord: (record: PhoneSharingRecord | null) => Promise<void>;
   readonly phoneEnvironmentId: () => EnvironmentId | null;
   readonly connectionFor: (environmentId: EnvironmentId) => SavedRemoteConnection | null;
   readonly signedInAccount: () => string | null;
-  /** Null when the server can't answer. */
+  /** Null when the server can't answer. Every effect here has its own deadline. */
   readonly readSharing: (connection: SavedRemoteConnection) => Promise<PhoneSharing | null>;
   /** Each returns the failure's text, or null. */
   readonly ensureRelayClient: (connection: SavedRemoteConnection) => Promise<string | null>;
   /** Idempotent, so an unfinished stop can run again from the start. */
-  readonly stopOnServer: (
-    connection: SavedRemoteConnection,
-    options: { readonly revokeAccess: boolean },
-  ) => Promise<string | null>;
+  readonly stopOnServer: (connection: SavedRemoteConnection) => Promise<string | null>;
+  /** Null too when the account no longer lists the phone. */
   readonly deregister: (accountId: string, environmentId: EnvironmentId) => Promise<string | null>;
 }
 
@@ -31,15 +30,20 @@ export interface PhoneSharingEffects {
  * Every change to sharing runs here, one at a time, from a record saved before the work starts.
  * A sign-out during a share therefore stops what the share set up, and anything left unfinished
  * by a failure, a dead server or a killed app is picked up by the next `reconcile`.
+ *
+ * A stop always signs out other clients: a share that looks failed may have reached the server
+ * with only its response lost, so nothing can be assumed about who connected.
  */
 export function createPhoneSharingController(effects: PhoneSharingEffects) {
   let queue: Promise<unknown> = Promise.resolve();
-  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
+  const enqueue = (task: () => Promise<string | null>): Promise<string | null> => {
     const run = queue.then(async () => {
       await effects.hydrated();
-      return task();
+      return task().catch((error: unknown) =>
+        error instanceof Error ? error.message : "Couldn't update phone sharing.",
+      );
     });
-    queue = run.catch(() => undefined);
+    queue = run;
     return run;
   };
 
@@ -50,49 +54,45 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
     if (record.phase === "stopping") {
       const connection = effects.connectionFor(record.environmentId);
       if (connection === null) return STOP_UNFINISHED;
-      const failure = await effects.stopOnServer(connection, {
-        revokeAccess: record.failedShare !== true,
-      });
+      const failure = await effects.stopOnServer(connection);
       if (failure !== null) return failure;
       record = { ...record, phase: "listed" };
-      effects.saveRecord(record);
+      await effects.saveRecord(record);
     }
-    // A failed share may never have reached the account, so its listing is only worth one try.
-    const failedShare = record.failedShare === true;
     const owner = record.accountId;
-    if (owner === null) {
-      effects.saveRecord(null);
-      return null;
+    if (owner !== null) {
+      if (effects.signedInAccount() !== owner) return PHONE_STILL_LISTED;
+      if ((await effects.deregister(owner, record.environmentId)) !== null) {
+        return PHONE_STILL_LISTED;
+      }
     }
-    const removed =
-      effects.signedInAccount() === owner
-        ? (await effects.deregister(owner, record.environmentId)) === null
-        : false;
-    if (removed || failedShare) {
-      effects.saveRecord(null);
-      return null;
-    }
-    return PHONE_STILL_LISTED;
+    await effects.saveRecord(null);
+    return null;
   };
 
-  /** Sharing on the server counts even with no record, such as a link made some other way. */
+  /** An unreadable server counts as shared until proven otherwise: off is the claim to prove. */
   const markStopping = async () => {
     const record = effects.loadRecord();
     const environmentId = record?.environmentId ?? effects.phoneEnvironmentId();
     if (environmentId === null) return;
+    if (record?.phase === "on") await effects.saveRecord({ ...record, phase: "stopping" });
     const connection = effects.connectionFor(environmentId);
     const sharing = connection === null ? null : await effects.readSharing(connection);
-    const shared = sharing?.shared === true ? sharing : null;
-    if (record === null) {
-      if (shared !== null) {
-        effects.saveRecord({ environmentId, accountId: shared.cloudUserId, phase: "stopping" });
+    const current = effects.loadRecord();
+    if (current === null) {
+      if (sharing === null) {
+        await effects.saveRecord({ environmentId, accountId: null, phase: "stopping" });
+      } else if (sharing.shared) {
+        await effects.saveRecord({
+          environmentId,
+          accountId: sharing.cloudUserId,
+          phase: "stopping",
+        });
       }
-      return;
-    }
-    if (record.phase === "on" || shared !== null) {
-      effects.saveRecord({
-        ...record,
-        accountId: shared?.cloudUserId ?? record.accountId,
+    } else if (sharing?.shared === true) {
+      await effects.saveRecord({
+        ...current,
+        accountId: sharing.cloudUserId ?? current.accountId,
         phase: "stopping",
       });
     }
@@ -106,23 +106,20 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
       link: () => Promise<string | null>,
     ) =>
       enqueue(async () => {
-        await settle();
+        const unfinished = await settle();
+        if (effects.loadRecord()?.phase === "stopping") return unfinished ?? STOP_UNFINISHED;
+        const sharing = await effects.readSharing(connection);
+        if (sharing === null) return "Couldn't check whether this phone is already shared.";
+        if (sharing.shared) return "This phone is already shared.";
         const notReady = await effects.ensureRelayClient(connection);
         if (notReady !== null) return notReady;
         const environmentId = connection.environmentId;
-        effects.saveRecord({ environmentId, accountId, phase: "on" });
+        await effects.saveRecord({ environmentId, accountId, phase: "on" });
         const failure = await link();
-        if (failure !== null) {
-          effects.saveRecord({ environmentId, accountId, phase: "stopping", failedShare: true });
-          await settle();
-          return failure;
-        }
-        if (effects.signedInAccount() !== accountId) {
-          effects.saveRecord({ environmentId, accountId, phase: "stopping" });
-          await settle();
-          return "You signed out of T3 Connect, so this phone wasn't shared.";
-        }
-        return null;
+        if (failure === null && effects.signedInAccount() === accountId) return null;
+        await effects.saveRecord({ environmentId, accountId, phase: "stopping" });
+        await settle();
+        return failure ?? "You signed out of T3 Connect, so this phone wasn't shared.";
       }),
 
     /** Off, and signing out or switching accounts. Null when nothing is left to do. */
@@ -132,15 +129,19 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         return settle();
       }),
 
-    /** Retries unfinished work, and notices a share a killed app never finished. */
+    /**
+     * Retries unfinished work. Also ends a share that a killed app left behind, either half set
+     * up or still open to an account this app has since left.
+     */
     reconcile: () =>
       enqueue(async () => {
         const record = effects.loadRecord();
         if (record?.phase === "on") {
+          const account = effects.signedInAccount();
           const connection = effects.connectionFor(record.environmentId);
           const sharing = connection === null ? null : await effects.readSharing(connection);
-          if (sharing?.shared === false) {
-            effects.saveRecord({ ...record, phase: "stopping", failedShare: true });
+          if ((account !== null && account !== record.accountId) || sharing?.shared === false) {
+            await effects.saveRecord({ ...record, phase: "stopping" });
           }
         }
         return settle();
@@ -153,7 +154,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         await settle();
         const record = effects.loadRecord();
         if (record?.phase === "stopping") {
-          effects.saveRecord({ ...record, phase: "listed" });
+          await effects.saveRecord({ ...record, phase: "listed" });
           await settle();
         }
         return effects.loadRecord() === null ? null : PHONE_STILL_LISTED;
@@ -164,7 +165,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
       enqueue(async () => {
         await markStopping();
         const failure = await settle();
-        return effects.loadRecord()?.phase === "stopping" ? failure : null;
+        return effects.loadRecord()?.phase === "stopping" ? (failure ?? STOP_UNFINISHED) : null;
       }),
   };
 }

@@ -182,26 +182,7 @@ export function useRemoteConnections() {
         void controller.removeEnvironment(environmentId);
       },
     } as const;
-    if (environment.isRelayManaged) {
-      Dialog.alert(
-        "Remove from this device?",
-        `Forget ${environment.environmentLabel} and its cached threads on this device.\n\nIt stays on your T3 Connect account and keeps its host space. Deregister it under T3 Account → T3 Connect to free it.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          // SettingsAuth renders nothing in builds without cloud config.
-          ...(hasCloudPublicConfig()
-            ? [
-                {
-                  text: "Open T3 Account",
-                  onPress: () => navigation.navigate("SettingsAuth"),
-                },
-              ]
-            : []),
-          remove,
-        ],
-      );
-      return;
-    }
+    // First: a shared phone also has a relay route, and that mustn't skip stopping its share.
     if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
       // Removing only the connection would leave the server running on the phone with a wake
       // lock and nothing in the app pointing at it, so a failed stop keeps everything.
@@ -266,6 +247,26 @@ export function useRemoteConnections() {
             style: "destructive",
             onPress: () => void stopThenForget(),
           },
+        ],
+      );
+      return;
+    }
+    if (environment.isRelayManaged) {
+      Dialog.alert(
+        "Remove from this device?",
+        `Forget ${environment.environmentLabel} and its cached threads on this device.\n\nIt stays on your T3 Connect account and keeps its host space. Deregister it under T3 Account → T3 Connect to free it.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          // SettingsAuth renders nothing in builds without cloud config.
+          ...(hasCloudPublicConfig()
+            ? [
+                {
+                  text: "Open T3 Account",
+                  onPress: () => navigation.navigate("SettingsAuth"),
+                },
+              ]
+            : []),
+          remove,
         ],
       );
       return;

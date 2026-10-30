@@ -66,10 +66,7 @@ describe("stopServerSharing", () => {
   it.effect("stops the tunnel, then signs out other clients and their pairing links", () => {
     const server = layerServer();
     return Effect.gen(function* () {
-      yield* stopServerSharing(connection, {
-        revokeAccess: true,
-        pairingLinkIds: Effect.succeed(["link-1"]),
-      });
+      yield* stopServerSharing(connection, Effect.succeed(["link-1"]));
       expect(server.requests).toEqual([
         "/api/connect/unlink",
         "/api/auth/clients/revoke-others",
@@ -78,26 +75,10 @@ describe("stopServerSharing", () => {
     }).pipe(Effect.provide(server.layer));
   });
 
-  it.effect("signs nobody out after a failed share", () => {
-    const server = layerServer();
-    return Effect.gen(function* () {
-      yield* stopServerSharing(connection, {
-        revokeAccess: false,
-        pairingLinkIds: Effect.die("unused"),
-      });
-      expect(server.requests).toEqual(["/api/connect/unlink"]);
-    }).pipe(Effect.provide(server.layer));
-  });
-
   it.effect("fails when a pairing link can't be read, so the stop stays unfinished", () => {
     const server = layerServer();
     return Effect.gen(function* () {
-      const error = yield* Effect.flip(
-        stopServerSharing(connection, {
-          revokeAccess: true,
-          pairingLinkIds: Effect.fail("no socket"),
-        }),
-      );
+      const error = yield* Effect.flip(stopServerSharing(connection, Effect.fail("no socket")));
       expect(error.message).toContain("couldn't be signed out");
     }).pipe(Effect.provide(server.layer));
   });

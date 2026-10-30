@@ -45,6 +45,7 @@ const REACHABILITY_WAIT = Duration.seconds(60);
 const REACHABILITY_CHECK_TIMEOUT = Duration.seconds(30);
 const REACHABILITY_RETRY = Duration.seconds(5);
 const STOP_STEP_TIMEOUT = Duration.seconds(20);
+const READ_TIMEOUT = Duration.seconds(10);
 
 export const failWith = (message: string) => (cause: unknown) =>
   new PhoneSharingError({ message, cause });
@@ -65,7 +66,10 @@ export const readSharing = Effect.fn("PhoneSharing.read")(function* (
   const { api, headers } = yield* phoneServerApi(connection);
   const state = yield* api.connect
     .linkState({ headers })
-    .pipe(Effect.mapError(failWith("Couldn't check whether this phone is shared.")));
+    .pipe(
+      Effect.timeout(READ_TIMEOUT),
+      Effect.mapError(failWith("Couldn't check whether this phone is shared.")),
+    );
   return phoneSharingFromLinkState(state);
 });
 
@@ -91,14 +95,11 @@ export const waitForReachability = Effect.fn("PhoneSharing.waitForReachability")
 /**
  * Off ends access, not just the route to it: without the revocations, a client that connected
  * while the phone was shared would get back in if sharing came on again, even under another
- * account. A failed share has no clients to sign out, so it skips them.
+ * account.
  */
 export const stopServerSharing = Effect.fn("PhoneSharing.stopServerSharing")(function* <E, R>(
   connection: SavedRemoteConnection,
-  options: {
-    readonly revokeAccess: boolean;
-    readonly pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E, R>;
-  },
+  pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E, R>,
 ) {
   const { api, headers } = yield* phoneServerApi(connection);
   yield* api.connect
@@ -107,10 +108,9 @@ export const stopServerSharing = Effect.fn("PhoneSharing.stopServerSharing")(fun
       Effect.timeout(STOP_STEP_TIMEOUT),
       Effect.mapError(failWith("Couldn't stop sharing this phone.")),
     );
-  if (!options.revokeAccess) return;
   yield* Effect.gen(function* () {
     yield* api.auth.revokeOtherClients({ headers });
-    const ids = yield* options.pairingLinkIds;
+    const ids = yield* pairingLinkIds;
     yield* Effect.forEach(ids, (id) => api.auth.revokePairingLink({ headers, payload: { id } }), {
       discard: true,
     });

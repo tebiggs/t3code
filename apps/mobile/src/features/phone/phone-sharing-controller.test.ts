@@ -21,8 +21,9 @@ const shared = (cloudUserId: string | null): PhoneSharing => ({
   cloudUserId,
   reachability: null,
 });
+const on: PhoneSharingRecord = { environmentId, accountId: "user_a", phase: "on" };
 
-function setup(initial: PhoneSharingRecord | null = null) {
+function setup(initial: PhoneSharingRecord | null = null, hydrated = async () => {}) {
   const state = {
     record: initial,
     account: "user_a" as string | null,
@@ -30,18 +31,19 @@ function setup(initial: PhoneSharingRecord | null = null) {
     sharing: { shared: false } as PhoneSharing | null,
     stopFailure: null as string | null,
     deregisterFailure: null as string | null,
+    saveFailure: null as string | null,
   };
-  const stopOnServer = vi.fn(
-    async (_connection: unknown, _options: { readonly revokeAccess: boolean }) => {
-      if (state.stopFailure === null) state.sharing = { shared: false };
-      return state.stopFailure;
-    },
-  );
+  const stopOnServer = vi.fn(async () => {
+    if (state.stopFailure === null) state.sharing = { shared: false };
+    return state.stopFailure;
+  });
   const deregister = vi.fn(async () => state.deregisterFailure);
+  const loadRecord = vi.fn(() => state.record);
   const controller = createPhoneSharingController({
-    hydrated: async () => undefined,
-    loadRecord: () => state.record,
-    saveRecord: (record) => {
+    hydrated,
+    loadRecord,
+    saveRecord: async (record) => {
+      if (state.saveFailure !== null) throw new Error(state.saveFailure);
       state.record = record;
     },
     phoneEnvironmentId: () => environmentId,
@@ -52,10 +54,8 @@ function setup(initial: PhoneSharingRecord | null = null) {
     stopOnServer,
     deregister,
   });
-  return { state, controller, stopOnServer, deregister };
+  return { state, controller, stopOnServer, deregister, loadRecord };
 }
-
-const on: PhoneSharingRecord = { environmentId, accountId: "user_a", phase: "on" };
 
 describe("createPhoneSharingController", () => {
   it("undoes a share when the account signs out while it's linking", async () => {
@@ -69,16 +69,14 @@ describe("createPhoneSharingController", () => {
           finishLink = resolve;
         }),
     );
-    const stopping = (async () => {
-      await vi.waitFor(() => expect(state.record?.phase).toBe("on"));
-      state.account = null;
-      const stopped = controller.stop();
-      state.sharing = shared("user_a");
-      finishLink(null);
-      return stopped;
-    })();
+    await vi.waitFor(() => expect(state.record?.phase).toBe("on"));
+    state.account = null;
+    const stopped = controller.stop();
+    state.sharing = shared("user_a");
+    finishLink(null);
+
     expect(await sharing).toContain("signed out");
-    await stopping;
+    await stopped;
     expect(stopOnServer).toHaveBeenCalled();
     expect(state.sharing).toEqual({ shared: false });
   });
@@ -97,8 +95,30 @@ describe("createPhoneSharingController", () => {
     state.stopFailure = null;
     expect(await controller.reconcile()).toBeNull();
     expect(stopOnServer).toHaveBeenCalledTimes(2);
-    expect(stopOnServer).toHaveBeenLastCalledWith(connection, { revokeAccess: true });
     expect(deregister).toHaveBeenCalledOnce();
+    expect(state.record).toBeNull();
+  });
+
+  it("refuses a new share while a stop is unfinished, keeping its record", async () => {
+    const stopping: PhoneSharingRecord = { ...on, phase: "stopping" };
+    const { state, controller } = setup(stopping);
+    state.stopFailure = "other devices couldn't be signed out";
+    const link = vi.fn(async () => null);
+
+    expect(await controller.share(connection, "user_a", link)).toBe(state.stopFailure);
+    expect(link).not.toHaveBeenCalled();
+    expect(state.record).toEqual(stopping);
+  });
+
+  it("won't link over a share that's already on, or when it can't tell", async () => {
+    const { state, controller } = setup();
+    const link = vi.fn(async () => null);
+
+    state.sharing = shared("user_b");
+    expect(await controller.share(connection, "user_a", link)).toContain("already shared");
+    state.sharing = null;
+    expect(await controller.share(connection, "user_a", link)).toContain("Couldn't check");
+    expect(link).not.toHaveBeenCalled();
     expect(state.record).toBeNull();
   });
 
@@ -132,26 +152,63 @@ describe("createPhoneSharingController", () => {
     expect(state.record).toEqual({ environmentId, accountId: "user_b", phase: "listed" });
   });
 
-  it("rolls a failed share back without signing anyone out, and drops its record", async () => {
-    const { state, controller, stopOnServer, deregister } = setup();
-    state.deregisterFailure = "not linked";
-    const failure = await controller.share(connection, "user_a", async () => "over the limit");
-    expect(failure).toBe("over the limit");
-    expect(stopOnServer).toHaveBeenCalledWith(connection, { revokeAccess: false });
-    expect(deregister).toHaveBeenCalledOnce();
+  it("treats an unreadable server with no record as a stop still owed", async () => {
+    const { state, controller, stopOnServer } = setup();
+    state.connected = false;
+    expect(await controller.stop()).not.toBeNull();
+    expect(state.record).toEqual({ environmentId, accountId: null, phase: "stopping" });
+
+    state.connected = true;
+    expect(await controller.reconcile()).toBeNull();
+    expect(stopOnServer).toHaveBeenCalledOnce();
     expect(state.record).toBeNull();
   });
 
-  it("treats a share a killed app never finished as failed", async () => {
+  it("leaves a confirmed-off phone with no record alone", async () => {
+    const { state, controller, stopOnServer } = setup();
+    expect(await controller.stop()).toBeNull();
+    expect(stopOnServer).not.toHaveBeenCalled();
+    expect(state.record).toBeNull();
+  });
+
+  it("rolls a failed share back in full, and keeps the listing until it's really gone", async () => {
+    const { state, controller, stopOnServer, deregister } = setup();
+    state.deregisterFailure = "relay down";
+    expect(await controller.share(connection, "user_a", async () => "over the limit")).toBe(
+      "over the limit",
+    );
+    expect(stopOnServer).toHaveBeenCalledOnce();
+    expect(state.record?.phase).toBe("listed");
+
+    state.deregisterFailure = null;
+    expect(await controller.reconcile()).toBeNull();
+    expect(deregister).toHaveBeenCalledTimes(2);
+    expect(state.record).toBeNull();
+  });
+
+  it("ends a share a killed app left half set up", async () => {
     const { state, controller, stopOnServer } = setup(on);
     expect(await controller.reconcile()).toBeNull();
-    expect(stopOnServer).toHaveBeenCalledWith(connection, { revokeAccess: false });
+    expect(stopOnServer).toHaveBeenCalledOnce();
     expect(state.record).toBeNull();
   });
 
-  it("leaves a healthy share alone", async () => {
+  it("ends a share still open to an account this app has left", async () => {
+    const { state, controller, stopOnServer, deregister } = setup(on);
+    state.sharing = shared("user_a");
+    state.account = "user_b";
+    expect(await controller.reconcile()).toBe(PHONE_STILL_LISTED);
+    expect(stopOnServer).toHaveBeenCalledOnce();
+    expect(deregister).not.toHaveBeenCalled();
+    expect(state.record?.phase).toBe("listed");
+  });
+
+  it("leaves a healthy share alone, including before the account is known", async () => {
     const { state, controller, stopOnServer } = setup(on);
     state.sharing = shared("user_a");
+    expect(await controller.reconcile()).toBeNull();
+    state.account = null;
+    state.sharing = null;
     expect(await controller.reconcile()).toBeNull();
     expect(stopOnServer).not.toHaveBeenCalled();
     expect(state.record).toEqual(on);
@@ -181,32 +238,37 @@ describe("createPhoneSharingController", () => {
     expect(await controller.stopBeforeForgetting()).toBeNull();
   });
 
-  it("waits for saved preferences before deciding anything", async () => {
-    const { state, stopOnServer } = setup();
+  it("reports a record it couldn't save, and later tasks still run", async () => {
+    const { state, controller } = setup(on);
+    state.saveFailure = "storage full";
+    expect(await controller.stop()).toBe("storage full");
+    state.saveFailure = null;
+    expect(await controller.stop()).toBeNull();
+    expect(state.record).toBeNull();
+  });
+
+  it("reads and does nothing until saved preferences are loaded", async () => {
     let hydrate = () => {};
-    const hydrating = new Promise<void>((resolve) => {
-      hydrate = resolve;
+    let entered = () => {};
+    const entering = new Promise<void>((resolve) => {
+      entered = resolve;
     });
-    const controller = createPhoneSharingController({
-      hydrated: () => hydrating,
-      loadRecord: () => state.record,
-      saveRecord: (record) => {
-        state.record = record;
-      },
-      phoneEnvironmentId: () => environmentId,
-      connectionFor: () => connection,
-      signedInAccount: () => null,
-      readSharing: async () => shared("user_a"),
-      ensureRelayClient: async () => null,
-      stopOnServer,
-      deregister: async () => null,
-    });
+    const hydrated = () =>
+      new Promise<void>((resolve) => {
+        hydrate = resolve;
+        entered();
+      });
+    const { state, controller, stopOnServer, loadRecord } = setup(null, hydrated);
+    state.sharing = shared("user_a");
+
     const stopped = controller.stop();
+    await entering;
+    expect(loadRecord).not.toHaveBeenCalled();
     expect(stopOnServer).not.toHaveBeenCalled();
+
     state.record = on;
     hydrate();
     await stopped;
     expect(stopOnServer).toHaveBeenCalledOnce();
-    expect(state.record?.accountId).toBe("user_a");
   });
 });

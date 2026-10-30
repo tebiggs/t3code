@@ -277,8 +277,11 @@ export function usePhoneServerWorker() {
     if (deviceRuntime !== null && down) void autoStartPhoneServer();
   }, [down]);
   const connected = phone?.connectionState === "connected";
-  const sharingUnfinished = (usePhoneSharingRecord()?.phase ?? "on") !== "on";
+  const sharing = usePhoneSharingRecord();
   const relayAccount = useAtomValue(managedRelaySessionAtom)?.accountId ?? null;
+  const sharingUnfinished =
+    sharing !== null &&
+    (sharing.phase !== "on" || (relayAccount !== null && relayAccount !== sharing.accountId));
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- finishes stopping or deregistering once the server or the account comes back
   useEffect(() => {
     if (deviceRuntime !== null && sharingUnfinished && (connected || relayAccount !== null)) {

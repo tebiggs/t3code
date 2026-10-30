@@ -11,6 +11,7 @@ import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
@@ -19,7 +20,10 @@ private const val APPROVAL_TIMEOUT_SECONDS = 60L
 private const val DETAILS_LIMIT = 4000
 private const val MAX_WAITING = 4
 
-private val INVISIBLE = Regex("[\\u061C\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u206F\\uFEFF]")
+// Format characters (bidi controls, zero widths, soft hyphens), C1 controls, line separators,
+// and the fillers and variation selectors that show as nothing.
+private val INVISIBLE =
+  Regex("[\\p{Cf}\\p{Zl}\\p{Zp}\\u0080-\\u009F\\u034F\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180F\\u3164\\uFE00-\\uFE0F\\uFFA0]")
 
 /**
  * A command's whole request, as the user approves it. JSON escapes newlines and control
@@ -28,7 +32,9 @@ private val INVISIBLE = Regex("[\\u061C\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u
  */
 internal fun approvalDetails(body: JSONObject): String {
   if (body.length() == 0) return ""
-  val details = body.toString(2).replace(INVISIBLE) { "\\u%04X".format(it.value[0].code) }
+  val details = body.toString(2).replace(INVISIBLE) { match ->
+    match.value.toCharArray().joinToString("") { "\\u%04X".format(it.code) }
+  }
   if (details.length > DETAILS_LIMIT) throw BridgeError("This request is too long to show on the phone for approval.", 413)
   return details
 }
@@ -42,6 +48,7 @@ private class WaitingApproval(val title: String, val message: String, val answer
  */
 internal object AccessApproval {
   private val pending = ConcurrentHashMap<String, WaitingApproval>()
+  private val slots = Semaphore(MAX_WAITING)
 
   /** Whether the user allowed it. Nobody answering in time counts as no. */
   fun request(
@@ -53,14 +60,9 @@ internal object AccessApproval {
     dismiss: () -> Unit,
   ): Boolean {
     // Requests wait on bridge connections, which unrelated commands need too.
-    if (pending.size >= MAX_WAITING) throw BridgeError("Too many requests are waiting for an answer on the phone.", 429)
+    if (!slots.tryAcquire()) throw BridgeError("Too many requests are waiting for an answer on the phone.", 429)
     val id = UUID.randomUUID().toString()
-    val message = buildString {
-      append("termux-$command")
-      if (details.isNotEmpty()) append("\n\n$details")
-      append("\n\nAn agent or another device using this phone's server asked for this.")
-    }
-    val waiting = WaitingApproval("Allow ${category.label}?", message, CompletableFuture())
+    val waiting = waitingFor(category, command, details)
     pending[id] = waiting
     try {
       show(
@@ -77,8 +79,18 @@ internal object AccessApproval {
       pending.remove(id)
       // Closes a prompt that's still open, so a late tap can't look like it counted.
       waiting.answer.complete(false)
+      slots.release()
       dismiss()
     }
+  }
+
+  private fun waitingFor(category: AccessCategory, command: String, details: String): WaitingApproval {
+    val message = buildString {
+      append("termux-$command")
+      if (details.isNotEmpty()) append("\n\n$details")
+      append("\n\nAn agent or another device using this phone's server asked for this.")
+    }
+    return WaitingApproval("Allow ${category.label}?", message, CompletableFuture())
   }
 
   fun prompt(id: String): Pair<String, String>? = pending[id]?.let { it.title to it.message }
