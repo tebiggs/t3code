@@ -173,12 +173,12 @@ describe("resolveRemoteOpenState", () => {
     };
 
     it("builds the Remote-SSH link from the LAN address the client reached", () => {
-      const state = resolveOverBearer("http://192.168.1.153:3773");
+      const state = resolveOverBearer("http://192.168.1.50:3773");
       if (state.mode !== "remote-links") throw new Error("Expected a remote link");
-      expect(state.host).toEqual({ kind: "connection", host: "192.168.1.153", username: "dev" });
+      expect(state.host).toEqual({ kind: "connection", host: "192.168.1.50", username: "dev" });
       expect(
         buildRemoteOpenUrl({ editor: "vscode", ...state.host, absolutePath: "/work/project" }),
-      ).toBe("vscode://vscode-remote/ssh-remote+dev%40192.168.1.153/work/project");
+      ).toBe("vscode://vscode-remote/ssh-remote+dev%40192.168.1.50/work/project");
     });
 
     it.each([
@@ -214,7 +214,7 @@ describe("resolveRemoteOpenState", () => {
     });
 
     it("keeps the tailnet name when only Tailscale SSH serves the host", () => {
-      expect(resolveOverBearer("http://192.168.1.153:3773", TAILSCALE_ONLY_TARGETS)).toEqual({
+      expect(resolveOverBearer("http://192.168.1.50:3773", TAILSCALE_ONLY_TARGETS)).toEqual({
         mode: "remote-links",
         host: TAILSCALE_ONLY_TARGETS[0],
       });
@@ -222,17 +222,17 @@ describe("resolveRemoteOpenState", () => {
 
     it("omits the username when the server advertises none", () => {
       expect(
-        resolveOverBearer("http://192.168.1.153:3773", [
+        resolveOverBearer("http://192.168.1.50:3773", [
           { kind: "mdns", host: "sol.local", sshd: true },
         ]),
       ).toEqual({
         mode: "remote-links",
-        host: { kind: "connection", host: "192.168.1.153" },
+        host: { kind: "connection", host: "192.168.1.50" },
       });
     });
 
     it("covers a browser served by the server over the LAN", () => {
-      const target = primaryTarget("http://192.168.1.153:3773");
+      const target = primaryTarget("http://192.168.1.50:3773");
       expect(
         resolveRemoteOpenState({
           target,
@@ -243,12 +243,12 @@ describe("resolveRemoteOpenState", () => {
         }),
       ).toEqual({
         mode: "remote-links",
-        host: { kind: "connection", host: "192.168.1.153", username: "dev" },
+        host: { kind: "connection", host: "192.168.1.50", username: "dev" },
       });
     });
 
     it("lets an SSH profile alias win over a direct route", () => {
-      const route = bearerRoute("http://192.168.1.153:3773");
+      const route = bearerRoute("http://192.168.1.50:3773");
       expect(
         resolveRemoteOpenState({
           target: new SshConnectionTarget({ environmentId, label: "sol", connectionId: "ssh-1" }),
@@ -274,7 +274,7 @@ describe("resolveRemoteOpenState", () => {
     });
 
     it("follows the route the client is connected on, not the first saved one", () => {
-      const lan = bearerRoute("http://192.168.1.153:3773");
+      const lan = bearerRoute("http://192.168.1.50:3773");
       const tailnet = bearerRoute("https://sol.tail1234.ts.net");
       const entry = {
         target: lan.target,
