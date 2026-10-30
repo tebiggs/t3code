@@ -76,6 +76,19 @@ export const PhoneServerSettings = Schema.Struct({
 export type PhoneServerSettings = typeof PhoneServerSettings.Type;
 
 /**
+ * Sharing the phone's server, saved before each change so unfinished work can be picked up. It
+ * stands apart from PhoneServerSettings because it has to outlive the phone's connection.
+ */
+export const PhoneSharingRecord = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** The T3 Connect account listing the phone. */
+  accountId: Schema.NullOr(Schema.String),
+  /** on: shared. stopping: the server's tunnel and sessions must go. listed: only the listing. */
+  phase: Schema.Literals(["on", "stopping", "listed"]),
+});
+export type PhoneSharingRecord = typeof PhoneSharingRecord.Type;
+
+/**
  * The page each workspace tab last showed, reopened when the tab returns with columns. `key` is
  * that page's route key: reopening under the same key reuses the screen a tab kept mounted.
  */
@@ -109,6 +122,7 @@ const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const isEnvironmentPowerPreferences = Schema.is(EnvironmentPowerPreferences);
 const isPhoneServerSettings = Schema.is(PhoneServerSettings);
+const isPhoneSharingRecord = Schema.is(PhoneSharingRecord);
 const ThreadProject = Schema.Struct({
   environmentId: Schema.NonEmptyString,
   projectId: Schema.NonEmptyString,
@@ -160,6 +174,7 @@ export interface Preferences {
   readonly environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
   /** Null once the phone environment is removed. */
   readonly phoneServer?: PhoneServerSettings | null;
+  readonly phoneSharing?: PhoneSharingRecord | null;
   readonly workspaceSelections?: WorkspaceSelections;
 }
 
@@ -239,6 +254,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     pullRequestListFilters?: PullRequestListPreferences;
     environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
     phoneServer?: PhoneServerSettings;
+    phoneSharing?: PhoneSharingRecord;
     workspaceSelections?: WorkspaceSelections;
   } = {};
 
@@ -397,6 +413,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   // A Termux-era server isn't one this app can start, so its settings are dropped.
   if (isPhoneServerSettings(parsed.phoneServer) && parsed.phoneServer.host === "device") {
     preferences.phoneServer = parsed.phoneServer;
+  }
+  if (isPhoneSharingRecord(parsed.phoneSharing)) {
+    preferences.phoneSharing = parsed.phoneSharing;
   }
   if (isWorkspaceSelections(parsed.workspaceSelections)) {
     preferences.workspaceSelections = parsed.workspaceSelections;

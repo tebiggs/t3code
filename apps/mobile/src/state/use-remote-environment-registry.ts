@@ -101,6 +101,8 @@ const savedConnectionsByIdAtom = Atom.make((get) => {
   ) as Record<EnvironmentId, SavedRemoteConnection>;
 }).pipe(Atom.withLabel("mobile:saved-connections-by-id"));
 
+export const savedRemoteConnectionAtom = remoteEnvironmentProjections.savedConnectionAtom;
+
 export function useSavedRemoteConnections() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const savedConnectionsById = useAtomValue(savedConnectionsByIdAtom);
@@ -180,6 +182,75 @@ export function useRemoteConnections() {
         void controller.removeEnvironment(environmentId);
       },
     } as const;
+    // First: a shared phone also has a relay route, and that mustn't skip stopping its share.
+    if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
+      // Removing only the connection would leave the server running on the phone with a wake
+      // lock and nothing in the app pointing at it, so a failed stop keeps everything.
+      const forget = () => {
+        setPhoneServerSettings(null);
+        void controller.removeEnvironment(environmentId);
+      };
+      // Forgetting the connection would leave no way to reach a shared server's tunnel.
+      const forgetPhone = async () => {
+        const sharing = await import("../features/phone/phone-sharing-commands");
+        const stillSharing = await sharing.stopPhoneSharingBeforeForgetting();
+        if (stillSharing === null) {
+          forget();
+          return;
+        }
+        Dialog.alert(
+          "Couldn't confirm sharing is off",
+          `${stillSharing}\n\nRemove it anyway to finish this later: if this phone is connected again, T3 Code stops any sharing and signs out other devices then.`,
+          [
+            { text: "Keep", style: "cancel" },
+            { text: "Remove anyway", style: "destructive", onPress: forget },
+          ],
+        );
+      };
+      const stopThenForget = async () => {
+        // Auto-start would otherwise relaunch the server as soon as its connection drops.
+        const previous = appAtomRegistry.get(phoneServerSettingsAtom);
+        if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
+        try {
+          // Loaded on demand: the phone server pulls in the expo runtime.
+          const phoneServer = await import("../features/phone/phone-server");
+          const sharing = await import("../features/phone/phone-sharing-commands");
+          const stillSharing = await sharing.stopPhoneSharingBeforeForgetting();
+          if (stillSharing !== null) throw new Error(stillSharing);
+          await phoneServer.stopPhoneServerWhenSettled();
+          forget();
+        } catch (error) {
+          Dialog.alert(
+            "The server didn't stop",
+            `${error instanceof Error ? error.message : "It didn't stop."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server from its notification first.`,
+            [
+              {
+                text: "Keep",
+                style: "cancel",
+                onPress: () => {
+                  if (previous) setPhoneServerSettings(previous);
+                },
+              },
+              { text: "Remove anyway", style: "destructive", onPress: forget },
+            ],
+          );
+        }
+      };
+      Dialog.alert(
+        "Remove this phone?",
+        `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay on the phone; phone setup can connect them again.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Remove only", onPress: () => void forgetPhone() },
+          {
+            text: "Remove and stop server",
+            style: "destructive",
+            onPress: () => void stopThenForget(),
+          },
+        ],
+      );
+      return;
+    }
     if (environment.isRelayManaged) {
       Dialog.alert(
         "Remove from this device?",
@@ -196,54 +267,6 @@ export function useRemoteConnections() {
               ]
             : []),
           remove,
-        ],
-      );
-      return;
-    }
-    if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
-      // Removing only the connection would leave the server running on the phone with a wake
-      // lock and nothing in the app pointing at it, so a failed stop keeps everything.
-      const forgetPhone = () => {
-        setPhoneServerSettings(null);
-        void controller.removeEnvironment(environmentId);
-      };
-      const stopThenForget = async () => {
-        // Auto-start would otherwise relaunch the server as soon as its connection drops.
-        const previous = appAtomRegistry.get(phoneServerSettingsAtom);
-        if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
-        try {
-          // Loaded on demand: the phone server pulls in the expo runtime.
-          const phoneServer = await import("../features/phone/phone-server");
-          await phoneServer.stopPhoneServerWhenSettled();
-          forgetPhone();
-        } catch (error) {
-          Dialog.alert(
-            "The server didn't stop",
-            `${error instanceof Error ? error.message : "It didn't stop."}\n\n${environment.environmentLabel} is still saved. Remove it anyway, or stop the server from its notification first.`,
-            [
-              {
-                text: "Keep",
-                style: "cancel",
-                onPress: () => {
-                  if (previous) setPhoneServerSettings(previous);
-                },
-              },
-              { text: "Remove anyway", style: "destructive", onPress: forgetPhone },
-            ],
-          );
-        }
-      };
-      Dialog.alert(
-        "Remove this phone?",
-        `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay on the phone; phone setup can connect them again.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Remove only", onPress: forgetPhone },
-          {
-            text: "Remove and stop server",
-            style: "destructive",
-            onPress: () => void stopThenForget(),
-          },
         ],
       );
       return;

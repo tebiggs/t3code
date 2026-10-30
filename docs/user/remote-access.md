@@ -35,7 +35,7 @@ disconnect an otherwise healthy conversation.
 ### More machines with T3 Chat
 
 Each T3 Connect account can link up to 3 machines. Phones and browsers do not
-count. A paid T3 Chat plan raises the limit to 10 machines with Pro, or 100 with
+count, unless the phone shares a server of its own. A paid T3 Chat plan raises the limit to 10 machines with Pro, or 100 with
 Premier.
 
 To link T3 Chat, open your account menu on the web or desktop app, go to

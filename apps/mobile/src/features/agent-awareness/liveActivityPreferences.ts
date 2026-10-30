@@ -3,6 +3,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
+import { phoneServerPort } from "../phone/phone-setup";
 import { updateAgentAwarenessRegistrationPreferences } from "./remoteRegistration";
 
 export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEnabled")(
@@ -12,9 +13,16 @@ export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEn
     readonly clerkToken: string | null;
     readonly connections: ReadonlyArray<SavedRemoteConnection>;
     readonly canConfigureEnvironment: (environmentId: EnvironmentId) => boolean;
+    readonly phoneServerEnvironmentId: EnvironmentId | null;
   }) {
+    // Linking gives a server a tunnel, so the phone's own server is linked only by its share
+    // switch. displayUrl follows the preferred route, which may not be the loopback one.
     const linkedConnections = input.connections.filter(
-      (connection) => connection.bearerToken !== null,
+      (connection) =>
+        connection.bearerToken !== null &&
+        connection.environmentId !== input.phoneServerEnvironmentId &&
+        phoneServerPort(connection.displayUrl) === null &&
+        phoneServerPort(connection.httpBaseUrl) === null,
     );
 
     const updateEnvironmentPreference = Effect.fn("updateEnvironmentPreference")(function* (

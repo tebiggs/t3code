@@ -36,6 +36,7 @@ import { refreshManagedRelayEnvironments } from "../cloud/managedRelayState";
 import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/publicConfig";
 import { makePermissionStatusAtom } from "../../lib/permissionStatusAtom";
 import { runtime } from "../../lib/runtime";
+import { usePhoneServerSettings } from "../../state/phone-server-settings";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
@@ -147,6 +148,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     AsyncResult.isSuccess(preferencesResult) &&
     preferencesResult.value.liveActivitiesEnabled !== false;
 
+  const phoneServerEnvironmentId = usePhoneServerSettings()?.environmentId ?? null;
   const connections = Object.values(savedConnectionsById);
   const environmentCount = connections.length;
 
@@ -274,6 +276,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
         setLiveActivityUpdatesEnabled({
           canConfigureEnvironment: (environmentId) =>
             readEnvironmentScope(environmentId, AuthRelayWriteScope),
+          phoneServerEnvironmentId,
           enabled: true,
           previousEnabled: liveActivitiesPreferenceEnabled,
           clerkToken: tokenResult.value,
@@ -353,6 +356,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
         setLiveActivityUpdatesEnabled({
           canConfigureEnvironment: (environmentId) =>
             readEnvironmentScope(environmentId, AuthRelayWriteScope),
+          phoneServerEnvironmentId,
           enabled: false,
           previousEnabled: liveActivitiesPreferenceEnabled,
           clerkToken: token,

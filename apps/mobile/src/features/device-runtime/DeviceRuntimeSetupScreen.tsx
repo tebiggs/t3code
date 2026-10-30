@@ -16,6 +16,8 @@ import {
   forgetPhoneEnvironments,
   stopPhoneServerWhenSettled,
 } from "../phone/phone-server";
+import { releasePhoneSharing } from "../phone/phone-sharing-commands";
+import { PhoneSharingSection } from "../phone/PhoneSharingSection";
 import { StepRow, StepText } from "../phone/SetupStep";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
@@ -160,11 +162,13 @@ export function DeviceRuntimeSetupScreen() {
           style: "destructive",
           onPress: () =>
             void run("install", async () => {
+              const stillListed = await releasePhoneSharing();
               await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();
               setInspection(null);
               await installRuntime();
+              if (stillListed) setError(stillListed);
             }),
         },
       ],
@@ -181,9 +185,11 @@ export function DeviceRuntimeSetupScreen() {
           onPress: () =>
             void run("remove", async () => {
               if (settings) setPhoneServerSettings({ ...settings, autoStart: false });
+              const stillListed = await releasePhoneSharing();
               await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();
+              if (stillListed) Dialog.alert("Removed from this phone", stillListed);
               navigation.goBack();
             }),
         },
@@ -293,6 +299,10 @@ export function DeviceRuntimeSetupScreen() {
           <Text selectable className="px-2 text-sm text-danger-foreground">
             {error}
           </Text>
+        ) : null}
+
+        {connected && settings ? (
+          <PhoneSharingSection environmentId={settings.environmentId} />
         ) : null}
 
         {status.installed ? (
