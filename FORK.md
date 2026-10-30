@@ -49,3 +49,6 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/mobile/src/features/device-runtime/`,
   `apps/mobile/src/features/phone/`,
   `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`).
+- #21 Open in VS Code and other SSH editor links use the host the client reached directly when
+  sshd is listening, instead of the server's first advertised host: `apps/web/src/remoteOpen.ts`,
+  `apps/server/src/environment/RemoteOpenTargets.ts` (`sshd`).

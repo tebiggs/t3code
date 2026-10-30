@@ -226,6 +226,8 @@ export const RemoteOpenTarget = Schema.Struct({
   kind: RemoteOpenTargetKind,
   host: TrimmedNonEmptyString,
   username: Schema.optionalKey(TrimmedNonEmptyString),
+  /** A listening sshd serves this host, so SSH also answers on the host's other addresses. */
+  sshd: Schema.optionalKey(Schema.Literal(true)),
 });
 export type RemoteOpenTarget = typeof RemoteOpenTarget.Type;
 
