@@ -1,50 +1,53 @@
-import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
-import {
-  deregisterManagedRelayEnvironment,
-  managedRelaySessionAtom,
-} from "@t3tools/client-runtime/relay";
-import { makeEnvironmentHttpApiClient, request, runStream } from "@t3tools/client-runtime/rpc";
-import { createRuntimeCommand, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import {
-  type EnvironmentCloudLinkStateResult,
-  type EnvironmentConnectReachability,
-  WS_METHODS,
+import { makeEnvironmentHttpApiClient } from "@t3tools/client-runtime/rpc";
+import type {
+  EnvironmentCloudLinkStateResult,
+  EnvironmentConnectReachability,
 } from "@t3tools/contracts";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+import * as Exit from "effect/Exit";
+import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
-import * as Stream from "effect/Stream";
-import { AsyncResult, type AtomRegistry } from "effect/reactivity";
 
-import { connectionAtomRuntime } from "../../connection/runtime";
 import type { SavedRemoteConnection } from "../../lib/connection";
-import { appAtomRegistry } from "../../state/atom-registry";
-import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
 
 export class PhoneSharingError extends Data.TaggedError("PhoneSharingError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
 
-/** Whether other devices on the user's T3 Connect account can reach the phone's server. */
+export const PHONE_STILL_LISTED =
+  "T3 Connect still lists this phone. Remove it under Settings > T3 Connect, signed in to the account it was shared with.";
+
+/** What the phone's server holds. Any link or tunnel config counts: only Off clears them. */
 export type PhoneSharing =
   | { readonly shared: false }
-  | { readonly shared: true; readonly reachability: EnvironmentConnectReachability | null };
+  | {
+      readonly shared: true;
+      /** T3 Connect refused the link. The server keeps its tunnel config until it's turned off. */
+      readonly revoked: boolean;
+      readonly cloudUserId: string | null;
+      readonly reachability: EnvironmentConnectReachability | null;
+    };
 
 export function phoneSharingFromLinkState(state: EnvironmentCloudLinkStateResult): PhoneSharing {
-  return state.linked && !state.linkRevoked && state.managedTunnelActive
-    ? { shared: true, reachability: state.reachability ?? null }
-    : { shared: false };
+  if (!state.linked && !state.managedTunnelActive) return { shared: false };
+  return {
+    shared: true,
+    revoked: state.linkRevoked === true,
+    cloudUserId: state.cloudUserId,
+    reachability: state.reachability ?? null,
+  };
 }
 
-// As `t3 connect` waits: a new tunnel's hostname takes a while to resolve.
+// `t3 connect` waits this long too: a new tunnel's hostname takes a while to resolve.
+const REACHABILITY_WAIT = Duration.seconds(60);
 const REACHABILITY_CHECK_TIMEOUT = Duration.seconds(30);
 const REACHABILITY_RETRY = Duration.seconds(5);
-const REACHABILITY_RETRIES = 11;
 
-const failWith = (message: string) => (cause: unknown) => new PhoneSharingError({ message, cause });
+export const failWith = (message: string) => (cause: unknown) =>
+  new PhoneSharingError({ message, cause });
 
 const phoneServerApi = Effect.fn("PhoneSharing.phoneServerApi")(function* (
   connection: SavedRemoteConnection,
@@ -56,7 +59,9 @@ const phoneServerApi = Effect.fn("PhoneSharing.phoneServerApi")(function* (
   return { api, headers: { authorization: `Bearer ${connection.bearerToken}` } };
 });
 
-const readSharing = Effect.fn("PhoneSharing.read")(function* (connection: SavedRemoteConnection) {
+export const readSharing = Effect.fn("PhoneSharing.read")(function* (
+  connection: SavedRemoteConnection,
+) {
   const { api, headers } = yield* phoneServerApi(connection);
   const state = yield* api.connect
     .linkState({ headers })
@@ -64,111 +69,76 @@ const readSharing = Effect.fn("PhoneSharing.read")(function* (connection: SavedR
   return phoneSharingFromLinkState(state);
 });
 
-/** cloudflared runs the tunnel; the phone's Ubuntu starts without it. */
-const ensureRelayClient = Effect.fn("PhoneSharing.ensureRelayClient")(function* (
+/** The latest result when the time is up; the link stands whatever this finds. */
+export const waitForReachability = Effect.fn("PhoneSharing.waitForReachability")(function* (
   connection: SavedRemoteConnection,
 ) {
-  const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-  const status = yield* registry
-    .run(connection.environmentId, request(WS_METHODS.cloudGetRelayClientStatus, {}))
-    .pipe(Effect.mapError(failWith("Couldn't check for the T3 Connect relay client.")));
-  if (status.status === "available") return;
-  if (status.status === "unsupported") {
-    return yield* new PhoneSharingError({
-      message: `T3 Connect has no relay client for ${status.platform}-${status.arch}.`,
-    });
-  }
-  const installed = yield* registry
-    .runStream(connection.environmentId, runStream(WS_METHODS.cloudInstallRelayClient, {}))
-    .pipe(
-      Stream.runLast,
-      Effect.mapError(failWith("Couldn't install the T3 Connect relay client.")),
-    );
-  if (
-    Option.isNone(installed) ||
-    installed.value.type !== "complete" ||
-    installed.value.status.status !== "available"
-  ) {
-    return yield* new PhoneSharingError({
-      message: "The T3 Connect relay client didn't install.",
-    });
-  }
-});
-
-export const readPhoneSharing = createRuntimeCommand(connectionAtomRuntime, {
-  label: "phone-server:read-sharing",
-  execute: readSharing,
-});
-
-/**
- * Links the phone's server to the signed-in T3 Connect account with a managed tunnel. The
- * server keeps listening on loopback; cloudflared reaches it there and connects out.
- */
-export const sharePhoneServer = createRuntimeCommand(connectionAtomRuntime, {
-  label: "phone-server:share",
-  execute: Effect.fn("PhoneSharing.share")(function* (input: {
-    readonly connection: SavedRemoteConnection;
-    readonly clerkToken: string;
-    readonly liveActivitiesEnabled: boolean;
-  }) {
-    yield* ensureRelayClient(input.connection);
-    yield* linkEnvironmentToCloudWithPreference(input).pipe(
-      Effect.mapError((cause) => new PhoneSharingError({ message: cause.message, cause })),
-    );
-    const { api, headers } = yield* phoneServerApi(input.connection);
-    // The link stands without a passing check; the last result says why devices can't connect.
-    const reachability = yield* api.connect.checkReachability({ headers }).pipe(
-      Effect.timeout(REACHABILITY_CHECK_TIMEOUT),
-      Effect.orElseSucceed(() => null),
-      Effect.repeat({
-        schedule: Schedule.spaced(REACHABILITY_RETRY),
-        until: (result) => result?.status === "reachable",
-        times: REACHABILITY_RETRIES,
-      }),
-    );
-    return { shared: true, reachability } satisfies PhoneSharing;
-  }),
-});
-
-/** Stops the tunnel on the phone, then removes the phone from the T3 Connect account. */
-export const stopSharingPhoneServer = createRuntimeCommand(connectionAtomRuntime, {
-  label: "phone-server:stop-sharing",
-  execute: Effect.fn("PhoneSharing.stop")(function* (
-    input: { readonly connection: SavedRemoteConnection; readonly accountId: string | null },
-    registry: AtomRegistry.AtomRegistry,
-  ) {
-    const { api, headers } = yield* phoneServerApi(input.connection);
-    yield* api.connect
-      .unlink({ headers })
-      .pipe(Effect.mapError(failWith("Couldn't stop sharing this phone.")));
-    if (input.accountId === null) return;
-    yield* deregisterManagedRelayEnvironment(registry, {
-      accountId: input.accountId,
-      environmentId: input.connection.environmentId,
-    }).pipe(
-      Effect.mapError(
-        failWith(
-          "Stopped sharing, but T3 Connect still lists this phone. Remove it in Settings under T3 Connect.",
-        ),
-      ),
-    );
-  }),
-});
-
-/**
- * Remove and Reinstall delete the server's link along with Ubuntu, so a shared phone comes off
- * the T3 Connect account first. Best effort: a server that isn't running can't be checked.
- */
-export async function releasePhoneSharing(connection: SavedRemoteConnection | null): Promise<void> {
-  if (connection === null) return;
-  const sharing = await runAtomCommand(appAtomRegistry, readPhoneSharing, connection, {
-    reportFailure: false,
-  });
-  if (!AsyncResult.isSuccess(sharing) || !sharing.value.shared) return;
-  await runAtomCommand(
-    appAtomRegistry,
-    stopSharingPhoneServer,
-    { connection, accountId: appAtomRegistry.get(managedRelaySessionAtom)?.accountId ?? null },
-    { reportFailure: false },
+  const { api, headers } = yield* phoneServerApi(connection);
+  const latest = yield* Ref.make<EnvironmentConnectReachability | null>(null);
+  yield* api.connect.checkReachability({ headers }).pipe(
+    Effect.tap((result) => Ref.set(latest, result)),
+    Effect.timeout(REACHABILITY_CHECK_TIMEOUT),
+    Effect.orElseSucceed(() => null),
+    Effect.repeat({
+      schedule: Schedule.spaced(REACHABILITY_RETRY),
+      until: (result) => result?.status === "reachable",
+    }),
+    Effect.timeoutOption(REACHABILITY_WAIT),
   );
-}
+  return yield* Ref.get(latest);
+});
+
+/** Stops the tunnel. Credentials that clients already hold outlive it. */
+export const unlinkServer = Effect.fn("PhoneSharing.unlinkServer")(function* (
+  connection: SavedRemoteConnection,
+) {
+  const { api, headers } = yield* phoneServerApi(connection);
+  yield* api.connect
+    .unlink({ headers })
+    .pipe(Effect.mapError(failWith("Couldn't stop sharing this phone.")));
+});
+
+/**
+ * Off ends access, not just the route to it: without this, a client that connected while the
+ * phone was shared would get back in if sharing came on again, even under another account.
+ */
+const revokeOtherAccess = Effect.fn("PhoneSharing.revokeOtherAccess")(function* <E, R>(
+  connection: SavedRemoteConnection,
+  pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E, R>,
+) {
+  const { api, headers } = yield* phoneServerApi(connection);
+  yield* api.auth.revokeOtherClients({ headers });
+  const ids = yield* pairingLinkIds;
+  yield* Effect.forEach(ids, (id) => api.auth.revokePairingLink({ headers, payload: { id } }), {
+    discard: true,
+  });
+});
+
+/** Each step runs even when the one before it failed, so one failure can't leave access open. */
+export const stopServerSharing = Effect.fn("PhoneSharing.stopServerSharing")(function* <
+  E1,
+  R1,
+  E2,
+  R2,
+>(
+  connection: SavedRemoteConnection,
+  steps: {
+    readonly pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E1, R1>;
+    readonly deregister: Effect.Effect<void, E2, R2>;
+  },
+) {
+  yield* unlinkServer(connection);
+  // Exits, not typed failures: a defect in one step must not skip the next either.
+  const revoked = yield* Effect.exit(revokeOtherAccess(connection, steps.pairingLinkIds));
+  const deregistered = yield* Effect.exit(steps.deregister);
+  if (Exit.isFailure(revoked)) {
+    yield* Effect.logWarning("Couldn't sign out the phone's other clients", revoked.cause);
+    return yield* new PhoneSharingError({
+      message: "The tunnel is off, but other devices couldn't be signed out. Try again.",
+    });
+  }
+  if (Exit.isFailure(deregistered)) {
+    yield* Effect.logWarning("Couldn't deregister the phone", deregistered.cause);
+    return yield* new PhoneSharingError({ message: PHONE_STILL_LISTED });
+  }
+});

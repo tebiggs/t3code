@@ -101,6 +101,8 @@ const savedConnectionsByIdAtom = Atom.make((get) => {
   ) as Record<EnvironmentId, SavedRemoteConnection>;
 }).pipe(Atom.withLabel("mobile:saved-connections-by-id"));
 
+export const savedRemoteConnectionAtom = remoteEnvironmentProjections.savedConnectionAtom;
+
 export function useSavedRemoteConnections() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const savedConnectionsById = useAtomValue(savedConnectionsByIdAtom);

@@ -16,6 +16,7 @@ import {
 } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
 import { deviceRuntime, deviceServer } from "../device-runtime/device-runtime";
+import { finishPendingSharingStop } from "./phone-sharing-commands";
 import { phoneServerPort } from "./phone-setup";
 
 // The first start migrates a fresh database inside proot, which is slow on a phone.
@@ -177,6 +178,9 @@ export async function connectPhoneServer(port: number): Promise<EnvironmentId> {
     port,
     autoStart: previous?.autoStart ?? true,
     host: "device",
+    ...(previous?.environmentId === environmentId && previous.sharing
+      ? { sharing: previous.sharing }
+      : {}),
   });
   await retireOtherPhoneEnvironments(environmentId);
   return environmentId;
@@ -273,6 +277,12 @@ export function usePhoneServerWorker() {
   useEffect(() => {
     if (deviceRuntime !== null && down) void autoStartPhoneServer();
   }, [down]);
+  const connected = phone?.connectionState === "connected";
+  const pendingSharingStop = settings?.sharing?.pendingStop === true;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- ends sharing that a sign-out couldn't, as soon as the server answers
+  useEffect(() => {
+    if (connected && pendingSharingStop) void finishPendingSharingStop();
+  }, [connected, pendingSharingStop]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the app returning to the foreground
   useEffect(() => {
     if (deviceRuntime === null) return;

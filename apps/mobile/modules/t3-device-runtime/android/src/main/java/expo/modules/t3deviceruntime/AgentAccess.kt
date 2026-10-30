@@ -32,9 +32,9 @@ enum class AccessPolicy(val id: String) {
 class AccessCategory(val id: String, val label: String, val commands: List<String>, val permissions: List<String>)
 
 /**
- * The user's policy per category. Claude Code enforces it through managed settings in the
- * guest: ask rules prompt even in bypassPermissions mode, and T3 shows the prompt in the
- * thread. A rule only matches how a command is written, so the bridge refuses denied ones too.
+ * The user's policy per category, enforced by the bridge, outside the guest. Never refuses and
+ * Ask prompts on the phone, for any provider and however the command is written. Claude Code's
+ * managed settings add allow and deny rules so it doesn't ask again or try a refused command.
  */
 object AgentAccess {
   val categories = listOf(
@@ -133,7 +133,10 @@ object AgentAccess {
     for (list in AccessPolicy.entries) {
       val existing = permissions.optJSONArray(list.id) ?: JSONArray()
       val kept = (0 until existing.length()).map { existing.get(it) }.filterNot { it is String && it in ours }
-      val added = categories.filter { policy(context, it) == list }.flatMap(::rules)
+      // An ask rule would only add a thread prompt, which a remote client can answer.
+      val added =
+        if (list == AccessPolicy.Ask) emptyList()
+        else categories.filter { policy(context, it) == list }.flatMap(::rules)
       if (kept.isEmpty() && added.isEmpty()) permissions.remove(list.id)
       else permissions.put(list.id, JSONArray(kept + added))
     }

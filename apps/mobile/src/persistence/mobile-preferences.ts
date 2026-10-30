@@ -72,6 +72,14 @@ export const PhoneServerSettings = Schema.Struct({
   autoStart: Schema.Boolean,
   /** Marks settings from the in-app runtime; the retired Termux setup's had no host. */
   host: Schema.optional(Schema.Literal("device")),
+  /** The T3 Connect account listing this phone, until it's deregistered. */
+  sharing: Schema.optional(
+    Schema.Struct({
+      accountId: Schema.String,
+      /** Signed out while the server was down: stop sharing when it's next reachable. */
+      pendingStop: Schema.optional(Schema.Boolean),
+    }),
+  ),
 });
 export type PhoneServerSettings = typeof PhoneServerSettings.Type;
 

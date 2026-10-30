@@ -88,6 +88,7 @@ describe("liveActivityPreferences", () => {
           clerkToken: "clerk-token",
           connections: [connection],
           canConfigureEnvironment: () => true,
+          phoneServerEnvironmentId: null,
         }),
       );
 
@@ -123,15 +124,32 @@ describe("liveActivityPreferences", () => {
       httpBaseUrl: "http://127.0.0.1:3774/",
       wsBaseUrl: "ws://127.0.0.1:3774/ws",
     };
+    // A relay route preferred over the loopback one that's in use.
+    const phoneOnFallback: SavedRemoteConnection = {
+      ...phoneConnection,
+      environmentId: "phone-fallback" as EnvironmentId,
+      displayUrl: "https://phone.example.test/",
+    };
+    const configuredPhone: SavedRemoteConnection = {
+      ...connection,
+      environmentId: "configured-phone" as EnvironmentId,
+    };
 
     return Effect.gen(function* () {
       yield* setLiveActivityUpdatesEnabled({
         enabled: true,
         previousEnabled: false,
         clerkToken: "clerk-token",
-        connections: [readOnlyConnection, phoneConnection, connection],
+        connections: [
+          readOnlyConnection,
+          phoneConnection,
+          phoneOnFallback,
+          configuredPhone,
+          connection,
+        ],
         canConfigureEnvironment: (environmentId) =>
           environmentId !== readOnlyConnection.environmentId,
+        phoneServerEnvironmentId: configuredPhone.environmentId,
       });
 
       expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenCalledWith({
@@ -160,6 +178,7 @@ describe("liveActivityPreferences", () => {
         clerkToken: "clerk-token",
         connections: [connection],
         canConfigureEnvironment: () => canConfigureEnvironment,
+        phoneServerEnvironmentId: null,
       });
 
       expect(linkEnvironmentToCloudWithPreference).not.toHaveBeenCalled();

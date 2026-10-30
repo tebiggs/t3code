@@ -51,7 +51,11 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`).
 - #19 The phone's server can be shared with the user's other devices through
   T3 Connect: the app installs cloudflared in the phone's Ubuntu and links the
-  server with its own T3 Connect sign-in, and Ongoing activity skips the
-  phone's server: `apps/mobile/src/features/phone/phone-sharing.ts`,
+  server with its own T3 Connect sign-in. Off and signing out end the tunnel and
+  other clients' sessions, Ongoing activity skips the phone's server, and the
+  Android bridge asks on the phone for each Ask each time command:
+  `apps/mobile/src/features/phone/phone-sharing.ts`,
+  `apps/mobile/src/features/phone/phone-sharing-commands.ts`,
   `apps/mobile/src/features/phone/PhoneSharingSection.tsx`,
-  `apps/mobile/src/features/agent-awareness/liveActivityPreferences.ts`.
+  `apps/mobile/src/features/agent-awareness/liveActivityPreferences.ts`,
+  `apps/mobile/modules/t3-device-runtime/android/src/main/java/expo/modules/t3deviceruntime/AccessApproval.kt`.

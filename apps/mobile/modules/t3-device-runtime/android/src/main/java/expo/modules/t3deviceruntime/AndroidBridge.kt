@@ -236,9 +236,11 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     val bytes = readBody(input, request.headers, deadline)
     val body = if (bytes.isEmpty()) JSONObject() else JSONObject(String(bytes, Charsets.UTF_8))
     Log.i(TAG, "Android bridge: $command")
-    AgentAccess.check(context, command)?.let {
-      requireGranted(it)
-      // The user can choose Never while Android's prompt waits for an answer.
+    AgentAccess.check(context, command)?.let { category ->
+      requireGranted(category)
+      // The user can choose Never while a prompt waits for an answer.
+      AgentAccess.check(context, command)
+      requireApproval(category, command, body)
       AgentAccess.check(context, command)
     }
     if (command in WAITING_COMMANDS) return perform(command, body)
@@ -404,6 +406,34 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   }
 
   /** The user let the agent run this, or always allows it; Android still has to let T3 Code. */
+  /**
+   * Ask each time is decided here, on the phone. Anything that can reach the guest, a remote
+   * client's terminal included, can skip a command's spelling and call this bridge directly.
+   */
+  private fun requireApproval(category: AccessCategory, command: String, body: JSONObject) {
+    if (AgentAccess.policy(context, category) != AccessPolicy.Ask) return
+    val label = category.label
+    val notificationId = requestIds.incrementAndGet()
+    val approved = AccessApproval.request(
+      context,
+      category,
+      command,
+      approvalDetails(body),
+      show = { intent ->
+        if (onScreen()) {
+          context.startActivity(intent)
+        } else {
+          val tap = PendingIntent.getActivity(context, notificationId, intent, PendingIntent.FLAG_IMMUTABLE)
+          notify(REQUEST_CHANNEL, REQUEST_TAG, notificationId, "Allow $label?", "An agent wants to run termux-$command. Tap to answer.", tap)
+        }
+      },
+      dismiss = { notificationManager().cancel(REQUEST_TAG, notificationId) },
+    )
+    if (!approved) {
+      throw BridgeError("The user didn't allow termux-$command on the phone. ${AgentAccess.where(category)} controls this.", 403)
+    }
+  }
+
   private fun requireGranted(category: AccessCategory) {
     if (AgentAccess.granted(context, category)) return
     val label = category.label
@@ -566,7 +596,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     /** Starts the bridge and installs its commands in the guest; without it the server runs anyway. */
     fun start(context: Context): AndroidBridge? = try {
       val rootfs = DeviceRuntime(context) {}.rootfs
-      // Without the access rules agents would reach phone data unasked, so no rules, no bridge.
+      // Claude Code's rules have to match the user's policy, so no rules, no bridge.
       AgentAccess.writeManagedSettings(context, rootfs)
       installCommands(context, rootfs)
       installGuide(context, rootfs)

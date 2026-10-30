@@ -37,6 +37,11 @@
 
   <application>
     <activity
+      android:name="expo.modules.t3deviceruntime.AccessApprovalActivity"
+      android:exported="false"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    <activity
       android:name="expo.modules.t3deviceruntime.AccessPromptActivity"
       android:exported="false"
       android:excludeFromRecents="true"
