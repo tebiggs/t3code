@@ -49,3 +49,9 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/mobile/src/features/device-runtime/`,
   `apps/mobile/src/features/phone/`,
   `apps/mobile/src/persistence/mobile-preferences.ts` (`phoneServer`).
+- #19 The phone's server can be shared with the user's other devices through
+  T3 Connect: the app installs cloudflared in the phone's Ubuntu and links the
+  server with its own T3 Connect sign-in, and Ongoing activity skips the
+  phone's server: `apps/mobile/src/features/phone/phone-sharing.ts`,
+  `apps/mobile/src/features/phone/PhoneSharingSection.tsx`,
+  `apps/mobile/src/features/agent-awareness/liveActivityPreferences.ts`.
