@@ -61,6 +61,7 @@ export const make = Effect.gen(function* () {
         kind: "tailscale",
         host: magicDnsName,
         ...(username === null ? {} : { username }),
+        sshd: true,
       });
     }
 
@@ -72,6 +73,7 @@ export const make = Effect.gen(function* () {
         kind: "mdns",
         host: `${shortHostname}.local`,
         ...(username === null ? {} : { username }),
+        sshd: true,
       });
     }
 
