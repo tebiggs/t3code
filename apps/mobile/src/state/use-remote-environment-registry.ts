@@ -199,8 +199,8 @@ export function useRemoteConnections() {
           return;
         }
         Dialog.alert(
-          "This phone is still shared",
-          `${stillSharing}\n\nRemove it anyway to finish this later: sharing stops when this phone is connected again.`,
+          "Couldn't confirm sharing is off",
+          `${stillSharing}\n\nRemove it anyway to finish this later: if this phone is connected again, T3 Code stops any sharing and signs out other devices then.`,
           [
             { text: "Keep", style: "cancel" },
             { text: "Remove anyway", style: "destructive", onPress: forget },

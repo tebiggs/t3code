@@ -61,6 +61,21 @@ internal object AccessApproval {
   ): Boolean {
     // Requests wait on bridge connections, which unrelated commands need too.
     if (!slots.tryAcquire()) throw BridgeError("Too many requests are waiting for an answer on the phone.", 429)
+    try {
+      return waitForAnswer(context, category, command, details, show, dismiss)
+    } finally {
+      slots.release()
+    }
+  }
+
+  private fun waitForAnswer(
+    context: Context,
+    category: AccessCategory,
+    command: String,
+    details: String,
+    show: (Intent) -> Unit,
+    dismiss: () -> Unit,
+  ): Boolean {
     val id = UUID.randomUUID().toString()
     val waiting = waitingFor(category, command, details)
     pending[id] = waiting
@@ -79,7 +94,6 @@ internal object AccessApproval {
       pending.remove(id)
       // Closes a prompt that's still open, so a late tap can't look like it counted.
       waiting.answer.complete(false)
-      slots.release()
       dismiss()
     }
   }

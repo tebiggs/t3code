@@ -8,7 +8,7 @@ const STOP_UNFINISHED =
   "Sharing hasn't finished stopping: other devices may still have access. T3 Code tries again when this phone's server answers.";
 
 export interface PhoneSharingEffects {
-  /** Resolves once saved preferences are loaded, so a decision never reads an empty record. */
+  /** Resolves once saved preferences are loaded, and rejects if they can't be. */
   readonly hydrated: () => Promise<void>;
   readonly loadRecord: () => PhoneSharingRecord | null;
   /** Rejects when the record couldn't be saved. */
@@ -33,12 +33,16 @@ export interface PhoneSharingEffects {
  */
 export function createPhoneSharingController(effects: PhoneSharingEffects) {
   let queue: Promise<unknown> = Promise.resolve();
+  // A stop asked for before the record could be read, which a later task has to honour.
+  let stopOwed = false;
   const enqueue = (task: () => Promise<string | null>): Promise<string | null> => {
     const run = queue.then(async () => {
-      await effects.hydrated();
-      return task().catch((error: unknown) =>
-        error instanceof Error ? error.message : "Couldn't update phone sharing.",
-      );
+      try {
+        await effects.hydrated();
+        return await task();
+      } catch (error) {
+        return error instanceof Error ? error.message : "Couldn't update phone sharing.";
+      }
     });
     queue = run;
     return run;
@@ -120,11 +124,14 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
       }),
 
     /** Off, and signing out or switching accounts. Null when nothing is left to do. */
-    stop: () =>
-      enqueue(async () => {
+    stop: () => {
+      stopOwed = true;
+      return enqueue(async () => {
         await markStopping();
+        stopOwed = false;
         return settle();
-      }),
+      });
+    },
 
     /**
      * Retries unfinished work. Also ends a share that a killed app left behind, either half set
@@ -132,6 +139,10 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
      */
     reconcile: () =>
       enqueue(async () => {
+        if (stopOwed) {
+          await markStopping();
+          stopOwed = false;
+        }
         const record = effects.loadRecord();
         if (record?.phase === "on") {
           const account = effects.signedInAccount();

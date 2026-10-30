@@ -247,6 +247,25 @@ describe("createPhoneSharingController", () => {
     expect(state.record).toBeNull();
   });
 
+  it("keeps a sign-out's stop when saved preferences can't load, and honours it later", async () => {
+    let loaded = false;
+    const { state, controller, stopOnServer } = setup(null, async () => {
+      if (!loaded) throw new Error("storage busy");
+    });
+    state.account = null;
+
+    // The share only shows up once the record can be read.
+    expect(await controller.stop()).toBe("storage busy");
+    expect(stopOnServer).not.toHaveBeenCalled();
+
+    loaded = true;
+    state.record = on;
+    state.sharing = shared("user_a");
+    expect(await controller.reconcile()).toBe(PHONE_STILL_LISTED);
+    expect(stopOnServer).toHaveBeenCalledOnce();
+    expect(state.record?.phase).toBe("listed");
+  });
+
   it("reads and does nothing until saved preferences are loaded", async () => {
     let hydrate = () => {};
     let entered = () => {};

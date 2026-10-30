@@ -37,7 +37,7 @@ import {
 import { createPhoneSharingController } from "./phone-sharing-controller";
 
 const PAIRING_LINKS_TIMEOUT = Duration.seconds(10);
-const HYDRATION_TIMEOUT = Duration.seconds(10);
+const SAVE_TIMEOUT = Duration.seconds(10);
 // A deadline per step keeps one stalled call from holding up every later stop, sign-out included.
 const RELAY_CLIENT_TIMEOUT = Duration.minutes(5);
 const LINK_TIMEOUT = Duration.seconds(60);
@@ -147,11 +147,12 @@ const failureText = (
 };
 
 const controller = createPhoneSharingController({
+  // No deadline: deciding before the record loads would read a saved share as no share at all.
   hydrated: () =>
     Effect.runPromise(
       AtomRegistry.getResult(appAtomRegistry, mobilePreferencesAtom, {
         suspendOnWaiting: true,
-      }).pipe(Effect.timeoutOption(HYDRATION_TIMEOUT), Effect.ignore),
+      }).pipe(Effect.asVoid),
     ),
   loadRecord: () => appAtomRegistry.get(phoneSharingRecordAtom),
   saveRecord: async (record) => {
@@ -159,7 +160,7 @@ const controller = createPhoneSharingController({
     await Effect.runPromise(
       AtomRegistry.getResult(appAtomRegistry, updateMobilePreferencesAtom, {
         suspendOnWaiting: true,
-      }),
+      }).pipe(Effect.timeout(SAVE_TIMEOUT)),
     );
   },
   phoneEnvironmentId: () => appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId ?? null,
