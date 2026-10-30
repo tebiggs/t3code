@@ -266,6 +266,27 @@ describe("createPhoneSharingController", () => {
     expect(state.record?.phase).toBe("listed");
   });
 
+  it("settles an owed stop before a new share, so it can't end that share later", async () => {
+    const { state, controller, stopOnServer } = setup();
+    state.connected = false;
+    state.saveFailure = "storage busy";
+    expect(await controller.stop()).toBe("storage busy");
+
+    state.connected = true;
+    state.saveFailure = null;
+    const link = vi.fn(async () => {
+      state.sharing = shared("user_a");
+      return null;
+    });
+    expect(await controller.share(connection, "user_a", link)).toBeNull();
+    expect(link).toHaveBeenCalledOnce();
+    expect(stopOnServer).not.toHaveBeenCalled();
+
+    expect(await controller.reconcile()).toBeNull();
+    expect(stopOnServer).not.toHaveBeenCalled();
+    expect(state.record?.phase).toBe("on");
+  });
+
   it("reads and does nothing until saved preferences are loaded", async () => {
     let hydrate = () => {};
     let entered = () => {};

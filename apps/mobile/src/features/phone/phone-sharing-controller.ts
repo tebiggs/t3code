@@ -35,6 +35,11 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
   let queue: Promise<unknown> = Promise.resolve();
   // A stop asked for before the record could be read, which a later task has to honour.
   let stopOwed = false;
+  const honourOwedStop = async () => {
+    if (!stopOwed) return;
+    await markStopping();
+    stopOwed = false;
+  };
   const enqueue = (task: () => Promise<string | null>): Promise<string | null> => {
     const run = queue.then(async () => {
       try {
@@ -107,6 +112,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
       link: () => Promise<string | null>,
     ) =>
       enqueue(async () => {
+        await honourOwedStop();
         const unfinished = await settle();
         if (effects.loadRecord()?.phase === "stopping") return unfinished ?? STOP_UNFINISHED;
         const sharing = await effects.readSharing(connection);
@@ -139,10 +145,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
      */
     reconcile: () =>
       enqueue(async () => {
-        if (stopOwed) {
-          await markStopping();
-          stopOwed = false;
-        }
+        await honourOwedStop();
         const record = effects.loadRecord();
         if (record?.phase === "on") {
           const account = effects.signedInAccount();

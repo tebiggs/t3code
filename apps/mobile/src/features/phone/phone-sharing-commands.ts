@@ -26,6 +26,7 @@ import {
 } from "../../state/phone-server-settings";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { savedRemoteConnectionAtom } from "../../state/use-remote-environment-registry";
+import { workspaceConnections } from "../../state/workspace";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
 import {
   failWith,
@@ -35,6 +36,7 @@ import {
   waitForReachability,
 } from "./phone-sharing";
 import { createPhoneSharingController } from "./phone-sharing-controller";
+import { phoneServerPort } from "./phone-setup";
 
 const PAIRING_LINKS_TIMEOUT = Duration.seconds(10);
 const SAVE_TIMEOUT = Duration.seconds(10);
@@ -163,7 +165,13 @@ const controller = createPhoneSharingController({
       }).pipe(Effect.timeout(SAVE_TIMEOUT)),
     );
   },
-  phoneEnvironmentId: () => appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId ?? null,
+  // Preferences that fail to load read as empty, so a connection can identify the phone too.
+  phoneEnvironmentId: () =>
+    appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId ??
+    appAtomRegistry
+      .get(workspaceConnections.environmentsAtom)
+      .find((environment) => phoneServerPort(environment.displayUrl) !== null)?.environmentId ??
+    null,
   connectionFor: (environmentId) => appAtomRegistry.get(savedRemoteConnectionAtom(environmentId)),
   signedInAccount: () => appAtomRegistry.get(managedRelaySessionAtom)?.accountId ?? null,
   readSharing: async (connection) => {
