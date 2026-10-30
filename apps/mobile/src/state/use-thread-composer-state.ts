@@ -28,8 +28,10 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  EMPTY_THREAD_HISTORY_META,
   parseCodexFeedbackCommand,
   submitCodexFeedback,
+  threadOldestLoadedAt,
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -111,6 +113,7 @@ const EMPTY_QUEUE_WORKFLOW_ATOM = Atom.make<null>(null).pipe(
 );
 const EMPTY_CHECKPOINT_SUMMARIES_ATOM = Atom.make<ReadonlyArray<ThreadCheckpointSummary>>([]);
 const EMPTY_THREAD_SEQUENCE_ATOM = Atom.make(0);
+const EMPTY_THREAD_HISTORY_ATOM = Atom.make(EMPTY_THREAD_HISTORY_META);
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -233,6 +236,11 @@ export function useThreadComposerState() {
       ? EMPTY_THREAD_SEQUENCE_ATOM
       : environmentThreadDetails.sequenceAtom(selectedThreadDetailRef),
   );
+  const selectedThreadHistory = useAtomValue(
+    selectedThreadDetailRef === null
+      ? EMPTY_THREAD_HISTORY_ATOM
+      : environmentThreadDetails.historyAtom(selectedThreadDetailRef),
+  );
   const checkpointSummaries = useAtomValue(
     selectedThreadDetailRef === null
       ? EMPTY_CHECKPOINT_SUMMARIES_ATOM
@@ -262,6 +270,8 @@ export function useThreadComposerState() {
       queuedMessages: selectedThreadQueuedMessages,
       sequence: selectedThreadSequence,
       projectedMessages: selectedThreadMessages,
+      hasMoreHistory: selectedThreadHistory.hasMoreHistory,
+      oldestLoadedAt: threadOldestLoadedAt(selectedThreadVisibleTurnItems),
     });
     if (pendingAcknowledgments.length === 0) return feed;
     return appendPendingThreadMessages(feed, feed, pendingAcknowledgments).map((entry) =>

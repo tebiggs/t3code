@@ -37,6 +37,8 @@ export function selectPendingAcknowledgedMessages(
     readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
     readonly sequence: number;
     readonly projectedMessages: ReadonlyArray<{ readonly id: string }> | undefined;
+    readonly hasMoreHistory?: boolean;
+    readonly oldestLoadedAt?: string | null;
   },
 ): ReadonlyArray<AcknowledgedThreadMessage> {
   return acknowledged.filter(
@@ -46,6 +48,8 @@ export function selectPendingAcknowledgedMessages(
       !threadHasCaughtUpTo(message, {
         sequence: thread.sequence,
         messages: thread.projectedMessages,
+        hasMoreHistory: thread.hasMoreHistory,
+        oldestLoadedAt: thread.oldestLoadedAt,
       }),
   );
 }

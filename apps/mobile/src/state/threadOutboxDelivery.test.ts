@@ -16,8 +16,10 @@ const harness = vi.hoisted(() => ({
   threadState: null as unknown as import("effect/reactivity").Atom.Writable<{
     readonly data: import("effect/Option").Option<{
       readonly messages: ReadonlyArray<{ readonly id: string }>;
+      readonly visibleTurnItems: ReadonlyArray<unknown>;
     }>;
     readonly sequence: number;
+    readonly history: { readonly hasMoreHistory: boolean };
   }>,
   manager: null as unknown as ReturnType<
     typeof import("./thread-outbox-manager").createThreadOutboxManager
@@ -97,8 +99,12 @@ vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
   const Option = await import("effect/Option");
   harness.threadState = Atom.make({
-    data: Option.none<{ readonly messages: ReadonlyArray<{ readonly id: string }> }>(),
+    data: Option.none<{
+      readonly messages: ReadonlyArray<{ readonly id: string }>;
+      readonly visibleTurnItems: ReadonlyArray<unknown>;
+    }>(),
     sequence: 0,
+    history: { hasMoreHistory: false },
   }).pipe(Atom.keepAlive);
   return {
     threadEnvironment: {},
@@ -210,7 +216,11 @@ function remainingMessages(): ReadonlyArray<QueuedThreadMessage> {
 
 beforeEach(() => {
   appAtomRegistry.set(acknowledgedThreadMessagesAtom, []);
-  appAtomRegistry.set(harness.threadState, { data: Option.none(), sequence: 0 });
+  appAtomRegistry.set(harness.threadState, {
+    data: Option.none(),
+    sequence: 0,
+    history: { hasMoreHistory: false },
+  });
   harness.canOperate = true;
   harness.draftFile.setDocument({ schemaVersion: 1, drafts: {} });
 });
@@ -351,8 +361,9 @@ describe("thread outbox drain delivery cleanup", () => {
 
     // The thread applied the message, but its bounded window does not hold it.
     appAtomRegistry.set(harness.threadState, {
-      data: Option.some({ messages: [{ id: "unrelated" }] }),
+      data: Option.some({ messages: [{ id: "unrelated" }], visibleTurnItems: [] }),
       sequence: 7,
+      history: { hasMoreHistory: false },
     });
     expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toHaveLength(1);
 

@@ -132,4 +132,29 @@ describe("pending timeline messages", () => {
       "waiting",
     ]);
   });
+
+  it("stops showing a sequenceless acknowledged message that predates the loaded window", () => {
+    // Older servers report no commit sequence, so a paged-out message is only
+    // recognizable as delivered once it is older than everything still loaded.
+    const agedOut = pending("aged-out");
+    const fresh = { ...pending("just-sent"), createdAt: "2026-09-06T12:00:00.000Z" };
+    // A reported sequence the thread has not reached outranks the window guess.
+    const sequenced = { ...pending("sequenced"), sequence: 50 };
+    const windowed = {
+      threadKey: "env:thread",
+      queuedMessages: [],
+      sequence: 45,
+      projectedMessages: [],
+      hasMoreHistory: true,
+      oldestLoadedAt: "2026-09-06T11:00:00.000Z",
+    };
+    expect(selectPendingAcknowledgedMessages([agedOut, fresh, sequenced], windowed)).toEqual([
+      fresh,
+      sequenced,
+    ]);
+    // With the thread fully loaded an older absence still means the echo is outstanding.
+    expect(
+      selectPendingAcknowledgedMessages([agedOut], { ...windowed, hasMoreHistory: false }),
+    ).toEqual([agedOut]);
+  });
 });

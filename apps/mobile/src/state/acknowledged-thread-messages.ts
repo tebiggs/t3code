@@ -1,7 +1,7 @@
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import { appAtomRegistry } from "./atom-registry";
-import { threadHasCaughtUpTo } from "@t3tools/client-runtime/state/threads";
+import { threadHasCaughtUpTo, threadOldestLoadedAt } from "@t3tools/client-runtime/state/threads";
 import type { AcknowledgedThreadMessage, QueuedThreadMessage } from "./thread-outbox-model";
 import { environmentThreadDetails } from "./threads";
 
@@ -22,11 +22,15 @@ function isEchoedInMountedThread(message: AcknowledgedThreadMessage): boolean {
   const loaded: Option.Option<Atom.Type<typeof stateAtom>> = node.valueOption();
   return Option.match(loaded, {
     onNone: () => false,
-    onSome: (thread) =>
-      threadHasCaughtUpTo(message, {
+    onSome: (thread) => {
+      const projection = Option.getOrUndefined(thread.data);
+      return threadHasCaughtUpTo(message, {
         sequence: thread.sequence,
-        messages: Option.getOrUndefined(thread.data)?.messages,
-      }),
+        messages: projection?.messages,
+        hasMoreHistory: thread.history.hasMoreHistory,
+        oldestLoadedAt: threadOldestLoadedAt(projection?.visibleTurnItems ?? []),
+      });
+    },
   });
 }
 
