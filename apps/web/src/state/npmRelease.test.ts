@@ -1,8 +1,8 @@
-import { AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { afterAll, afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { npmReleasePublishedAtom } from "./npmRelease";
+import { npmReleaseAtom, npmReleasePublishedAtom } from "./npmRelease";
 
 const version = "0.0.46-nightly.20261012.3021";
 
@@ -10,8 +10,7 @@ const version = "0.0.46-nightly.20261012.3021";
 const fetchMock = vi.fn<typeof fetch>();
 vi.stubGlobal("fetch", fetchMock);
 
-async function settledCheck() {
-  const atom = npmReleasePublishedAtom(version);
+async function settled<A, E>(atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>) {
   const registry = AtomRegistry.make();
   const unmount = registry.mount(atom);
   try {
@@ -38,7 +37,7 @@ describe("npmReleasePublishedAtom", () => {
   it("checks the fork's GitHub release without tracing headers, so the browser skips a preflight", async () => {
     fetchMock.mockImplementation(async () => Response.json({ tag_name: `v${version}` }));
 
-    const result = await settledCheck();
+    const result = await settled(npmReleasePublishedAtom(version));
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const request = new Request(fetchMock.mock.calls[0]?.[0] ?? "", fetchMock.mock.calls[0]?.[1]);
@@ -50,11 +49,29 @@ describe("npmReleasePublishedAtom", () => {
     expect(AsyncResult.getOrElse(result, () => false)).toBe(true);
   });
 
+  it("resolves a dist-tag from the fork's releases, which report no database migration", async () => {
+    fetchMock.mockImplementation(async () =>
+      Response.json([{ tag_name: "v0.1.6-preview.20261030.9" }, { tag_name: `v${version}` }]),
+    );
+
+    const nightly = await settled(npmReleaseAtom("nightly"));
+    const stable = await settled(npmReleaseAtom("latest"));
+
+    expect(new Request(fetchMock.mock.calls[0]?.[0] ?? "").url).toBe(
+      "https://api.github.com/repos/tebiggs/t3code/releases?per_page=100&page=1",
+    );
+    expect(AsyncResult.getOrElse(nightly, () => null)).toEqual({
+      version,
+      databaseMigration: undefined,
+    });
+    expect(AsyncResult.getOrElse(stable, () => "pending")).toBeNull();
+  });
+
   // regression: #18709 update-everything skipped npm-installed servers
   it("leaves a failed first check unknown, which callers read as unpublished", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 
-    const result = await settledCheck();
+    const result = await settled(npmReleasePublishedAtom(version));
 
     expect(AsyncResult.isFailure(result)).toBe(true);
     expect(AsyncResult.getOrElse(result, () => false)).toBe(false);
