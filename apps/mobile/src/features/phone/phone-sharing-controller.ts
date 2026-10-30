@@ -27,12 +27,9 @@ export interface PhoneSharingEffects {
 }
 
 /**
- * Every change to sharing runs here, one at a time, from a record saved before the work starts.
- * A sign-out during a share therefore stops what the share set up, and anything left unfinished
- * by a failure, a dead server or a killed app is picked up by the next `reconcile`.
- *
- * A stop always signs out other clients: a share that looks failed may have reached the server
- * with only its response lost, so nothing can be assumed about who connected.
+ * Every change to sharing runs here, one at a time, from a record saved before the work starts,
+ * so a sign-out during a share stops what it set up and `reconcile` picks up anything unfinished.
+ * A stop always signs out other clients: a "failed" share may have reached the server.
  */
 export function createPhoneSharingController(effects: PhoneSharingEffects) {
   let queue: Promise<unknown> = Promise.resolve();
