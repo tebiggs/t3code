@@ -205,9 +205,26 @@ export function useRemoteConnections() {
     if (appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId === environmentId) {
       // Removing only the connection would leave the server running on the phone with a wake
       // lock and nothing in the app pointing at it, so a failed stop keeps everything.
-      const forgetPhone = () => {
+      const forget = () => {
         setPhoneServerSettings(null);
         void controller.removeEnvironment(environmentId);
+      };
+      // Forgetting the connection would leave no way to reach a shared server's tunnel.
+      const forgetPhone = async () => {
+        const sharing = await import("../features/phone/phone-sharing-commands");
+        const stillSharing = await sharing.stopPhoneSharingBeforeForgetting();
+        if (stillSharing === null) {
+          forget();
+          return;
+        }
+        Dialog.alert(
+          "This phone is still shared",
+          `${stillSharing}\n\nRemove it anyway to finish this later: sharing stops when this phone is connected again.`,
+          [
+            { text: "Keep", style: "cancel" },
+            { text: "Remove anyway", style: "destructive", onPress: forget },
+          ],
+        );
       };
       const stopThenForget = async () => {
         // Auto-start would otherwise relaunch the server as soon as its connection drops.
@@ -216,8 +233,11 @@ export function useRemoteConnections() {
         try {
           // Loaded on demand: the phone server pulls in the expo runtime.
           const phoneServer = await import("../features/phone/phone-server");
+          const sharing = await import("../features/phone/phone-sharing-commands");
+          const stillSharing = await sharing.stopPhoneSharingBeforeForgetting();
+          if (stillSharing !== null) throw new Error(stillSharing);
           await phoneServer.stopPhoneServerWhenSettled();
-          forgetPhone();
+          forget();
         } catch (error) {
           Dialog.alert(
             "The server didn't stop",
@@ -230,7 +250,7 @@ export function useRemoteConnections() {
                   if (previous) setPhoneServerSettings(previous);
                 },
               },
-              { text: "Remove anyway", style: "destructive", onPress: forgetPhone },
+              { text: "Remove anyway", style: "destructive", onPress: forget },
             ],
           );
         }
@@ -240,7 +260,7 @@ export function useRemoteConnections() {
         `Forget ${environment.environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay on the phone; phone setup can connect them again.`,
         [
           { text: "Cancel", style: "cancel" },
-          { text: "Remove only", onPress: forgetPhone },
+          { text: "Remove only", onPress: () => void forgetPhone() },
           {
             text: "Remove and stop server",
             style: "destructive",

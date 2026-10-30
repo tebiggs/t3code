@@ -9,7 +9,7 @@ import { useCallback, useRef, useState } from "react";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { usePhoneServerSettings } from "../../state/phone-server-settings";
+import { usePhoneSharingRecord } from "../../state/phone-server-settings";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useSavedRemoteConnection } from "../../state/use-remote-environment-registry";
 import { useWorkspaceEnvironments } from "../../state/workspace";
@@ -17,13 +17,13 @@ import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/pu
 import { refreshManagedRelayEnvironments } from "../cloud/managedRelayState";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
-import type { PhoneSharing } from "./phone-sharing";
+import { PHONE_STILL_LISTED, type PhoneSharing } from "./phone-sharing";
 import {
   checkPhoneReachability,
   readPhoneSharing,
-  retryPhoneDeregistration,
-  sharePhoneServer,
-  stopSharingPhoneServer,
+  reconcilePhoneSharing,
+  sharePhone,
+  stopPhoneSharing,
 } from "./phone-sharing-commands";
 
 function failureText(result: { readonly cause: Cause.Cause<unknown> }, fallback: string): string {
@@ -60,7 +60,8 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
   const navigation = useNavigation();
   const { getToken, isSignedIn, userId } = useAuth({ treatPendingAsSignedOut: false });
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const settings = usePhoneServerSettings();
+  const record = usePhoneSharingRecord();
+  const stopUnfinished = record?.phase === "stopping";
   const connection = useSavedRemoteConnection(props.environmentId);
   const connected =
     useWorkspaceEnvironments().find((candidate) => candidate.environmentId === props.environmentId)
@@ -86,7 +87,7 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
       if (AsyncResult.isSuccess(result)) {
         setReadError(null);
         setSharing(result.value);
-        if (!result.value.shared) void retryPhoneDeregistration();
+        if (!result.value.shared) void reconcilePhoneSharing();
       } else {
         setReadError(failureText(result, "Couldn't check whether this phone is shared."));
       }
@@ -123,41 +124,26 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
       finish();
       return;
     }
-    const result = await runAtomCommand(
-      appAtomRegistry,
-      sharePhoneServer,
-      {
-        connection,
-        accountId: userId,
-        clerkToken: token,
-        liveActivitiesEnabled:
-          !AsyncResult.isSuccess(preferences) || preferences.value.liveActivitiesEnabled !== false,
-      },
-      { reportFailure: false },
-    );
+    const failure = await sharePhone({
+      connection,
+      accountId: userId,
+      clerkToken: token,
+      liveActivitiesEnabled:
+        !AsyncResult.isSuccess(preferences) || preferences.value.liveActivitiesEnabled !== false,
+    });
     finish();
     refreshManagedRelayEnvironments();
-    if (AsyncResult.isSuccess(result)) {
+    if (failure === null) {
       setSharing({ shared: true, revoked: false, cloudUserId: userId, reachability: null });
       verify();
     } else {
-      setActionError(failureText(result, "Couldn't share this phone."));
+      setActionError(failure);
       check();
     }
   };
 
   const stopSharing = async () => {
-    const owner =
-      (sharing?.shared ? sharing.cloudUserId : null) ?? settings?.sharing?.accountId ?? null;
-    const result = await runAtomCommand(
-      appAtomRegistry,
-      stopSharingPhoneServer,
-      { connection, owner },
-      { reportFailure: false },
-    );
-    if (AsyncResult.isFailure(result)) {
-      setActionError(failureText(result, "Couldn't stop sharing."));
-    }
+    setActionError(await stopPhoneSharing());
     finish();
     refreshManagedRelayEnvironments();
     check();
@@ -197,7 +183,7 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
     }
     Dialog.alert(
       "Share this phone?",
-      "Anyone signed in to your T3 Connect account gets full control of this phone's server: threads, agents, a terminal running as root in its Ubuntu, and your phone's files if you've allowed phone storage. They can also use commands such as the clipboard and notifications. Agent access still asks on this phone, and Never still applies.\n\nThe phone counts as one of your account's T3 Connect machines. The first time, T3 Code downloads Cloudflare's tunnel client (about 40 MB).",
+      "Anyone signed in to your T3 Connect account gets full control of this phone's server: threads, agents, a terminal running as root in its Ubuntu, and your phone's files if you've allowed phone storage. They can also use commands such as the clipboard and notifications.\n\nAgent access covers what agents normally do on your phone, but it isn't a hard barrier against someone using that terminal. Share only with an account you fully trust.\n\nThe phone counts as one of your account's T3 Connect machines. The first time, T3 Code downloads Cloudflare's tunnel client (about 40 MB).",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Share", onPress: () => run("share", share) },
@@ -224,15 +210,19 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
               ? "Sharing…"
               : busy === "stop"
                 ? "Stopping…"
-                : verifying
-                  ? "On. Checking that other devices can connect, for up to a minute."
-                  : sharing === null
-                    ? readError === null
-                      ? "Checking…"
-                      : "Couldn't check."
-                    : sharingText(sharing, userId)
+                : stopUnfinished
+                  ? "Still stopping. Other devices may have access until this finishes. Turn this off to try again."
+                  : verifying
+                    ? "On. Checking that other devices can connect, for up to a minute."
+                    : sharing === null
+                      ? readError === null
+                        ? "Checking…"
+                        : "Couldn't check."
+                      : !sharing.shared && record?.phase === "listed"
+                        ? `Off. ${PHONE_STILL_LISTED}`
+                        : sharingText(sharing, userId)
         }
-        value={sharing?.shared === true}
+        value={sharing?.shared === true || stopUnfinished}
         disabled={!connected || busy !== null || sharing === null}
         onValueChange={onValueChange}
       />

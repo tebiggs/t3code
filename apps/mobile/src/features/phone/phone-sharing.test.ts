@@ -1,11 +1,9 @@
-import { beforeEach, vi } from "vite-plus/test";
 import { describe, expect, it } from "@effect/vitest";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 
-import { phoneSharingFromLinkState, PHONE_STILL_LISTED, stopServerSharing } from "./phone-sharing";
+import { phoneSharingFromLinkState, stopServerSharing } from "./phone-sharing";
 
 const connection = {
   environmentId: EnvironmentId.make("phone"),
@@ -65,65 +63,42 @@ describe("phoneSharingFromLinkState", () => {
 });
 
 describe("stopServerSharing", () => {
-  const deregister = vi.fn(() => Effect.void);
-  beforeEach(() => {
-    deregister.mockClear();
-  });
-
   it.effect("stops the tunnel, then signs out other clients and their pairing links", () => {
     const server = layerServer();
     return Effect.gen(function* () {
       yield* stopServerSharing(connection, {
+        revokeAccess: true,
         pairingLinkIds: Effect.succeed(["link-1"]),
-        deregister: Effect.suspend(deregister),
       });
       expect(server.requests).toEqual([
         "/api/connect/unlink",
         "/api/auth/clients/revoke-others",
         "/api/auth/pairing-links/revoke",
       ]);
-      expect(deregister).toHaveBeenCalledOnce();
     }).pipe(Effect.provide(server.layer));
   });
 
-  it.effect("leaves the account alone when the tunnel didn't stop", () => {
-    const server = layerServer(new Set(["/api/connect/unlink"]));
+  it.effect("signs nobody out after a failed share", () => {
+    const server = layerServer();
     return Effect.gen(function* () {
-      const exit = yield* Effect.exit(
-        stopServerSharing(connection, {
-          pairingLinkIds: Effect.succeed([]),
-          deregister: Effect.suspend(deregister),
-        }),
-      );
-      expect(Exit.isFailure(exit)).toBe(true);
-      expect(deregister).not.toHaveBeenCalled();
+      yield* stopServerSharing(connection, {
+        revokeAccess: false,
+        pairingLinkIds: Effect.die("unused"),
+      });
+      expect(server.requests).toEqual(["/api/connect/unlink"]);
     }).pipe(Effect.provide(server.layer));
   });
 
-  it.effect("still deregisters when signing out clients fails, and reports the failure", () => {
-    const server = layerServer(new Set(["/api/auth/clients/revoke-others"]));
-    return Effect.gen(function* () {
-      const error = yield* Effect.flip(
-        stopServerSharing(connection, {
-          pairingLinkIds: Effect.succeed([]),
-          deregister: Effect.suspend(deregister),
-        }),
-      );
-      expect(error.message).toContain("couldn't be signed out");
-      expect(deregister).toHaveBeenCalledOnce();
-    }).pipe(Effect.provide(server.layer));
-  });
-
-  it.effect("says so when the account still lists the phone", () => {
+  it.effect("fails when a pairing link can't be read, so the stop stays unfinished", () => {
     const server = layerServer();
     return Effect.gen(function* () {
       const error = yield* Effect.flip(
         stopServerSharing(connection, {
-          pairingLinkIds: Effect.succeed([]),
-          deregister: Effect.fail("relay down"),
+          revokeAccess: true,
+          pairingLinkIds: Effect.fail("no socket"),
         }),
       );
-      expect(error.message).toBe(PHONE_STILL_LISTED);
+      expect(error.message).toContain("couldn't be signed out");
     }).pipe(Effect.provide(server.layer));
   });
 });

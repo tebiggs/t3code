@@ -55,6 +55,7 @@ adds the feature, and remove it in the PR that drops the feature.
   other clients' sessions, Ongoing activity skips the phone's server, and the
   Android bridge asks on the phone for each Ask each time command:
   `apps/mobile/src/features/phone/phone-sharing.ts`,
+  `apps/mobile/src/features/phone/phone-sharing-controller.ts`,
   `apps/mobile/src/features/phone/phone-sharing-commands.ts`,
   `apps/mobile/src/features/phone/PhoneSharingSection.tsx`,
   `apps/mobile/src/features/agent-awareness/liveActivityPreferences.ts`,

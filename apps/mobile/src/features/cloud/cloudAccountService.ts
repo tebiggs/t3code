@@ -56,7 +56,8 @@ const cleanUpCloudAccount = async (
   accountId: string | null,
   wasActive: boolean,
 ) => {
-  await stopPhoneSharingAfterSignOut().catch((error: unknown) =>
+  // Not awaited: it waits behind any share in flight, and cleanup shouldn't wait with it.
+  void stopPhoneSharingAfterSignOut().catch((error: unknown) =>
     console.warn("Couldn't stop sharing this phone after sign-out", error),
   );
   const removal = await runAtomCommand(appAtomRegistry, removeCloudEnvironments, accountId, {

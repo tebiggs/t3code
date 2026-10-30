@@ -6,7 +6,6 @@ import type {
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 
@@ -45,6 +44,7 @@ export function phoneSharingFromLinkState(state: EnvironmentCloudLinkStateResult
 const REACHABILITY_WAIT = Duration.seconds(60);
 const REACHABILITY_CHECK_TIMEOUT = Duration.seconds(30);
 const REACHABILITY_RETRY = Duration.seconds(5);
+const STOP_STEP_TIMEOUT = Duration.seconds(20);
 
 export const failWith = (message: string) => (cause: unknown) =>
   new PhoneSharingError({ message, cause });
@@ -88,57 +88,34 @@ export const waitForReachability = Effect.fn("PhoneSharing.waitForReachability")
   return yield* Ref.get(latest);
 });
 
-/** Stops the tunnel. Credentials that clients already hold outlive it. */
-export const unlinkServer = Effect.fn("PhoneSharing.unlinkServer")(function* (
+/**
+ * Off ends access, not just the route to it: without the revocations, a client that connected
+ * while the phone was shared would get back in if sharing came on again, even under another
+ * account. A failed share has no clients to sign out, so it skips them.
+ */
+export const stopServerSharing = Effect.fn("PhoneSharing.stopServerSharing")(function* <E, R>(
   connection: SavedRemoteConnection,
+  options: {
+    readonly revokeAccess: boolean;
+    readonly pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E, R>;
+  },
 ) {
   const { api, headers } = yield* phoneServerApi(connection);
   yield* api.connect
     .unlink({ headers })
-    .pipe(Effect.mapError(failWith("Couldn't stop sharing this phone.")));
-});
-
-/**
- * Off ends access, not just the route to it: without this, a client that connected while the
- * phone was shared would get back in if sharing came on again, even under another account.
- */
-const revokeOtherAccess = Effect.fn("PhoneSharing.revokeOtherAccess")(function* <E, R>(
-  connection: SavedRemoteConnection,
-  pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E, R>,
-) {
-  const { api, headers } = yield* phoneServerApi(connection);
-  yield* api.auth.revokeOtherClients({ headers });
-  const ids = yield* pairingLinkIds;
-  yield* Effect.forEach(ids, (id) => api.auth.revokePairingLink({ headers, payload: { id } }), {
-    discard: true,
-  });
-});
-
-/** Each step runs even when the one before it failed, so one failure can't leave access open. */
-export const stopServerSharing = Effect.fn("PhoneSharing.stopServerSharing")(function* <
-  E1,
-  R1,
-  E2,
-  R2,
->(
-  connection: SavedRemoteConnection,
-  steps: {
-    readonly pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E1, R1>;
-    readonly deregister: Effect.Effect<void, E2, R2>;
-  },
-) {
-  yield* unlinkServer(connection);
-  // Exits, not typed failures: a defect in one step must not skip the next either.
-  const revoked = yield* Effect.exit(revokeOtherAccess(connection, steps.pairingLinkIds));
-  const deregistered = yield* Effect.exit(steps.deregister);
-  if (Exit.isFailure(revoked)) {
-    yield* Effect.logWarning("Couldn't sign out the phone's other clients", revoked.cause);
-    return yield* new PhoneSharingError({
-      message: "The tunnel is off, but other devices couldn't be signed out. Try again.",
+    .pipe(
+      Effect.timeout(STOP_STEP_TIMEOUT),
+      Effect.mapError(failWith("Couldn't stop sharing this phone.")),
+    );
+  if (!options.revokeAccess) return;
+  yield* Effect.gen(function* () {
+    yield* api.auth.revokeOtherClients({ headers });
+    const ids = yield* options.pairingLinkIds;
+    yield* Effect.forEach(ids, (id) => api.auth.revokePairingLink({ headers, payload: { id } }), {
+      discard: true,
     });
-  }
-  if (Exit.isFailure(deregistered)) {
-    yield* Effect.logWarning("Couldn't deregister the phone", deregistered.cause);
-    return yield* new PhoneSharingError({ message: PHONE_STILL_LISTED });
-  }
+  }).pipe(
+    Effect.timeout(STOP_STEP_TIMEOUT),
+    Effect.mapError(failWith("The tunnel is off, but other devices couldn't be signed out.")),
+  );
 });

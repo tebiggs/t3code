@@ -9,7 +9,6 @@ import * as Dialog from "../../components/ui/Dialog";
 import { ListRow } from "../../components/ui/ListRow";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
-import { useSavedRemoteConnection } from "../../state/use-remote-environment-registry";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { confirmPhoneServerReplacement } from "../phone/confirmPhoneServerReplacement";
 import {
@@ -84,7 +83,6 @@ export function DeviceRuntimeSetupScreen() {
       (candidate) => candidate.environmentId === settings?.environmentId,
     ) ?? null;
   const connected = environment?.connectionState === "connected";
-  const connection = useSavedRemoteConnection(settings?.environmentId ?? null);
 
   const inspect = useCallback(() => {
     if (!native.getStatus().installed) {
@@ -164,7 +162,7 @@ export function DeviceRuntimeSetupScreen() {
           style: "destructive",
           onPress: () =>
             void run("install", async () => {
-              const stillListed = await releasePhoneSharing(connection);
+              const stillListed = await releasePhoneSharing();
               await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();
@@ -187,7 +185,7 @@ export function DeviceRuntimeSetupScreen() {
           onPress: () =>
             void run("remove", async () => {
               if (settings) setPhoneServerSettings({ ...settings, autoStart: false });
-              const stillListed = await releasePhoneSharing(connection);
+              const stillListed = await releasePhoneSharing();
               await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();

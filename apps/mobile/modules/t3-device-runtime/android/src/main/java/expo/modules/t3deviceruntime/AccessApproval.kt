@@ -15,24 +15,33 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 private const val EXTRA_REQUEST = "request"
-private const val EXTRA_TITLE = "title"
-private const val EXTRA_MESSAGE = "message"
 private const val APPROVAL_TIMEOUT_SECONDS = 60L
-private const val DETAILS_LIMIT = 600
+private const val DETAILS_LIMIT = 4000
+private const val MAX_WAITING = 4
 
-/** A command's arguments, as the user approves them: the number to call, the text to send. */
-internal fun approvalDetails(body: JSONObject): String {
-  val details = body.keys().asSequence().joinToString("\n") { key -> "$key: ${body.opt(key)}" }
-  if (details.length <= DETAILS_LIMIT) return details
-  return "${details.take(DETAILS_LIMIT)}… (${details.length - DETAILS_LIMIT} more characters)"
-}
+private val INVISIBLE = Regex("[\\u061C\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u206F\\uFEFF]")
 
 /**
- * One prompt per request, so an answer can't also cover a command the user never saw. Answers
- * only ever come from AccessApprovalActivity, which nothing outside this app can start.
+ * A command's whole request, as the user approves it. JSON escapes newlines and control
+ * characters; the rest that could hide or reorder text gets escaped here. A dialog scrolls, so
+ * nothing is cut: a request too long to read is refused, since nobody could approve it.
+ */
+internal fun approvalDetails(body: JSONObject): String {
+  if (body.length() == 0) return ""
+  val details = body.toString(2).replace(INVISIBLE) { "\\u%04X".format(it.value[0].code) }
+  if (details.length > DETAILS_LIMIT) throw BridgeError("This request is too long to show on the phone for approval.", 413)
+  return details
+}
+
+private class WaitingApproval(val title: String, val message: String, val answer: CompletableFuture<Boolean>)
+
+/**
+ * One prompt per request, so an answer can't also cover a command the user never saw. What the
+ * prompt shows stays in this process, keyed by a random id, so a same-UID caller that starts the
+ * activity can't change what the user reads, and only a tap on its dialog can answer.
  */
 internal object AccessApproval {
-  private val pending = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
+  private val pending = ConcurrentHashMap<String, WaitingApproval>()
 
   /** Whether the user allowed it. Nobody answering in time counts as no. */
   fun request(
@@ -43,51 +52,45 @@ internal object AccessApproval {
     show: (Intent) -> Unit,
     dismiss: () -> Unit,
   ): Boolean {
+    // Requests wait on bridge connections, which unrelated commands need too.
+    if (pending.size >= MAX_WAITING) throw BridgeError("Too many requests are waiting for an answer on the phone.", 429)
     val id = UUID.randomUUID().toString()
-    val answer = CompletableFuture<Boolean>()
-    pending[id] = answer
-    try {
-      show(intent(context, id, category, command, details))
-      return answer.get(APPROVAL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-    } catch (error: TimeoutException) {
-      throw BridgeError("Nobody answered T3 Code's ${category.label} prompt on the phone.", 403)
-    } finally {
-      pending.remove(id)
-      // Closes a prompt that's still open, so a late tap can't look like it counted.
-      answer.complete(false)
-      dismiss()
-    }
-  }
-
-  fun answer(id: String, allowed: Boolean) {
-    pending[id]?.complete(allowed)
-  }
-
-  /** Runs once the request ends, or at once when it already has, as for an old notification. */
-  fun whenEnded(id: String, action: () -> Unit) {
-    val answer = pending[id]
-    if (answer == null) action() else answer.whenComplete { _, _ -> action() }
-  }
-
-  private fun intent(
-    context: Context,
-    id: String,
-    category: AccessCategory,
-    command: String,
-    details: String,
-  ): Intent {
     val message = buildString {
       append("termux-$command")
       if (details.isNotEmpty()) append("\n\n$details")
       append("\n\nAn agent or another device using this phone's server asked for this.")
     }
-    return Intent(context, AccessApprovalActivity::class.java)
-      // A distinct intent per request: Android would otherwise reuse a waiting prompt's.
-      .setData(Uri.parse("t3-access://$id"))
-      .putExtra(EXTRA_REQUEST, id)
-      .putExtra(EXTRA_TITLE, "Allow ${category.label}?")
-      .putExtra(EXTRA_MESSAGE, message)
-      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val waiting = WaitingApproval("Allow ${category.label}?", message, CompletableFuture())
+    pending[id] = waiting
+    try {
+      show(
+        Intent(context, AccessApprovalActivity::class.java)
+          // A distinct intent per request: Android would otherwise reuse a waiting prompt's.
+          .setData(Uri.parse("t3-access://$id"))
+          .putExtra(EXTRA_REQUEST, id)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+      )
+      return waiting.answer.get(APPROVAL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+    } catch (error: TimeoutException) {
+      throw BridgeError("Nobody answered T3 Code's ${category.label} prompt on the phone.", 403)
+    } finally {
+      pending.remove(id)
+      // Closes a prompt that's still open, so a late tap can't look like it counted.
+      waiting.answer.complete(false)
+      dismiss()
+    }
+  }
+
+  fun prompt(id: String): Pair<String, String>? = pending[id]?.let { it.title to it.message }
+
+  fun answer(id: String, allowed: Boolean) {
+    pending[id]?.answer?.complete(allowed)
+  }
+
+  /** Runs once the request ends, or at once when it already has, as for an old notification. */
+  fun whenEnded(id: String, action: () -> Unit) {
+    val waiting = pending[id]
+    if (waiting == null) action() else waiting.answer.whenComplete { _, _ -> action() }
   }
 }
 
@@ -99,10 +102,11 @@ class AccessApprovalActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val id = intent.getStringExtra(EXTRA_REQUEST) ?: return finish()
+    val (title, message) = AccessApproval.prompt(id) ?: return finish()
     request = id
     val shown = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-      .setTitle(intent.getStringExtra(EXTRA_TITLE))
-      .setMessage(intent.getStringExtra(EXTRA_MESSAGE))
+      .setTitle(title)
+      .setMessage(message)
       .setPositiveButton("Allow") { _, _ -> answer(true) }
       .setNegativeButton("Don't allow") { _, _ -> answer(false) }
       .setOnCancelListener { answer(false) }
