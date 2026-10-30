@@ -3,6 +3,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
+import { phoneServerPort } from "../phone/phone-setup";
 import { updateAgentAwarenessRegistrationPreferences } from "./remoteRegistration";
 
 export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEnabled")(
@@ -13,8 +14,10 @@ export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEn
     readonly connections: ReadonlyArray<SavedRemoteConnection>;
     readonly canConfigureEnvironment: (environmentId: EnvironmentId) => boolean;
   }) {
+    // Linking gives a server a tunnel, so the phone's own server is linked only by its share switch.
     const linkedConnections = input.connections.filter(
-      (connection) => connection.bearerToken !== null,
+      (connection) =>
+        connection.bearerToken !== null && phoneServerPort(connection.displayUrl) === null,
     );
 
     const updateEnvironmentPreference = Effect.fn("updateEnvironmentPreference")(function* (

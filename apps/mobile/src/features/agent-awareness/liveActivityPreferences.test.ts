@@ -116,14 +116,22 @@ describe("liveActivityPreferences", () => {
       ...connection,
       environmentId: "read-only" as EnvironmentId,
     };
+    const phoneConnection: SavedRemoteConnection = {
+      ...connection,
+      environmentId: "phone" as EnvironmentId,
+      displayUrl: "http://127.0.0.1:3774/",
+      httpBaseUrl: "http://127.0.0.1:3774/",
+      wsBaseUrl: "ws://127.0.0.1:3774/ws",
+    };
 
     return Effect.gen(function* () {
       yield* setLiveActivityUpdatesEnabled({
         enabled: true,
         previousEnabled: false,
         clerkToken: "clerk-token",
-        connections: [readOnlyConnection, connection],
-        canConfigureEnvironment: (environmentId) => environmentId === connection.environmentId,
+        connections: [readOnlyConnection, phoneConnection, connection],
+        canConfigureEnvironment: (environmentId) =>
+          environmentId !== readOnlyConnection.environmentId,
       });
 
       expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenCalledWith({
