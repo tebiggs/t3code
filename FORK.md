@@ -28,7 +28,7 @@ adds the feature, and remove it in the PR that drops the feature.
 
 - #2 Servers and clients update from this fork's releases instead of
   upstream's: `packages/shared/src/cliRelease.ts`,
-  `apps/web/src/state/npmRelease.ts`.
+  `apps/server/src/cloud/npmRelease.ts`.
 - #14 Background work an agent waits on keeps its thread working until the result reaches the
   agent; settling cannot detach that work, wake dispatches retry, and work lost with a provider
   session or Claude process is reported: `ClaudeAdapterV2.ts`
