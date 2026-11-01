@@ -14,6 +14,7 @@ import {
 import * as Socket from "effect/socket/Socket";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 
+import * as SessionStore from "../auth/SessionStore.ts";
 import { authenticateMediaRequest } from "../auth/http.ts";
 import * as DeviceService from "./DeviceService.ts";
 import { repeatStillFrame } from "./mjpegStillFrame.ts";
@@ -93,9 +94,38 @@ export const upstreamWebSocketConstructor = Layer.effect(
   }),
 ).pipe(Layer.provide(NodeSocket.layerWebSocketConstructor));
 
+const pumpFrames =
+  /* Frame pumping runs continuously; a span per frame stream adds no diagnostic value. */
+  Effect.fnUntraced(function* (source: Socket.Socket, sink: Socket.Writer) {
+    const { pull } = yield* source.reader;
+    while (true) {
+      yield* sink.writeAll(yield* pull);
+    }
+  });
+
+/** Device input was authorized at connect, so a bridge mustn't outlive its session. */
+const bridgeWebSocket = (
+  client: Socket.Socket,
+  upstream: Socket.Socket,
+  sessionEnded: Effect.Effect<void, SessionStore.SessionCredentialVerificationError>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const writeToClient = yield* client.writer;
+      const writeToUpstream = yield* upstream.writer;
+      return yield* Effect.raceFirst(
+        Effect.raceFirst(pumpFrames(upstream, writeToClient), pumpFrames(client, writeToUpstream)),
+        sessionEnded.pipe(
+          Effect.andThen(writeToClient.write(new Socket.CloseEvent(1008, "session ended"))),
+        ),
+      );
+    }),
+  ).pipe(Effect.ignoreCause);
+
 const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
   request: HttpServerRequest.HttpServerRequest,
   upstreamUrl: string,
+  sessionEnded: Effect.Effect<void, SessionStore.SessionCredentialVerificationError>,
   protocols: ReadonlyArray<string> = [],
   headers: Readonly<Record<string, string>> = {},
 ) {
@@ -105,27 +135,9 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
     ...(protocols.length > 0 ? { protocols: [...protocols] } : {}),
     ...(Object.keys(headers).length > 0 ? { headers: { ...headers } } : {}),
   }).pipe(Effect.provide(upstreamWebSocketConstructor));
-  yield* Effect.scoped(
-    Effect.gen(function* () {
-      const writeToClient = yield* client.writer;
-      const writeToUpstream = yield* upstream.writer;
-      return yield* Effect.raceFirst(
-        pumpFrames(upstream, writeToClient),
-        pumpFrames(client, writeToUpstream),
-      );
-    }),
-  ).pipe(Effect.ignoreCause);
+  yield* bridgeWebSocket(client, upstream, sessionEnded);
   return HttpServerResponse.empty();
 });
-
-const pumpFrames =
-  /* Frame pumping runs continuously; a span per frame stream adds no diagnostic value. */
-  Effect.fnUntraced(function* (source: Socket.Socket, sink: Socket.Writer) {
-    const { pull } = yield* source.reader;
-    while (true) {
-      yield* sink.writeAll(yield* pull);
-    }
-  });
 
 const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   request: HttpServerRequest.HttpServerRequest,
@@ -195,7 +207,7 @@ const handler = Effect.gen(function* () {
   const controlsDevice =
     (upgrade && hubPath !== "/api/devices/ws") ||
     (!readOnly && /\/api\/(stream-(mode|settings)|fold)$/.test(hubPath));
-  yield* authenticateMediaRequest(
+  const session = yield* authenticateMediaRequest(
     controlsDevice ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope,
   );
   const devices = yield* DeviceService.DeviceService;
@@ -215,9 +227,11 @@ const handler = Effect.gen(function* () {
   }
   const upstreamUrl = routed?.url ?? `${ready.hub.origin}${hubPath}${search}`;
   if (upgrade) {
+    const sessions = yield* SessionStore.SessionStore;
     return yield* proxyWebSocket(
       request,
       upstreamUrl.replace(/^http/, "ws"),
+      sessions.awaitInvalidation(session.sessionId, session.proofKeyThumbprint),
       routed?.protocols,
       routed?.headers,
     );

@@ -9,6 +9,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse, HttpRouter } from "effect/http";
+import * as SessionStore from "../auth/SessionStore.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import type * as DeviceHost from "./DeviceHost.ts";
 import * as DeviceService from "./DeviceService.ts";
@@ -68,6 +69,12 @@ const fixture = (
         } as DeviceService.DeviceService["Service"]),
       ),
       Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
+      Layer.provideMerge(
+        Layer.succeed(
+          SessionStore.SessionStore,
+          {} as unknown as SessionStore.SessionStore["Service"],
+        ),
+      ),
     ),
     { disableLogger: true },
   );
