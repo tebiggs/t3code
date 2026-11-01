@@ -2,6 +2,7 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  AuthOrchestrationOperateScope,
   AuthSessionId,
   EnvironmentId,
   ProjectId,
@@ -827,7 +828,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
             sessionId: AuthSessionId.make("config-test"),
             subject: "config-test",
             method: "browser-session-cookie",
-            scopes: [],
+            scopes: [AuthOrchestrationOperateScope],
           },
           {},
           yield* ServerBrowser.ServerBrowser,

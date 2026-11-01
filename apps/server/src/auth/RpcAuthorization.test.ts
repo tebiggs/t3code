@@ -28,6 +28,7 @@ import * as RpcTest from "effect/rpc/RpcTest";
 import {
   RPC_REQUIRED_SCOPES,
   deviceListIsPassive,
+  readOnlyVcsStatusInput,
   requiredScopeForRpcMethod,
   requiredScopeForDeviceList,
 } from "./RpcAuthorization.ts";
@@ -321,6 +322,12 @@ describe("thread context authorization", () => {
   );
 });
 
+it("drops remote VCS polling, which can auto-pull, for a session that can't operate", () => {
+  const input = { cwd: "/repo", includeRemote: true };
+  expect(readOnlyVcsStatusInput(input, true)).toEqual(input);
+  expect(readOnlyVcsStatusInput(input, false)).toEqual({ cwd: "/repo", includeRemote: false });
+});
+
 it("lists devices passively for a session that can't ready their hosts", () => {
   expect(deviceListIsPassive({}, false)).toBe(true);
   expect(deviceListIsPassive({}, true)).toBe(false);
@@ -356,6 +363,8 @@ it("a View only session reads threads and reaches nothing that changes them", ()
     WS_METHODS.mcpAppsCallTool,
     WS_METHODS.mcpAppsReadResource,
     WS_METHODS.deviceDetail,
+    WS_METHODS.serverListAcpRegistrySessions,
+    WS_METHODS.serverListAcpRegistryProviders,
     WS_METHODS.shellOpenInEditor,
     WS_METHODS.scheduledTasksUpsert,
   ];

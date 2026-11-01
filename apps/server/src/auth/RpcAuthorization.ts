@@ -91,10 +91,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthProvidersManageScope,
   [WS_METHODS.serverUninstallAcpRegistryManagedBinary]: AuthProvidersManageScope,
   [WS_METHODS.serverAcceptAcpRegistryUrlAuth]: AuthProvidersManageScope,
-  [WS_METHODS.serverListAcpRegistrySessions]: AuthOrchestrationReadScope,
+  // Listing resolves the agent, which can install it and start it.
+  [WS_METHODS.serverListAcpRegistrySessions]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverImportAcpRegistrySession]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDeleteAcpRegistrySession]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverListAcpRegistryProviders]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverListAcpRegistryProviders]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverSetAcpRegistryProvider]: AuthProvidersManageScope,
   [WS_METHODS.serverDisableAcpRegistryProvider]: AuthProvidersManageScope,
   [WS_METHODS.serverLogoutAcpRegistry]: AuthProvidersManageScope,
@@ -293,6 +294,14 @@ export const layer = (
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */
+/** Remote polling can auto-pull into the workspace, so it's only for a session that can operate. */
+export const readOnlyVcsStatusInput = <
+  Input extends { readonly includeRemote?: boolean | undefined },
+>(
+  input: Input,
+  canOperate: boolean,
+): Input => (canOperate ? input : { ...input, includeRemote: false });
+
 /** A full listing also readies hosts, so a session that can't operate gets the passive view. */
 export const deviceListIsPassive = (input: DeviceListInput, canOperate: boolean): boolean =>
   !input.updateTool && (input.inspectOnly === true || (!canOperate && !input.retryHostId));
