@@ -466,6 +466,54 @@ export const t3SubagentContext = async (model: Model, device = true) => {
 };
 
 /**
+ * The reminders T3's PostToolUse hooks add after these tool calls, as Claude Code words them.
+ * Empty when T3 registers no such hook, as on text from before the hook existed.
+ */
+export const t3PostToolUseReminders = async (
+  model: Model,
+  uses: ReadonlyArray<{ readonly id: string; readonly name: string; readonly input: unknown }>,
+  options: { readonly nativeSubagent: boolean },
+) => {
+  const matchers = claudeQueryOptions(model).hooks?.PostToolUse ?? [];
+  const outputs = await Promise.all(
+    uses.flatMap((use) => {
+      // Templates rename native tools. Hooks see Claude Code's own names.
+      const toolName = normalizeToolName(use.name);
+      return matchers
+        .filter((m) => new RegExp(`^(?:${m.matcher ?? ".*"})$`).test(toolName))
+        .flatMap((m) => m.hooks)
+        .map(async (hook) => {
+          const output = await hook(
+            {
+              hook_event_name: "PostToolUse",
+              session_id: "mcp-tool-use-eval",
+              transcript_path: "",
+              cwd: "",
+              tool_name: toolName,
+              tool_input: use.input,
+              tool_response: "",
+              tool_use_id: use.id,
+              ...(options.nativeSubagent ? { agent_id: "mcp-tool-use-eval" } : {}),
+            },
+            use.id,
+            { signal: AbortSignal.timeout(10_000) },
+          );
+          return "hookSpecificOutput" in output &&
+            output.hookSpecificOutput?.hookEventName === "PostToolUse" &&
+            output.hookSpecificOutput.additionalContext
+            ? [
+                reminder(
+                  `PostToolUse:${toolName} hook additional context: ${output.hookSpecificOutput.additionalContext}`,
+                ),
+              ]
+            : [];
+        });
+    }),
+  );
+  return outputs.flat();
+};
+
+/**
  * Size of the context T3 adds: the system text every Claude thread gets, and the tool
  * descriptions and schemas (loaded on demand here, sent up front by harnesses without
  * deferred tools). Tokens are estimated at 4 characters each.
@@ -1816,7 +1864,20 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     );
     // Claude Code adds this text after a ToolSearch that loaded tools.
     const loaded = results.some((result) => Array.isArray(result.content));
-    messages.push({ role: "user", content: [...results, ...(loaded ? [text(TOOL_LOADED)] : [])] });
+    // PostToolUse fires only for calls that ran and did not fail.
+    const hookReminders = input
+      ? []
+      : yield* Effect.promise(() =>
+          t3PostToolUseReminders(
+            config.model,
+            uses.filter((_, index) => results[index]?.is_error !== true),
+            { nativeSubagent: testCase.setup.role === "native-subagent" },
+          ),
+        );
+    messages.push({
+      role: "user",
+      content: [...results, ...(loaded ? [text(TOOL_LOADED)] : []), ...hookReminders],
+    });
     if (failedEarly(testCase.expect, { calls, text: said.join("\n\n"), stopReason })) {
       stopReason = "failed_early";
       break;

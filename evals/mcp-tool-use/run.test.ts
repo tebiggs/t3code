@@ -24,6 +24,7 @@ import {
   shellRequest,
   summarize,
   t3SystemAppend,
+  t3PostToolUseReminders,
   t3SubagentContext,
   withDevices,
 } from "./run.ts";
@@ -778,6 +779,16 @@ it("gives native children hook context while excluding the parent's T3 append an
   if (subagentContext) assert.include(shown, subagentContext);
   else assert.notInclude(shown, "SubagentStart hook additional context:");
   assert.include(shown, testCase.prompt);
+});
+
+it("adds T3's background reminder under a template's renamed Bash, for the top thread only", async () => {
+  const uses = (input: unknown) => [{ id: "toolu_1", name: "mcp__select_sight__term_Bash", input }];
+  const reminders = (input: unknown, nativeSubagent = false) =>
+    t3PostToolUseReminders("claude-sonnet-5-5", uses(input), { nativeSubagent });
+  const background = { command: "npm test", run_in_background: true };
+  assert.lengthOf(await reminders(background), 1);
+  assert.isEmpty(await reminders({ command: "npm test" }));
+  assert.isEmpty(await reminders(background, true));
 });
 
 // Round-5 adversarial review counterexamples.

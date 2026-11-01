@@ -692,6 +692,48 @@ describe("ClaudeAdapterV2 device instructions", () => {
     assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
   });
 
+  it("reminds the thread to mark background work only when a background task starts", async () => {
+    const reminded = async (input: {
+      readonly mcp?: boolean;
+      readonly toolName: string;
+      readonly toolInput: unknown;
+      readonly agentId?: string;
+    }) => {
+      const matchers = (
+        options({ mcp: input.mcp ?? true, deviceToolsAvailable: false }).hooks?.PostToolUse ?? []
+      ).filter((matcher) => new RegExp(`^(?:${matcher.matcher})$`).test(input.toolName));
+      const outputs = await Promise.all(
+        matchers
+          .flatMap((matcher) => matcher.hooks)
+          .map((hook) =>
+            hook(
+              {
+                hook_event_name: "PostToolUse",
+                tool_name: input.toolName,
+                tool_input: input.toolInput,
+                tool_response: "",
+                tool_use_id: "toolu-1",
+                session_id: "native-thread-claude-devices",
+                transcript_path: "/transcript.jsonl",
+                cwd: "/workspace",
+                ...(input.agentId === undefined ? {} : { agent_id: input.agentId }),
+              },
+              "toolu-1",
+              { signal: new AbortController().signal },
+            ),
+          ),
+      );
+      return outputs.some((output) => "hookSpecificOutput" in output);
+    };
+    const background = { command: "npm test", run_in_background: true };
+    assert.isTrue(await reminded({ toolName: "Bash", toolInput: background }));
+    assert.isTrue(await reminded({ toolName: "Monitor", toolInput: { command: "tail -f log" } }));
+    assert.isFalse(await reminded({ toolName: "Bash", toolInput: { command: "npm test" } }));
+    assert.isFalse(await reminded({ toolName: "Read", toolInput: { run_in_background: true } }));
+    assert.isFalse(await reminded({ toolName: "Bash", toolInput: background, agentId: "agent-1" }));
+    assert.isFalse(await reminded({ mcp: false, toolName: "Bash", toolInput: background }));
+  });
+
   it("gives native subagents the device block only in a session with device access", async () => {
     // Subagents start from their task prompt, not the parent's system prompt.
     const subagentContext = (input: {
