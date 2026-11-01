@@ -140,6 +140,8 @@ export function sessionHasLegacyPermissions(session: SessionGrantInput): boolean
   return (
     session.authenticated &&
     permissions !== undefined &&
+    // View only grants exactly this on purpose, so pairing again wouldn't add anything.
+    !(permissions.length === 1 && permissions[0] === AuthOrchestrationReadScope) &&
     permissions.every((scope) => legacyScopes.has(scope)) &&
     Object.values(legacyParents).some((parent) => permissions.includes(parent))
   );
@@ -164,6 +166,9 @@ export const AuthStandardClientScopes = [
   AuthAccessWriteScope,
   AuthRelayWriteScope,
 ] as const;
+
+/** What T3 Connect devices get from a server shared View only. */
+export const AuthViewOnlyClientScopes = [AuthOrchestrationReadScope] as const;
 
 export const AuthTokenExchangeGrantType =
   "urn:ietf:params:oauth:grant-type:token-exchange" as const;

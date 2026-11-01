@@ -2,6 +2,7 @@ import { makeEnvironmentHttpApiClient } from "@t3tools/client-runtime/rpc";
 import type {
   EnvironmentCloudLinkStateResult,
   EnvironmentConnectReachability,
+  EnvironmentSharingMode,
 } from "@t3tools/contracts";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
@@ -19,8 +20,11 @@ export class PhoneSharingError extends Data.TaggedError("PhoneSharingError")<{
 export const PHONE_STILL_LISTED =
   "T3 Connect still lists this phone. Remove it under Settings > T3 Connect, signed in to the account it was shared with.";
 
+export const VIEW_ONLY_NEEDS_UPDATE =
+  "This phone's T3 Code server is too old for View only. Update T3 Code on this phone, then try again.";
+
 /** What the phone's server holds. Any link or tunnel config counts: only Off clears them. */
-export type PhoneSharing =
+export type PhoneSharing = (
   | { readonly shared: false }
   | {
       readonly shared: true;
@@ -28,15 +32,28 @@ export type PhoneSharing =
       readonly revoked: boolean;
       readonly cloudUserId: string | null;
       readonly reachability: EnvironmentConnectReachability | null;
-    };
+      readonly mode: EnvironmentSharingMode;
+      /** The last mode change didn't finish, so earlier sign-ins may keep their old access. */
+      readonly modeChangePending: boolean;
+    }
+) & {
+  /** The phone installs its server from releases, so it can be older than this app. */
+  readonly modesUnsupported?: true;
+};
 
 export function phoneSharingFromLinkState(state: EnvironmentCloudLinkStateResult): PhoneSharing {
-  if (!state.linked && !state.managedTunnelActive) return { shared: false };
+  const age =
+    state.sharingModeChangePending === undefined ? { modesUnsupported: true as const } : {};
+  if (!state.linked && !state.managedTunnelActive) return { shared: false, ...age };
   return {
+    ...age,
     shared: true,
     revoked: state.linkRevoked === true,
     cloudUserId: state.cloudUserId,
     reachability: state.reachability ?? null,
+    // A server shared before modes existed never stored one, and it still grants everything.
+    mode: state.sharingMode ?? "full-control",
+    modeChangePending: state.sharingModeChangePending === true,
   };
 }
 
@@ -71,6 +88,20 @@ export const readSharing = Effect.fn("PhoneSharing.read")(function* (
       Effect.mapError(failWith("Couldn't check whether this phone is shared.")),
     );
   return phoneSharingFromLinkState(state);
+});
+
+export const MODE_CHANGE_UNFINISHED =
+  "Couldn't finish changing what other devices can do. Devices signed in earlier may keep their old access. Try again.";
+
+/** Stored before other devices are signed out, so one reconnecting now gets the new mode. */
+export const setServerSharingMode = Effect.fn("PhoneSharing.setServerSharingMode")(function* (
+  connection: SavedRemoteConnection,
+  mode: EnvironmentSharingMode,
+) {
+  const { api, headers } = yield* phoneServerApi(connection);
+  yield* api.connect
+    .sharingMode({ headers, payload: { mode } })
+    .pipe(Effect.timeout(STOP_STEP_TIMEOUT), Effect.mapError(failWith(MODE_CHANGE_UNFINISHED)));
 });
 
 /** The latest result when the time is up; the link stands whatever this finds. */

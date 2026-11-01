@@ -1,13 +1,17 @@
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
+import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
+import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as SessionStore from "./SessionStore.ts";
 
@@ -41,7 +45,93 @@ const layerEnvironmentAuth = (
     Layer.provide(layerServerConfig(overrides)),
   );
 
+// Holds the session a credential exchange is about to issue, after the credential is spent.
+const layerEnvironmentAuthHoldingIssue = (hold: {
+  readonly reached: Deferred.Deferred<void>;
+  readonly released: Deferred.Deferred<void>;
+}) =>
+  EnvironmentAuth.layerFromStores.pipe(
+    Layer.provideMerge(PairingGrantStore.layer),
+    Layer.provideMerge(
+      Layer.effect(
+        SessionStore.SessionStore,
+        Effect.gen(function* () {
+          const sessions = yield* SessionStore.SessionStore;
+          return {
+            ...sessions,
+            issue: (input: Parameters<typeof sessions.issue>[0]) =>
+              input?.subject === "exchanging"
+                ? Deferred.succeed(hold.reached, undefined).pipe(
+                    Effect.andThen(Deferred.await(hold.released)),
+                    Effect.andThen(sessions.issue(input)),
+                  )
+                : sessions.issue(input),
+          };
+        }),
+      ).pipe(Layer.provide(SessionStore.layer)),
+    ),
+    Layer.provideMerge(EnvironmentAuthPolicy.layer),
+    Layer.provideMerge(ServerSecretStore.layer),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provide(ServerEnvironment.layerIdentity),
+    Layer.provide(layerServerConfig()),
+  );
+
 it.layer(NodeServices.layer)("EnvironmentAuth administrative operations", (it) => {
+  it.effect("revoking other access ends sessions and unused links but keeps the caller", () =>
+    Effect.gen(function* () {
+      const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
+      const caller = yield* environmentAuth.issueSession({ label: "phone" });
+      const other = yield* environmentAuth.issueSession({ label: "laptop" });
+      const unused = yield* environmentAuth.createPairingLink({ label: "unused" });
+
+      yield* environmentAuth.revokeOtherAccess(caller.sessionId);
+
+      expect((yield* sessions.verify(caller.token)).sessionId).toBe(caller.sessionId);
+      expect(yield* Effect.isFailure(sessions.verify(other.token))).toBe(true);
+      expect(yield* environmentAuth.listPairingLinks()).toEqual([]);
+      expect(
+        yield* Effect.isFailure(
+          environmentAuth.exchangeBootstrapCredentialForAccessToken(unused.credential, undefined, {
+            deviceType: "unknown",
+          }),
+        ),
+      ).toBe(true);
+    }).pipe(Effect.provide(layerEnvironmentAuth())),
+  );
+
+  it.effect("a credential already being exchanged can't outlive the revocation", () =>
+    Effect.gen(function* () {
+      const hold = {
+        reached: yield* Deferred.make<void>(),
+        released: yield* Deferred.make<void>(),
+      };
+      yield* Effect.gen(function* () {
+        const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const sessions = yield* SessionStore.SessionStore;
+        const caller = yield* environmentAuth.issueSession({ label: "phone" });
+        const link = yield* environmentAuth.createPairingLink({ subject: "exchanging" });
+
+        const exchange = yield* environmentAuth
+          .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, {
+            deviceType: "unknown",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(hold.reached);
+        const revocation = yield* environmentAuth
+          .revokeOtherAccess(caller.sessionId)
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(hold.released, undefined);
+        const exchanged = yield* Fiber.join(exchange);
+        yield* Fiber.join(revocation);
+
+        expect(yield* Effect.isFailure(sessions.verify(exchanged.access_token))).toBe(true);
+      }).pipe(Effect.provide(layerEnvironmentAuthHoldingIssue(hold)));
+    }),
+  );
+
   it.effect("creates, lists, and revokes client pairing links", () =>
     Effect.gen(function* () {
       const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;

@@ -1,4 +1,5 @@
 import {
+  AuthAccessWriteScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
   EnvironmentCloudEndpointUnavailableError,
@@ -140,6 +141,14 @@ export const layer = HttpApiBuilder.group(
       .handle("preferences", ({ payload }) =>
         requireEnvironmentScope(AuthRelayWriteScope).pipe(
           Effect.andThen(toHttpError(cloudLink.updatePreferences(payload))),
+        ),
+      )
+      .handle("sharingMode", ({ payload }) =>
+        requireEnvironmentScope(AuthRelayWriteScope).pipe(
+          Effect.andThen(requireEnvironmentScope(AuthAccessWriteScope)),
+          Effect.flatMap((session) =>
+            toHttpError(cloudLink.setSharingMode(payload.mode, session.sessionId)),
+          ),
         ),
       )
       .handle("health", ({ payload }) =>

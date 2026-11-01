@@ -3,7 +3,11 @@ import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { phoneSharingFromLinkState, stopServerSharing } from "./phone-sharing";
+import {
+  phoneSharingFromLinkState,
+  setServerSharingMode,
+  stopServerSharing,
+} from "./phone-sharing";
 
 const connection = {
   environmentId: EnvironmentId.make("phone"),
@@ -16,6 +20,7 @@ const connection = {
 };
 
 const linkState = {
+  sharingModeChangePending: false,
   linked: false,
   linkRevoked: false,
   cloudUserId: null,
@@ -34,6 +39,7 @@ function layerServer(failing: ReadonlySet<string> = new Set()) {
       return Response.json({ ok: true, endpointRuntimeStatus: { status: "disabled" } });
     }
     if (path === "/api/auth/clients/revoke-others") return Response.json({ revokedCount: 2 });
+    if (path === "/api/connect/sharing-mode") return Response.json(linkState);
     return Response.json({ revoked: true });
   };
   const layer = layerRemoteHttpClient((input) => {
@@ -45,6 +51,27 @@ function layerServer(failing: ReadonlySet<string> = new Set()) {
 }
 
 describe("phoneSharingFromLinkState", () => {
+  it("reads a shared server with no stored mode as Full control, which is what it grants", () => {
+    const shared = { ...linkState, linked: true, cloudUserId: "user_a" };
+    expect(phoneSharingFromLinkState(shared)).toMatchObject({
+      mode: "full-control",
+      modeChangePending: false,
+    });
+    expect(
+      phoneSharingFromLinkState({
+        ...shared,
+        sharingMode: "view-only",
+        sharingModeChangePending: true,
+      }),
+    ).toMatchObject({ mode: "view-only", modeChangePending: true });
+  });
+
+  it("spots a server from before sharing modes by what its link state leaves out", () => {
+    const { sharingModeChangePending: _absent, ...older } = linkState;
+    expect(phoneSharingFromLinkState(older)).toEqual({ shared: false, modesUnsupported: true });
+    expect(phoneSharingFromLinkState(linkState)).toEqual({ shared: false });
+  });
+
   it("counts anything the server still holds as shared, so Off can clear it", () => {
     expect(phoneSharingFromLinkState(linkState).shared).toBe(false);
     expect(
@@ -55,7 +82,14 @@ describe("phoneSharingFromLinkState", () => {
         cloudUserId: "user_a",
         managedTunnelActive: true,
       }),
-    ).toEqual({ shared: true, revoked: true, cloudUserId: "user_a", reachability: null });
+    ).toEqual({
+      shared: true,
+      revoked: true,
+      cloudUserId: "user_a",
+      reachability: null,
+      mode: "full-control",
+      modeChangePending: false,
+    });
     expect(phoneSharingFromLinkState({ ...linkState, managedTunnelActive: true }).shared).toBe(
       true,
     );
@@ -80,6 +114,16 @@ describe("stopServerSharing", () => {
     return Effect.gen(function* () {
       const error = yield* Effect.flip(stopServerSharing(connection, Effect.fail("no socket")));
       expect(error.message).toContain("couldn't be signed out");
+    }).pipe(Effect.provide(server.layer));
+  });
+});
+
+describe("setServerSharingMode", () => {
+  it.effect("asks the server to change the mode", () => {
+    const server = layerServer();
+    return Effect.gen(function* () {
+      yield* setServerSharingMode(connection, "view-only");
+      expect(server.requests).toEqual(["/api/connect/sharing-mode"]);
     }).pipe(Effect.provide(server.layer));
   });
 });

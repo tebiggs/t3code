@@ -555,6 +555,10 @@ it.live("one-click approves only access the browser session holds the scopes for
       expect(forged.status).toBe(400);
       expect(forged.message).toContain("Enter a pairing code instead");
 
+      // A session shared View only, so it can't hand an MCP client more than it has.
+      const viewer = yield* browserCookie(["orchestration:read"]);
+      expect((yield* details(viewer)).csrfToken).toBeUndefined();
+
       const reader = yield* browserCookie(["access:write", "orchestration:read"]);
       const readerDetails = yield* details(reader);
       expect(readerDetails.csrfToken).toEqual(expect.any(String));

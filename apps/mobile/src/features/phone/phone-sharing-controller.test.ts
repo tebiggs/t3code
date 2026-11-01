@@ -20,6 +20,8 @@ const shared = (cloudUserId: string | null): PhoneSharing => ({
   revoked: false,
   cloudUserId,
   reachability: null,
+  mode: "view-only",
+  modeChangePending: false,
 });
 const on: PhoneSharingRecord = { environmentId, accountId: "user_a", phase: "on" };
 
@@ -32,7 +34,9 @@ function setup(initial: PhoneSharingRecord | null = null, hydrated = async () =>
     stopFailure: null as string | null,
     deregisterFailure: null as string | null,
     saveFailure: null as string | null,
+    modeFailure: null as string | null,
   };
+  const setSharingMode = vi.fn(async () => state.modeFailure);
   const stopOnServer = vi.fn(async () => {
     if (state.stopFailure === null) state.sharing = { shared: false };
     return state.stopFailure;
@@ -51,10 +55,11 @@ function setup(initial: PhoneSharingRecord | null = null, hydrated = async () =>
     signedInAccount: () => state.account,
     readSharing: async () => (state.connected ? state.sharing : null),
     ensureRelayClient: async () => null,
+    setSharingMode,
     stopOnServer,
     deregister,
   });
-  return { state, controller, stopOnServer, deregister, loadRecord };
+  return { state, controller, setSharingMode, stopOnServer, deregister, loadRecord };
 }
 
 describe("createPhoneSharingController", () => {
@@ -64,6 +69,7 @@ describe("createPhoneSharingController", () => {
     const sharing = controller.share(
       connection,
       "user_a",
+      "view-only",
       () =>
         new Promise((resolve) => {
           finishLink = resolve;
@@ -79,6 +85,80 @@ describe("createPhoneSharingController", () => {
     await stopped;
     expect(stopOnServer).toHaveBeenCalled();
     expect(state.sharing).toEqual({ shared: false });
+  });
+
+  it("sets the mode before linking, and doesn't link when it can't", async () => {
+    const { state, controller, setSharingMode } = setup();
+    const link = vi.fn(async () => null);
+    state.modeFailure = "couldn't set the mode";
+    expect(await controller.share(connection, "user_a", "view-only", link)).toBe(
+      "couldn't set the mode",
+    );
+    expect(link).not.toHaveBeenCalled();
+    expect(state.record).toBeNull();
+
+    state.modeFailure = null;
+    expect(await controller.share(connection, "user_a", "full-control", link)).toBeNull();
+    expect(setSharingMode).toHaveBeenLastCalledWith(connection, "full-control");
+    expect(setSharingMode.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      link.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("won't share View only from a server too old to enforce it, but Full control still works", async () => {
+    const { state, controller, setSharingMode } = setup();
+    const link = vi.fn(async () => null);
+    state.sharing = { shared: false, modesUnsupported: true };
+
+    expect(await controller.share(connection, "user_a", "view-only", link)).toContain("too old");
+    expect(link).not.toHaveBeenCalled();
+    expect(state.record).toBeNull();
+
+    expect(await controller.share(connection, "user_a", "full-control", link)).toBeNull();
+    expect(link).toHaveBeenCalledOnce();
+    expect(setSharingMode).not.toHaveBeenCalled();
+  });
+
+  it("won't switch a server too old to enforce it to View only", async () => {
+    const { state, controller, setSharingMode } = setup(on);
+    state.sharing = { ...shared("user_a"), modesUnsupported: true };
+
+    expect(await controller.changeMode(connection, "view-only")).toContain("too old");
+    expect(setSharingMode).not.toHaveBeenCalled();
+  });
+
+  it("changes the mode only on a share that's on", async () => {
+    const { state, controller, setSharingMode } = setup(on);
+    state.sharing = shared("user_a");
+    expect(await controller.changeMode(connection, "full-control")).toBeNull();
+    expect(setSharingMode).toHaveBeenCalledExactlyOnceWith(connection, "full-control");
+
+    state.modeFailure = "not everyone was signed out";
+    expect(await controller.changeMode(connection, "view-only")).toBe(
+      "not everyone was signed out",
+    );
+
+    setSharingMode.mockClear();
+    state.modeFailure = null;
+    state.sharing = { shared: false };
+    expect(await controller.changeMode(connection, "view-only")).toContain("isn't shared");
+    state.sharing = null;
+    expect(await controller.changeMode(connection, "view-only")).toContain("Couldn't check");
+    state.sharing = shared("user_a");
+    state.record = { ...on, phase: "stopping" };
+    expect(await controller.changeMode(connection, "view-only")).toContain("hasn't finished");
+    expect(setSharingMode).not.toHaveBeenCalled();
+  });
+
+  it("lets a sign-out's stop win over a mode change queued after it", async () => {
+    const { state, controller, setSharingMode, stopOnServer } = setup(on);
+    state.sharing = shared("user_a");
+    const stopped = controller.stop();
+    const changed = controller.changeMode(connection, "full-control");
+    await stopped;
+    expect(await changed).toContain("isn't shared");
+    expect(stopOnServer).toHaveBeenCalled();
+    expect(setSharingMode).not.toHaveBeenCalled();
   });
 
   it("keeps Off open until signing out other clients succeeds", async () => {
@@ -105,7 +185,7 @@ describe("createPhoneSharingController", () => {
     state.stopFailure = "other devices couldn't be signed out";
     const link = vi.fn(async () => null);
 
-    expect(await controller.share(connection, "user_a", link)).toBe(state.stopFailure);
+    expect(await controller.share(connection, "user_a", "view-only", link)).toBe(state.stopFailure);
     expect(link).not.toHaveBeenCalled();
     expect(state.record).toEqual(stopping);
   });
@@ -115,9 +195,13 @@ describe("createPhoneSharingController", () => {
     const link = vi.fn(async () => null);
 
     state.sharing = shared("user_b");
-    expect(await controller.share(connection, "user_a", link)).toContain("already shared");
+    expect(await controller.share(connection, "user_a", "view-only", link)).toContain(
+      "already shared",
+    );
     state.sharing = null;
-    expect(await controller.share(connection, "user_a", link)).toContain("Couldn't check");
+    expect(await controller.share(connection, "user_a", "view-only", link)).toContain(
+      "Couldn't check",
+    );
     expect(link).not.toHaveBeenCalled();
     expect(state.record).toBeNull();
   });
@@ -174,9 +258,9 @@ describe("createPhoneSharingController", () => {
   it("rolls a failed share back in full, and keeps the listing until it's really gone", async () => {
     const { state, controller, stopOnServer, deregister } = setup();
     state.deregisterFailure = "relay down";
-    expect(await controller.share(connection, "user_a", async () => "over the limit")).toBe(
-      "over the limit",
-    );
+    expect(
+      await controller.share(connection, "user_a", "view-only", async () => "over the limit"),
+    ).toBe("over the limit");
     expect(stopOnServer).toHaveBeenCalledOnce();
     expect(state.record?.phase).toBe("listed");
 
@@ -278,7 +362,7 @@ describe("createPhoneSharingController", () => {
       state.sharing = shared("user_a");
       return null;
     });
-    expect(await controller.share(connection, "user_a", link)).toBeNull();
+    expect(await controller.share(connection, "user_a", "view-only", link)).toBeNull();
     expect(link).toHaveBeenCalledOnce();
     expect(stopOnServer).not.toHaveBeenCalled();
 

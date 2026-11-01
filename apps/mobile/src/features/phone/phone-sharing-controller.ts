@@ -1,8 +1,8 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, EnvironmentSharingMode } from "@t3tools/contracts";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
 import type { PhoneSharingRecord } from "../../persistence/mobile-preferences";
-import { PHONE_STILL_LISTED, type PhoneSharing } from "./phone-sharing";
+import { PHONE_STILL_LISTED, type PhoneSharing, VIEW_ONLY_NEEDS_UPDATE } from "./phone-sharing";
 
 const STOP_UNFINISHED =
   "Sharing hasn't finished stopping: other devices may still have access. T3 Code tries again when this phone's server answers.";
@@ -20,6 +20,11 @@ export interface PhoneSharingEffects {
   readonly readSharing: (connection: SavedRemoteConnection) => Promise<PhoneSharing | null>;
   /** Each returns the failure's text, or null. */
   readonly ensureRelayClient: (connection: SavedRemoteConnection) => Promise<string | null>;
+  /** Idempotent, so a change that couldn't sign everyone out can run again. */
+  readonly setSharingMode: (
+    connection: SavedRemoteConnection,
+    mode: EnvironmentSharingMode,
+  ) => Promise<string | null>;
   /** Idempotent, so an unfinished stop can run again from the start. */
   readonly stopOnServer: (connection: SavedRemoteConnection) => Promise<string | null>;
   /** Null too when the account no longer lists the phone. */
@@ -109,6 +114,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
     share: (
       connection: SavedRemoteConnection,
       accountId: string,
+      mode: EnvironmentSharingMode,
       link: () => Promise<string | null>,
     ) =>
       enqueue(async () => {
@@ -118,8 +124,15 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         const sharing = await effects.readSharing(connection);
         if (sharing === null) return "Couldn't check whether this phone is already shared.";
         if (sharing.shared) return "This phone is already shared.";
+        if (sharing.modesUnsupported && mode === "view-only") return VIEW_ONLY_NEEDS_UPDATE;
         const notReady = await effects.ensureRelayClient(connection);
         if (notReady !== null) return notReady;
+        // Before the link, so the first device to connect already gets this mode. A server too
+        // old to store one already grants Full control, the only mode it can be asked for here.
+        if (!sharing.modesUnsupported) {
+          const modeFailure = await effects.setSharingMode(connection, mode);
+          if (modeFailure !== null) return modeFailure;
+        }
         const environmentId = connection.environmentId;
         await effects.saveRecord({ environmentId, accountId, phase: "on" });
         const failure = await link();
@@ -127,6 +140,18 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         await effects.saveRecord({ environmentId, accountId, phase: "stopping" });
         await settle();
         return failure ?? "You signed out of T3 Connect, so this phone wasn't shared.";
+      }),
+
+    /** Between View only and Full control on a share that's already on. */
+    changeMode: (connection: SavedRemoteConnection, mode: EnvironmentSharingMode) =>
+      enqueue(async () => {
+        await honourOwedStop();
+        if (effects.loadRecord()?.phase === "stopping") return STOP_UNFINISHED;
+        const sharing = await effects.readSharing(connection);
+        if (sharing === null) return "Couldn't check whether this phone is shared.";
+        if (!sharing.shared) return "This phone isn't shared anymore.";
+        if (sharing.modesUnsupported) return VIEW_ONLY_NEEDS_UPDATE;
+        return effects.setSharingMode(connection, mode);
       }),
 
     /** Off, and signing out or switching accounts. Null when nothing is left to do. */

@@ -9,7 +9,7 @@ import {
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { type EnvironmentId, WS_METHODS } from "@t3tools/contracts";
+import { type EnvironmentId, type EnvironmentSharingMode, WS_METHODS } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -30,8 +30,10 @@ import { workspaceConnections } from "../../state/workspace";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
 import {
   failWith,
+  MODE_CHANGE_UNFINISHED,
   PhoneSharingError,
   readSharing,
+  setServerSharingMode,
   stopServerSharing,
   waitForReachability,
 } from "./phone-sharing";
@@ -112,6 +114,14 @@ const stopOnServer = createRuntimeCommand(connectionAtomRuntime, {
     stopServerSharing(connection, pairingLinkIds(connection.environmentId)),
 });
 
+const setModeOnServer = createRuntimeCommand(connectionAtomRuntime, {
+  label: "phone-server:set-sharing-mode",
+  execute: (input: {
+    readonly connection: SavedRemoteConnection;
+    readonly mode: EnvironmentSharingMode;
+  }) => setServerSharingMode(input.connection, input.mode),
+});
+
 const deregisterPhone = createRuntimeCommand(connectionAtomRuntime, {
   label: "phone-server:deregister",
   execute: (
@@ -187,6 +197,18 @@ const controller = createPhoneSharingController({
       }),
       "Couldn't set up the T3 Connect relay client.",
     ),
+  // Fixed text, whatever went wrong: what matters is that old sign-ins may have survived.
+  setSharingMode: async (connection, mode) =>
+    AsyncResult.isSuccess(
+      await runAtomCommand(
+        appAtomRegistry,
+        setModeOnServer,
+        { connection, mode },
+        { reportFailure: false },
+      ),
+    )
+      ? null
+      : MODE_CHANGE_UNFINISHED,
   stopOnServer: async (connection) =>
     failureText(
       await runAtomCommand(appAtomRegistry, stopOnServer, connection, { reportFailure: false }),
@@ -213,14 +235,19 @@ export const sharePhone = (input: {
   readonly accountId: string;
   readonly clerkToken: string;
   readonly liveActivitiesEnabled: boolean;
+  readonly mode: EnvironmentSharingMode;
 }) =>
-  controller.share(input.connection, input.accountId, async () =>
+  controller.share(input.connection, input.accountId, input.mode, async () =>
     failureText(
       await runAtomCommand(appAtomRegistry, linkServer, input, { reportFailure: false }),
       "Couldn't share this phone.",
     ),
   );
 
+export const changePhoneSharingMode = (
+  connection: SavedRemoteConnection,
+  mode: EnvironmentSharingMode,
+) => controller.changeMode(connection, mode);
 export const stopPhoneSharing = () => controller.stop();
 export const reconcilePhoneSharing = () => controller.reconcile();
 export const releasePhoneSharing = () => controller.release();

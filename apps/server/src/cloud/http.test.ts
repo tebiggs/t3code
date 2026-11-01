@@ -117,6 +117,7 @@ const withLinkProofClient = async (
       headers?: Record<string, string>,
       origin?: string,
     ) => Promise<Response>;
+    get: (path: string, headers?: Record<string, string>) => Promise<Response>;
     exchange: (credential: string, scope?: string) => Promise<string>;
   }) => Promise<void>,
 ) => {
@@ -136,6 +137,8 @@ const withLinkProofClient = async (
         body: JSON.stringify(payload),
       }),
     );
+  const get = (path: string, headers?: Record<string, string>) =>
+    handler(new Request(`${NON_LOOPBACK_ORIGIN}${path}`, headers ? { headers } : {}));
   const exchange = async (credential: string, scope?: string) => {
     const response = await handler(
       new Request(`${NON_LOOPBACK_ORIGIN}/oauth/token`, {
@@ -154,7 +157,7 @@ const withLinkProofClient = async (
     return payload.access_token;
   };
   try {
-    await body({ post, exchange });
+    await body({ post, get, exchange });
   } finally {
     await dispose();
   }
@@ -272,5 +275,86 @@ describe("link proof over a non-loopback desktop transport", () => {
     withLinkProofClient(async ({ post }) => {
       const response = await post("/api/connect/link-proof", proofRequest);
       expect(response.status).toBe(401);
+    }));
+});
+
+describe("sharing mode", () => {
+  it("changes the mode, signs out other clients and keeps the caller", () =>
+    withLinkProofClient(async ({ post, get, exchange }) => {
+      const phone = await exchange(DESKTOP_BOOTSTRAP_TOKEN);
+      const headers = { authorization: `Bearer ${phone}` };
+      const paired = await post(
+        "/api/auth/pairing-token",
+        { scopes: ["orchestration:read"] },
+        headers,
+      );
+      const { credential } = (await paired.json()) as { credential: string };
+      const other = await exchange(credential);
+
+      const changed = await post("/api/connect/sharing-mode", { mode: "view-only" }, headers);
+      expect(changed.status).toBe(200);
+      expect(await changed.json()).toMatchObject({
+        sharingMode: "view-only",
+        sharingModeChangePending: false,
+      });
+
+      const state = await get("/api/connect/link-state", headers);
+      expect(await state.json()).toMatchObject({ sharingMode: "view-only" });
+      const otherSession = await get("/api/auth/session", {
+        authorization: `Bearer ${other}`,
+      });
+      expect(await otherSession.json()).toMatchObject({ authenticated: false });
+    }));
+
+  it("reports no mode for a host that never set one", () =>
+    withLinkProofClient(async ({ get, exchange }) => {
+      const token = await exchange(DESKTOP_BOOTSTRAP_TOKEN);
+      const state = await get("/api/connect/link-state", { authorization: `Bearer ${token}` });
+      expect(await state.json()).not.toHaveProperty("sharingMode");
+    }));
+
+  it.each([
+    { path: "/api/connect/sharing-mode", payload: { mode: "full-control" }, scope: "relay:write" },
+    { path: "/api/connect/unlink", payload: {}, scope: "relay:write" },
+    { path: "/api/connect/link-proof", payload: proofRequest, scope: "relay:write" },
+    {
+      path: "/api/auth/pairing-token",
+      payload: { scopes: ["orchestration:read"] },
+      scope: "access:write",
+    },
+    { path: "/api/auth/clients/revoke-others", payload: {}, scope: "access:write" },
+  ])("refuses a View only session at $path", ({ path, payload, scope }) =>
+    withLinkProofClient(async ({ post, exchange }) => {
+      const phone = await exchange(DESKTOP_BOOTSTRAP_TOKEN);
+      const paired = await post(
+        "/api/auth/pairing-token",
+        { scopes: ["orchestration:read"] },
+        { authorization: `Bearer ${phone}` },
+      );
+      const { credential } = (await paired.json()) as { credential: string };
+      const viewer = await exchange(credential);
+
+      const refused = await post(path, payload, { authorization: `Bearer ${viewer}` });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ requiredPermission: scope });
+    }),
+  );
+
+  it("needs both relay and access write, since it signs clients out", () =>
+    withLinkProofClient(async ({ post, exchange }) => {
+      const phone = await exchange(DESKTOP_BOOTSTRAP_TOKEN);
+      const paired = await post(
+        "/api/auth/pairing-token",
+        { scopes: ["relay:write"] },
+        { authorization: `Bearer ${phone}` },
+      );
+      const { credential } = (await paired.json()) as { credential: string };
+      const relayOnly = await exchange(credential);
+      const refused = await post(
+        "/api/connect/sharing-mode",
+        { mode: "view-only" },
+        { authorization: `Bearer ${relayOnly}` },
+      );
+      expect(refused.status).toBe(403);
     }));
 });

@@ -11,6 +11,8 @@ import {
   ThreadId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthViewOnlyClientScopes,
+  ORCHESTRATION_V2_WS_METHODS,
   AuthSourceControlWriteScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
@@ -316,6 +318,42 @@ describe("thread context authorization", () => {
         expect(handled.at(-1)).toBe("allowed");
       }).pipe(Effect.scoped),
   );
+});
+
+it("a View only session reads threads and reaches nothing that changes them", () => {
+  const viewerMethods = [
+    ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+    ORCHESTRATION_V2_WS_METHODS.launchThread,
+    ORCHESTRATION_V2_WS_METHODS.forceStopThread,
+    ORCHESTRATION_V2_WS_METHODS.subscribeThread,
+    ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+    WS_METHODS.terminalOpen,
+    WS_METHODS.terminalAttach,
+    WS_METHODS.terminalWrite,
+    WS_METHODS.terminalObserve,
+    WS_METHODS.subscribeTerminalMetadata,
+    WS_METHODS.projectsReadFile,
+    WS_METHODS.projectsWriteFile,
+    WS_METHODS.filesystemBrowse,
+    WS_METHODS.attachmentsCreateUploadUrl,
+    WS_METHODS.assetsPersistChatAttachments,
+    WS_METHODS.secretsAnswerRequest,
+    WS_METHODS.serverUpdateSettings,
+    WS_METHODS.cloudInstallRelayClient,
+    WS_METHODS.subscribeAuthAccess,
+    WS_METHODS.guestShareCreate,
+    WS_METHODS.peerLinksAnswerRequest,
+    WS_METHODS.mcpAppsCallTool,
+    WS_METHODS.shellOpenInEditor,
+    WS_METHODS.scheduledTasksUpsert,
+  ];
+  const allowed = viewerMethods.filter((method) =>
+    AuthViewOnlyClientScopes.some((scope) => scope === requiredScopeForRpcMethod(method)),
+  );
+  expect(allowed).toEqual([
+    ORCHESTRATION_V2_WS_METHODS.subscribeThread,
+    ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+  ]);
 });
 
 it.effect("separates host file URLs from readable attachment URLs", () =>

@@ -1,5 +1,15 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  AuthViewOnlyClientScopes,
+  EnvironmentId,
+} from "@t3tools/contracts";
+import { RELAY_MINT_REQUEST_TYP, signRelayJwt } from "@t3tools/shared/relayJwt";
 import { assert, it } from "@effect/vitest";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no generateKeyPairSync.
+import * as NodeCrypto from "node:crypto";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -19,6 +29,10 @@ import * as CloudLink from "./CloudLink.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import {
+  CLOUD_LINKED_USER_ID,
+  CLOUD_MINT_PUBLIC_KEY,
+  CLOUD_SHARING_MODE,
+  CLOUD_SHARING_MODE_CHANGE_PENDING,
   HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET,
   PUBLISH_AGENT_ACTIVITY_SECRET,
   RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
@@ -26,6 +40,36 @@ import {
 } from "./config.ts";
 
 const encode = (value: string) => new TextEncoder().encode(value);
+const decode = (value: Uint8Array | undefined) => new TextDecoder().decode(value);
+const callerSession = AuthSessionId.make("session-phone");
+
+const mintKeys = NodeCrypto.generateKeyPairSync("ed25519", {
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+});
+let mintProofCount = 0;
+const mintRequest = Effect.gen(function* () {
+  mintProofCount += 1;
+  const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+  const proof = yield* signRelayJwt({
+    privateKey: mintKeys.privateKey,
+    typ: RELAY_MINT_REQUEST_TYP,
+    payload: {
+      iss: "https://relay.test",
+      aud: "t3-env:environment-1",
+      sub: "user-1",
+      jti: `jti-${mintProofCount}`,
+      iat: now,
+      exp: now + 60,
+      environmentId: "environment-1",
+      clientProofKeyThumbprint: "thumbprint",
+      cnf: { jkt: "thumbprint" },
+      nonce: `nonce-${mintProofCount}`,
+      scope: ["environment:connect"],
+    },
+  });
+  return { proof };
+}).pipe(Effect.orDie);
 
 const withService = <A, E>(
   options: {
@@ -38,9 +82,13 @@ const withService = <A, E>(
       readonly started: () => void;
       readonly released: Promise<void>;
     };
+    readonly auth?: Partial<EnvironmentAuth.EnvironmentAuth["Service"]>;
+    readonly initialSecrets?: ReadonlyArray<readonly [string, string]>;
+    readonly failSecretRead?: string;
   },
   body: (input: {
     readonly preferences: { readonly update: CloudLink.CloudLink["Service"]["updatePreferences"] };
+    readonly link: CloudLink.CloudLink["Service"];
     readonly stored: Map<string, Uint8Array>;
     readonly relayCalls: Array<boolean>;
   }) => Effect.Effect<A, E, never>,
@@ -51,6 +99,11 @@ const withService = <A, E>(
       [RELAY_ENVIRONMENT_CREDENTIAL_SECRET, encode("credential")],
       [HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET, encode("false")],
       [PUBLISH_AGENT_ACTIVITY_SECRET, encode("false")],
+      [CLOUD_MINT_PUBLIC_KEY, encode(mintKeys.publicKey)],
+      [CLOUD_LINKED_USER_ID, encode("user-1")],
+      ...(options.initialSecrets ?? []).map(
+        ([name, value]) => [name, encode(value)] as [string, Uint8Array],
+      ),
     ]);
     const relayCalls: Array<boolean> = [];
     const fetch: typeof globalThis.fetch = Object.assign(
@@ -71,7 +124,8 @@ const withService = <A, E>(
       Layer.mock(ServerSecretStore.ServerSecretStore)({
         get: (name) =>
           (options.failActivityRead && name === PUBLISH_AGENT_ACTIVITY_SECRET) ||
-          (options.failHoldRead && name === HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET)
+          (options.failHoldRead && name === HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET) ||
+          options.failSecretRead === name
             ? Effect.fail(
                 new ServerSecretStore.SecretStoreReadError({
                   resource: name,
@@ -89,6 +143,8 @@ const withService = <A, E>(
                 }),
               )
             : Effect.sync(() => void stored.set(name, value)),
+        create: (name, value) => Effect.sync(() => void stored.set(name, value)),
+        remove: (name) => Effect.sync(() => void stored.delete(name)),
       }),
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-1")),
@@ -98,7 +154,7 @@ const withService = <A, E>(
       Layer.mock(ConnectReachability.ConnectReachability)({
         latest: Effect.succeedNone,
       }),
-      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)(options.auth ?? {}),
       Layer.mock(CliTokenManager.CloudCliTokenManager)({}),
       Layer.mock(HttpServer.HttpServer)({
         address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
@@ -112,7 +168,12 @@ const withService = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const link = yield* CloudLink.CloudLink;
-      return yield* body({ preferences: { update: link.updatePreferences }, stored, relayCalls });
+      return yield* body({
+        preferences: { update: link.updatePreferences },
+        link,
+        stored,
+        relayCalls,
+      });
     }).pipe(
       Effect.provide(CloudLink.layer.pipe(Layer.provide(layerDependencies))),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
@@ -242,5 +303,254 @@ it.effect("an update the client walks away from still finishes", () => {
         "true",
       );
     }),
+  );
+});
+
+const issuedLink = {
+  id: "link",
+  credential: "credential",
+  scopes: [],
+  subject: "cloud-connect",
+  expiresAt: DateTime.makeUnsafe(120_000),
+} as unknown as EnvironmentAuth.IssuedPairingLink;
+
+it.effect.each([
+  { name: "no stored mode", initial: [], scopes: AuthStandardClientScopes },
+  {
+    name: "Full control",
+    initial: [[CLOUD_SHARING_MODE, "full-control"]] as const,
+    scopes: AuthStandardClientScopes,
+  },
+  {
+    name: "View only",
+    initial: [[CLOUD_SHARING_MODE, "view-only"]] as const,
+    scopes: AuthViewOnlyClientScopes,
+  },
+  {
+    name: "a mode this version doesn't know",
+    initial: [[CLOUD_SHARING_MODE, "guest"]] as const,
+    scopes: AuthViewOnlyClientScopes,
+  },
+])("a device minting under $name gets the matching scopes", ({ initial, scopes }) => {
+  const minted: Array<ReadonlyArray<string>> = [];
+  return withService(
+    {
+      initialSecrets: initial,
+      auth: {
+        createPairingLink: (input) => {
+          minted.push(input?.scopes ?? []);
+          return Effect.succeed(issuedLink);
+        },
+      },
+    },
+    ({ link }) =>
+      Effect.gen(function* () {
+        yield* link.mintCredential(yield* mintRequest);
+        assert.deepEqual(minted, [scopes]);
+      }),
+  );
+});
+
+it.effect("an unreadable mode refuses the mint instead of granting full access", () => {
+  const minted: Array<unknown> = [];
+  return withService(
+    {
+      failSecretRead: CLOUD_SHARING_MODE,
+      auth: {
+        createPairingLink: (input) => {
+          minted.push(input);
+          return Effect.succeed(issuedLink);
+        },
+      },
+    },
+    ({ link }) =>
+      Effect.gen(function* () {
+        const failure = yield* link.mintCredential(yield* mintRequest).pipe(Effect.flip);
+        assert.equal(failure._tag, "CloudLinkInternalError");
+        assert.deepEqual(minted, []);
+      }),
+  );
+});
+
+it.effect("a mode change stores the mode before signing anyone out", () => {
+  const seenAtRevoke: Array<string> = [];
+  let stored: Map<string, Uint8Array> | undefined;
+  return withService(
+    {
+      auth: {
+        revokeOtherAccess: (sessionId) =>
+          Effect.sync(() => {
+            seenAtRevoke.push(sessionId, decode(stored?.get(CLOUD_SHARING_MODE)));
+          }),
+      },
+    },
+    ({ link, stored: secrets }) =>
+      Effect.gen(function* () {
+        stored = secrets;
+        const state = yield* link.setSharingMode("view-only", callerSession);
+        assert.deepEqual(seenAtRevoke, [callerSession, "view-only"]);
+        assert.equal(state.sharingMode, "view-only");
+        assert.equal(state.sharingModeChangePending, false);
+        assert.isFalse(secrets.has(CLOUD_SHARING_MODE_CHANGE_PENDING));
+      }),
+  );
+});
+
+it.effect("a failed sign-out keeps the new mode and says the change isn't finished", () => {
+  let failing = true;
+  return withService(
+    {
+      auth: {
+        revokeOtherAccess: () =>
+          failing
+            ? Effect.fail(
+                new EnvironmentAuth.ServerAuthOtherSessionsRevocationError({
+                  cause: new Error("locked"),
+                }),
+              )
+            : Effect.void,
+      },
+    },
+    ({ link, stored }) =>
+      Effect.gen(function* () {
+        const failure = yield* link.setSharingMode("view-only", callerSession).pipe(Effect.flip);
+        assert.equal(failure._tag, "CloudLinkInternalError");
+        assert.equal(decode(stored.get(CLOUD_SHARING_MODE)), "view-only");
+        const pending = yield* link.linkState();
+        assert.equal(pending.sharingMode, "view-only");
+        assert.equal(pending.sharingModeChangePending, true);
+
+        failing = false;
+        const retried = yield* link.setSharingMode("view-only", callerSession);
+        assert.equal(retried.sharingModeChangePending, false);
+      }),
+  );
+});
+
+it.effect("a change the client walks away from still signs the others out", () => {
+  let release!: () => void;
+  let started!: () => void;
+  let revoked = false;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const atRevoke = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  return withService(
+    {
+      auth: {
+        revokeOtherAccess: () =>
+          Effect.promise(() => {
+            started();
+            return released;
+          }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                revoked = true;
+              }),
+            ),
+          ),
+      },
+    },
+    ({ link, stored }) =>
+      Effect.gen(function* () {
+        const change = yield* link
+          .setSharingMode("view-only", callerSession)
+          .pipe(Effect.forkChild);
+        yield* Effect.promise(() => atRevoke);
+        const interrupted = yield* Fiber.interrupt(change).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        release();
+        yield* Fiber.join(interrupted);
+        assert.isTrue(revoked);
+        assert.isFalse(stored.has(CLOUD_SHARING_MODE_CHANGE_PENDING));
+      }),
+  );
+});
+
+it.effect("a mint in progress finishes before a mode change can sign anyone out", () => {
+  const events: Array<string> = [];
+  let release!: () => void;
+  let started!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const atMint = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  return withService(
+    {
+      auth: {
+        createPairingLink: (input) =>
+          Effect.promise(() => {
+            started();
+            return released;
+          }).pipe(
+            Effect.map(() => {
+              events.push(`minted:${String(input?.scopes?.length)}`);
+              return issuedLink;
+            }),
+          ),
+        revokeOtherAccess: () => Effect.sync(() => void events.push("revoked")),
+      },
+    },
+    ({ link }) =>
+      Effect.gen(function* () {
+        const mint = yield* link.mintCredential(yield* mintRequest).pipe(Effect.forkChild);
+        yield* Effect.promise(() => atMint);
+        const change = yield* link
+          .setSharingMode("view-only", callerSession)
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assert.deepEqual(events, []);
+        release();
+        yield* Fiber.join(mint);
+        yield* Fiber.join(change);
+        assert.deepEqual(events, [`minted:${AuthStandardClientScopes.length}`, "revoked"]);
+      }),
+  );
+});
+
+it.effect("a mint during a mode change waits and gets the new scopes", () => {
+  const minted: Array<ReadonlyArray<string>> = [];
+  let release!: () => void;
+  let started!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const atRevoke = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  return withService(
+    {
+      auth: {
+        createPairingLink: (input) =>
+          Effect.sync(() => {
+            minted.push(input?.scopes ?? []);
+            return issuedLink;
+          }),
+        revokeOtherAccess: () =>
+          Effect.promise(() => {
+            started();
+            return released;
+          }),
+      },
+    },
+    ({ link }) =>
+      Effect.gen(function* () {
+        const request = yield* mintRequest;
+        const change = yield* link
+          .setSharingMode("view-only", callerSession)
+          .pipe(Effect.forkChild);
+        yield* Effect.promise(() => atRevoke);
+        const mint = yield* link.mintCredential(request).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assert.deepEqual(minted, []);
+        release();
+        yield* Fiber.join(change);
+        yield* Fiber.join(mint);
+        assert.deepEqual(minted, [AuthViewOnlyClientScopes]);
+      }),
   );
 });
