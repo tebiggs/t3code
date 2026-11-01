@@ -32,6 +32,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -554,6 +555,23 @@ export class EnvironmentAuth extends Context.Service<
       },
       ServerAuthInternalError
     >;
+    /** Advances when other access is revoked, so an approval from before it can be refused. */
+    readonly accessGeneration: Effect.Effect<number>;
+    /** Issues a session for an approval, unless other access was revoked since it was given. */
+    readonly redeemMcpApproval: (input: {
+      readonly label: string;
+      readonly access: AuthMcpClientAccess;
+      readonly peerLink: boolean;
+      readonly client: AuthClientMetadata;
+      readonly approvedAtGeneration: number;
+    }) => Effect.Effect<
+      {
+        readonly sessionId: AuthSessionId;
+        readonly token: string;
+        readonly expiresAt: DateTime.DateTime;
+      },
+      ServerAuthInternalError | ServerAuthScopeNotGrantedError
+    >;
     /** Spends a code covering all granted scopes. Rejects desktop grants and leaves refused proof-bound codes unspent. */
     readonly consumeMcpApprovalCode: (
       code: string,
@@ -710,6 +728,7 @@ export const make = Effect.gen(function* () {
   const sessions = yield* SessionStore.SessionStore;
   // Spending a credential and issuing its session are separate steps; revocation must not fit between.
   const credentialExchangeLock = yield* Semaphore.make(1);
+  const accessGenerationRef = yield* Ref.make(0);
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const crypto = yield* Crypto.Crypto;
   const descriptor = yield* policy.getDescriptor();
@@ -1208,7 +1227,8 @@ export const make = Effect.gen(function* () {
 
   const revokeOtherAccess: EnvironmentAuth["Service"]["revokeOtherAccess"] = (currentSessionId) =>
     credentialExchangeLock.withPermits(1)(
-      listPairingLinks().pipe(
+      Ref.update(accessGenerationRef, (generation) => generation + 1).pipe(
+        Effect.andThen(listPairingLinks()),
         Effect.flatMap((pairingLinks) =>
           Effect.forEach(pairingLinks, (link) => revokePairingLink(link.id), { discard: true }),
         ),
@@ -1361,6 +1381,19 @@ export const make = Effect.gen(function* () {
         Effect.withSpan("EnvironmentAuth.issueMcpClientSession"),
       );
 
+  const redeemMcpApproval: EnvironmentAuth["Service"]["redeemMcpApproval"] = ({
+    approvedAtGeneration,
+    ...input
+  }) =>
+    credentialExchangeLock.withPermits(1)(
+      Effect.gen(function* () {
+        if ((yield* Ref.get(accessGenerationRef)) !== approvedAtGeneration) {
+          return yield* new ServerAuthScopeNotGrantedError({});
+        }
+        return yield* issueMcpClientSession(input);
+      }),
+    );
+
   const authenticateBrowserSession: EnvironmentAuth["Service"]["authenticateBrowserSession"] = (
     request,
   ) => {
@@ -1421,6 +1454,8 @@ export const make = Effect.gen(function* () {
     issueStartupPairingUrl,
     authenticateMcpClient,
     issueMcpClientSession,
+    accessGeneration: Ref.get(accessGenerationRef),
+    redeemMcpApproval,
     consumeMcpApprovalCode,
     authenticateBrowserSession,
   });

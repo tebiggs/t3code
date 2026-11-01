@@ -184,6 +184,7 @@ interface PendingCode {
   readonly codeChallenge: string;
   readonly resource: string;
   readonly access: AuthMcpClientAccess;
+  readonly approvedAtGeneration: number;
   readonly expiresAtMs: number;
 }
 
@@ -413,6 +414,7 @@ const make = Effect.gen(function* () {
   const mintCode = Effect.fn("McpOAuth.mintCode")(function* (
     authorization: AuthorizationRequest,
     access: AuthMcpClientAccess,
+    approvedAtGeneration: number,
   ) {
     const now = yield* Clock.currentTimeMillis;
     const code = Buffer.from(yield* crypto.randomBytes(32).pipe(Effect.orDie)).toString(
@@ -428,6 +430,7 @@ const make = Effect.gen(function* () {
         codeChallenge: authorization.codeChallenge,
         resource: authorization.resource,
         access,
+        approvedAtGeneration,
         expiresAtMs: now + AUTHORIZATION_CODE_TTL_MS,
       });
       return next;
@@ -437,6 +440,8 @@ const make = Effect.gen(function* () {
 
   const approve: McpOAuth["Service"]["approve"] = Effect.fn("McpOAuth.approve")(function* (input) {
     const { decision } = input;
+    // Read before the approver is checked: a revocation after that check must void this code.
+    const approvedAtGeneration = yield* environmentAuth.accessGeneration;
     if (decision._tag === "pairing-code") {
       yield* environmentAuth.consumeMcpApprovalCode(decision.code, decision.access).pipe(
         Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (cause) =>
@@ -463,7 +468,7 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    const code = yield* mintCode(input.authorization, decision.access);
+    const code = yield* mintCode(input.authorization, decision.access, approvedAtGeneration);
     yield* Effect.logInfo("Approved an MCP client sign-in.", {
       client: input.authorization.client.name,
       access: decision.access,
@@ -523,11 +528,12 @@ const make = Effect.gen(function* () {
         return yield* fail("invalid_grant", "The authorization code is invalid or expired.");
       }
       const issued = yield* environmentAuth
-        .issueMcpClientSession({
+        .redeemMcpApproval({
           label: pending.clientName,
           access: pending.access,
           peerLink: pending.peerLink,
           client: deriveAuthClientMetadata({ request }),
+          approvedAtGeneration: pending.approvedAtGeneration,
         })
         .pipe(
           Effect.catch((cause) =>
