@@ -191,7 +191,14 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
   };
 
   const changeMode = async (mode: EnvironmentSharingMode) => {
-    setActionError(await changePhoneSharingMode(connection, mode));
+    const failure = await changePhoneSharingMode(connection, mode);
+    setActionError(failure);
+    // The server took it, so a failed read below mustn't leave the old mode on screen.
+    if (failure === null) {
+      setSharing((current) =>
+        current?.shared ? { ...current, mode, modeChangePending: false } : current,
+      );
+    }
     finish();
     check();
   };

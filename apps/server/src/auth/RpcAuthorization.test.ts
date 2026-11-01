@@ -344,6 +344,7 @@ it("a View only session reads threads and reaches nothing that changes them", ()
     WS_METHODS.guestShareCreate,
     WS_METHODS.peerLinksAnswerRequest,
     WS_METHODS.mcpAppsCallTool,
+    WS_METHODS.mcpAppsReadResource,
     WS_METHODS.shellOpenInEditor,
     WS_METHODS.scheduledTasksUpsert,
   ];

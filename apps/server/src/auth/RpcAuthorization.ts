@@ -163,7 +163,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerUploadFeedback]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsCallTool]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsToolInfo]: AuthOrchestrationReadScope,
-  [WS_METHODS.mcpAppsReadResource]: AuthOrchestrationReadScope,
+  // Takes any URI on the app's server, which can hold more than the thread shows.
+  [WS_METHODS.mcpAppsReadResource]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsUpdateModelContext]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribeVcsStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeWorktreeSetup]: AuthOrchestrationReadScope,
