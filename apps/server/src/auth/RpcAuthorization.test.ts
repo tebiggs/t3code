@@ -27,6 +27,7 @@ import * as RpcTest from "effect/rpc/RpcTest";
 
 import {
   RPC_REQUIRED_SCOPES,
+  deviceListIsPassive,
   requiredScopeForRpcMethod,
   requiredScopeForDeviceList,
 } from "./RpcAuthorization.ts";
@@ -320,6 +321,15 @@ describe("thread context authorization", () => {
   );
 });
 
+it("lists devices passively for a session that can't ready their hosts", () => {
+  expect(deviceListIsPassive({}, false)).toBe(true);
+  expect(deviceListIsPassive({}, true)).toBe(false);
+  expect(deviceListIsPassive({ inspectOnly: true }, true)).toBe(true);
+  // These stay active so the scope check refuses them instead of quietly answering.
+  expect(deviceListIsPassive({ updateTool: "hub" }, false)).toBe(false);
+  expect(deviceListIsPassive({ retryHostId: "local" }, false)).toBe(false);
+});
+
 it("a View only session reads threads and reaches nothing that changes them", () => {
   const viewerMethods = [
     ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
@@ -345,6 +355,7 @@ it("a View only session reads threads and reaches nothing that changes them", ()
     WS_METHODS.peerLinksAnswerRequest,
     WS_METHODS.mcpAppsCallTool,
     WS_METHODS.mcpAppsReadResource,
+    WS_METHODS.deviceDetail,
     WS_METHODS.shellOpenInEditor,
     WS_METHODS.scheduledTasksUpsert,
   ];

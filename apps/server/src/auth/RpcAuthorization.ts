@@ -203,7 +203,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.deviceOpen]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceClose]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceShutdown]: AuthOrchestrationOperateScope,
-  [WS_METHODS.deviceDetail]: AuthOrchestrationReadScope,
+  // Reading a device first readies its host, which can install tools and start the hub.
+  [WS_METHODS.deviceDetail]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceAction]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribeDeviceState]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
@@ -292,6 +293,10 @@ export const layer = (
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */
+/** A full listing also readies hosts, so a session that can't operate gets the passive view. */
+export const deviceListIsPassive = (input: DeviceListInput, canOperate: boolean): boolean =>
+  !input.updateTool && (input.inspectOnly === true || (!canOperate && !input.retryHostId));
+
 export const requiredScopeForDeviceList = (input: DeviceListInput): AuthEnvironmentScope =>
   input.retryHostId || input.updateTool
     ? AuthOrchestrationOperateScope

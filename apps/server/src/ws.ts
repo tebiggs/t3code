@@ -228,7 +228,11 @@ import * as DefectReporter from "./observability/DefectReporter.ts";
 import * as EventLoopMonitor from "./observability/EventLoopMonitor.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { requiredScopeForDeviceList, rpcAuthorizationError } from "./auth/RpcAuthorization.ts";
+import {
+  deviceListIsPassive,
+  requiredScopeForDeviceList,
+  rpcAuthorizationError,
+} from "./auth/RpcAuthorization.ts";
 import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
 import { RpcInstrumentation, rpcInstrumentationLayer } from "./observability/RpcInstrumentation.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -3048,7 +3052,7 @@ export const layerWsRpc = (
         [WS_METHODS.deviceEasAccount]: (input) => deviceService.easAccount(input),
         [WS_METHODS.deviceSimlockIdentity]: (input) => deviceService.simlockIdentity(input),
         [WS_METHODS.deviceList]: (input) =>
-          input.inspectOnly && !input.updateTool
+          deviceListIsPassive(input, currentSession.scopes.includes(AuthOrchestrationOperateScope))
             ? deviceService.inspect
             : authorizeEffect(
                 requiredScopeForDeviceList(input),
