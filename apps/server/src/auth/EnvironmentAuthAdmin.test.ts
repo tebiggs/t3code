@@ -101,6 +101,38 @@ it.layer(NodeServices.layer)("EnvironmentAuth administrative operations", (it) =
     }).pipe(Effect.provide(layerEnvironmentAuth())),
   );
 
+  it.effect("a link created inside the grant lock can't outlive a revocation waiting on it", () =>
+    Effect.gen(function* () {
+      const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const caller = yield* environmentAuth.issueSession({ label: "phone" });
+      const other = yield* environmentAuth.issueSession({ label: "laptop" });
+      expect(yield* environmentAuth.isSessionActive(other.sessionId)).toBe(true);
+      const inLock = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+
+      const issuing = yield* environmentAuth
+        .withGrantLock(
+          Deferred.succeed(inLock, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(environmentAuth.createPairingLink({ label: "late" })),
+          ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(inLock);
+      const revocation = yield* environmentAuth
+        .revokeOtherAccess(caller.sessionId)
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(issuing);
+      yield* Fiber.join(revocation);
+
+      expect(yield* environmentAuth.listPairingLinks()).toEqual([]);
+      expect(yield* environmentAuth.isSessionActive(other.sessionId)).toBe(false);
+      expect(yield* environmentAuth.isSessionActive(caller.sessionId)).toBe(true);
+    }).pipe(Effect.provide(layerEnvironmentAuth())),
+  );
+
   it.effect("a credential already being exchanged can't outlive the revocation", () =>
     Effect.gen(function* () {
       const hold = {

@@ -154,7 +154,10 @@ const withService = <A, E>(
       Layer.mock(ConnectReachability.ConnectReachability)({
         latest: Effect.succeedNone,
       }),
-      Layer.mock(EnvironmentAuth.EnvironmentAuth)(options.auth ?? {}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+        isSessionActive: () => Effect.succeed(true),
+        ...options.auth,
+      }),
       Layer.mock(CliTokenManager.CloudCliTokenManager)({}),
       Layer.mock(HttpServer.HttpServer)({
         address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
@@ -392,6 +395,26 @@ it.effect("a mode change stores the mode before signing anyone out", () => {
         assert.equal(state.sharingMode, "view-only");
         assert.equal(state.sharingModeChangePending, false);
         assert.isFalse(secrets.has(CLOUD_SHARING_MODE_CHANGE_PENDING));
+      }),
+  );
+});
+
+it.effect("a caller signed out while its change waited can't undo the mode", () => {
+  const revoked: Array<string> = [];
+  return withService(
+    {
+      initialSecrets: [[CLOUD_SHARING_MODE, "view-only"]],
+      auth: {
+        isSessionActive: () => Effect.succeed(false),
+        revokeOtherAccess: (sessionId) => Effect.sync(() => void revoked.push(sessionId)),
+      },
+    },
+    ({ link, stored }) =>
+      Effect.gen(function* () {
+        const failure = yield* link.setSharingMode("full-control", callerSession).pipe(Effect.flip);
+        assert.equal(failure._tag, "CloudLinkInternalError");
+        assert.equal(decode(stored.get(CLOUD_SHARING_MODE)), "view-only");
+        assert.deepEqual(revoked, []);
       }),
   );
 });

@@ -440,7 +440,7 @@ const make = Effect.gen(function* () {
 
   const approve: McpOAuth["Service"]["approve"] = Effect.fn("McpOAuth.approve")(function* (input) {
     const { decision } = input;
-    // Read before the approver is checked: a revocation after that check must void this code.
+    // Held from checking the approver to minting, so a revocation either stops this or voids its code.
     const approvedAtGeneration = yield* environmentAuth.accessGeneration;
     if (decision._tag === "pairing-code") {
       yield* environmentAuth.consumeMcpApprovalCode(decision.code, decision.access).pipe(
@@ -479,7 +479,7 @@ const make = Effect.gen(function* () {
       state: input.authorization.state,
       iss: input.authorization.issuer,
     });
-  });
+  }, environmentAuth.withGrantLock);
 
   const deny: McpOAuth["Service"]["deny"] = (authorization) =>
     redirectWith(authorization.redirectUri, {

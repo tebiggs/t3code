@@ -1433,6 +1433,12 @@ const make = Effect.gen(function* () {
 
   const setSharingMode = Effect.fn("environment.cloud.setSharingMode")(
     function* (mode: EnvironmentSharingMode, callerSessionId: AuthSessionId) {
+      // A change this one waited behind may have signed this caller out.
+      if (!(yield* environmentAuth.isSessionActive(callerSessionId))) {
+        return yield* internalError("change-sharing-mode")(
+          new Error("The session asking for this change was signed out while it waited."),
+        );
+      }
       // Pending goes first and clears last, so a failure at any step still shows on the phone.
       yield* secrets.set(CLOUD_SHARING_MODE_CHANGE_PENDING, stringToBytes("true"));
       yield* secrets.set(CLOUD_SHARING_MODE, stringToBytes(mode));

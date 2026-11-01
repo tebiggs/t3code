@@ -521,6 +521,12 @@ export class EnvironmentAuth extends Context.Service<
     readonly revokeOtherClientSessions: (
       currentSessionId: AuthSessionId,
     ) => Effect.Effect<number, ServerAuthInternalError>;
+    /** Runs a step that grants access so it can't straddle `revokeOtherAccess`. Not reentrant. */
+    readonly withGrantLock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+    /** For a request that waited: its session may have been revoked since it was authenticated. */
+    readonly isSessionActive: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<boolean, ServerAuthInternalError>;
     /** Ends every other session and pairing link, including credentials being exchanged now. */
     readonly revokeOtherAccess: (
       currentSessionId: AuthSessionId,
@@ -1225,6 +1231,11 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.revokeOtherClientSessions"),
     );
 
+  const isSessionActive: EnvironmentAuth["Service"]["isSessionActive"] = (sessionId) =>
+    listSessions().pipe(
+      Effect.map((active) => active.some((session) => session.sessionId === sessionId)),
+    );
+
   const revokeOtherAccess: EnvironmentAuth["Service"]["revokeOtherAccess"] = (currentSessionId) =>
     credentialExchangeLock.withPermits(1)(
       Ref.update(accessGenerationRef, (generation) => generation + 1).pipe(
@@ -1447,6 +1458,8 @@ export const make = Effect.gen(function* () {
     listClientSessions,
     revokeClientSession,
     revokeOtherClientSessions,
+    withGrantLock: credentialExchangeLock.withPermits(1),
+    isSessionActive,
     revokeOtherAccess,
     authenticateHttpRequest,
     authenticateWebSocketUpgrade,
