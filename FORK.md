@@ -28,7 +28,7 @@ adds the feature, and remove it in the PR that drops the feature.
 
 - #2 Servers and clients update from this fork's releases instead of
   upstream's: `packages/shared/src/cliRelease.ts`,
-  `apps/web/src/state/npmRelease.ts`.
+  `apps/server/src/cloud/npmRelease.ts`.
 - #14 Background work an agent waits on keeps its thread working until the result reaches the
   agent; settling cannot detach that work, wake dispatches retry, and work lost with a provider
   session or Claude process is reported: `ClaudeAdapterV2.ts`
@@ -60,3 +60,6 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/mobile/src/features/phone/PhoneSharingSection.tsx`,
   `apps/mobile/src/features/agent-awareness/liveActivityPreferences.ts`,
   `apps/mobile/modules/t3-device-runtime/android/src/main/java/expo/modules/t3deviceruntime/AccessApproval.kt`.
+- #21 Open in VS Code and other SSH editor links use the host the client reached directly when
+  sshd is listening, instead of the server's first advertised host: `apps/web/src/remoteOpen.ts`,
+  `apps/server/src/environment/RemoteOpenTargets.ts` (`sshd`).

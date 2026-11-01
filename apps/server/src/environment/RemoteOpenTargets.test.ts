@@ -145,7 +145,24 @@ describe("RemoteOpenTargets", () => {
         hostname: "bb-1",
         username: "t3-user",
       });
-      expect(targets).toEqual([{ kind: "mdns", host: "bb-1.local", username: "t3-user" }]);
+      expect(targets).toEqual([
+        { kind: "mdns", host: "bb-1.local", username: "t3-user", sshd: true },
+      ]);
+    }),
+  );
+
+  it.effect("marks every target as sshd-backed when sshd accepts", () =>
+    Effect.gen(function* () {
+      const targets = yield* resolveTargets({
+        sshd: { ipv4: true, ipv6: false },
+        tailscale: TAILSCALE_SSH,
+        hostname: "bb-1",
+        username: null,
+      });
+      expect(targets).toEqual([
+        { kind: "tailscale", host: "bb-1.tail1234.ts.net", sshd: true },
+        { kind: "mdns", host: "bb-1.local", sshd: true },
+      ]);
     }),
   );
 });

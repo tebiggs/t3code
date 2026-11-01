@@ -1,10 +1,20 @@
-import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
+import {
+  connectionRouteId,
+  connectionRouteKind,
+  connectionRoutes,
+  routeHttpBaseUrl,
+  type ConnectionCatalogEntry,
+  type ConnectionRoute,
+  type ConnectionTarget,
+  type PreparedConnection,
+} from "@t3tools/client-runtime/connection";
 import {
   REMOTE_CAPABLE_EDITOR_IDS,
   type EditorId,
   type EnvironmentId,
   type RemoteOpenTarget,
 } from "@t3tools/contracts";
+import { normalizeHostname } from "@t3tools/shared/hostClassification";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
@@ -14,9 +24,10 @@ import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isLoopbackHostname } from "~/environments/primary/target";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { environmentPresentations } from "~/state/presentation";
+import { environmentSession } from "~/state/session";
 
 export interface RemoteOpenHost {
-  readonly kind: "ssh-alias" | RemoteOpenTarget["kind"];
+  readonly kind: "ssh-alias" | "connection" | RemoteOpenTarget["kind"];
   readonly host: string;
   readonly username?: string;
 }
@@ -48,11 +59,40 @@ function parseHostname(url: string): string | null {
   }
 }
 
+/** Saved routes can outrank the live one, such as a LAN route on a client now off that LAN. */
+export function resolveConnectedRoute(
+  entry: ConnectionCatalogEntry,
+  prepared: PreparedConnection | null,
+): ConnectionRoute {
+  const connectedId = prepared === null ? null : connectionRouteId(prepared.target);
+  return (
+    connectionRoutes(entry).find((route) => connectionRouteId(route.target) === connectedId) ?? {
+      target: entry.target,
+      profile: entry.profile,
+    }
+  );
+}
+
+/**
+ * The client already reached this host directly, so SSH has a route there too. Public hostnames
+ * usually front a tunnel or proxy that carries no SSH. IPv6 literals are untested in editor links.
+ */
+function resolveDirectSshHost(route: ConnectionRoute): string | null {
+  const kind = connectionRouteKind(route);
+  if (kind !== "lan" && kind !== "tailnet" && kind !== "vpn") return null;
+  const hostname = parseHostname(routeHttpBaseUrl(route) ?? "");
+  if (hostname === null) return null;
+  const host = normalizeHostname(hostname);
+  // The "lan" kind also covers these, which name the client itself rather than the server.
+  return host.includes(":") || host.startsWith("0.") || host.endsWith(".localhost") ? null : host;
+}
+
 export function resolveRemoteOpenState(input: {
   readonly target: ConnectionTarget | null;
   readonly sshTarget: { readonly alias: string; readonly username: string | null } | null;
   readonly remoteOpenTargets: ReadonlyArray<RemoteOpenTarget> | undefined;
   readonly isDesktopRenderer: boolean;
+  readonly connectedRoute?: ConnectionRoute;
 }): RemoteOpenState {
   const { target } = input;
   if (target === null) {
@@ -84,6 +124,21 @@ export function resolveRemoteOpenState(input: {
         kind: "ssh-alias",
         host,
         ...(username === null ? {} : { username }),
+      },
+    };
+  }
+  const sshdTarget = input.remoteOpenTargets?.find((candidate) => candidate.sshd === true);
+  const directHost =
+    sshdTarget !== undefined && input.connectedRoute !== undefined
+      ? resolveDirectSshHost(input.connectedRoute)
+      : null;
+  if (directHost !== null) {
+    return {
+      mode: "remote-links",
+      host: {
+        kind: "connection",
+        host: directHost,
+        ...(sshdTarget?.username === undefined ? {} : { username: sshdTarget.username }),
       },
     };
   }
@@ -120,6 +175,10 @@ const remoteOpenResolutionAtom = Atom.family((environmentId: EnvironmentId) =>
           profile !== null && profile._tag === "SshConnectionProfile" ? profile.target : null,
         remoteOpenTargets: presentation?.serverConfig?.remoteOpenTargets,
         isDesktopRenderer: window.desktopBridge !== undefined,
+        connectedRoute: resolveConnectedRoute(
+          entry,
+          Option.getOrNull(get(environmentSession.preparedConnectionValueAtom(environmentId))),
+        ),
       }),
       isResolved: true,
     };

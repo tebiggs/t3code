@@ -1,4 +1,5 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import { EMPTY_THREAD_HISTORY_META, type ThreadHistoryMeta } from "./threadHistoryMerge.ts";
@@ -28,16 +29,37 @@ export const EMPTY_ENVIRONMENT_THREAD_STATE: EnvironmentThreadState = {
 
 /**
  * A thread holds a write once it has applied the write's commit sequence. A bounded
- * projection can page the message out later, so finding it is only a fallback for
- * servers that do not report the sequence.
+ * projection can page the message out later, so finding it is a fallback for servers
+ * that do not report the sequence, as is a write older than the loaded window.
  */
 export function threadHasCaughtUpTo(
-  write: { readonly messageId: string; readonly sequence?: number | undefined },
+  write: {
+    readonly messageId: string;
+    readonly sequence?: number | undefined;
+    readonly createdAt?: string | undefined;
+  },
   thread: {
     readonly sequence: number;
     readonly messages: ReadonlyArray<{ readonly id: string }> | undefined;
+    readonly hasMoreHistory?: boolean | undefined;
+    readonly oldestLoadedAt?: string | null | undefined;
   },
 ): boolean {
   if (write.sequence !== undefined && thread.sequence >= write.sequence) return true;
-  return thread.messages?.some((entry) => entry.id === write.messageId) ?? false;
+  if (thread.messages?.some((entry) => entry.id === write.messageId) === true) return true;
+  return (
+    write.sequence === undefined &&
+    write.createdAt !== undefined &&
+    thread.hasMoreHistory === true &&
+    thread.oldestLoadedAt != null &&
+    write.createdAt < thread.oldestLoadedAt
+  );
+}
+
+/** ISO time of the oldest loaded timeline item, the bound sequenceless writes are judged against. */
+export function threadOldestLoadedAt(
+  visibleTurnItems: OrchestrationV2ThreadProjection["visibleTurnItems"],
+): string | null {
+  const oldest = visibleTurnItems[0]?.item;
+  return oldest === undefined ? null : DateTime.formatIso(oldest.startedAt ?? oldest.updatedAt);
 }

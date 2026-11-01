@@ -109,6 +109,9 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     get() = architecture != null && proot.isFile
   private val fakeProc = File(home, "proc")
   private val prootTmp = File(context.cacheDir, "proot")
+  // proot fakes a hard link by moving the file into a hidden one beside it. Deleting that
+  // folder then empties the link, so they live here instead, as proot-distro keeps them.
+  private val hardLinks = File(rootfs, ".l2s")
 
   @Volatile private var guest: GuestProcess? = null
   @Volatile private var cancelled = false
@@ -274,6 +277,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     checkCancelled()
     writeGuestConfig()
     prootTmp.mkdirs()
+    hardLinks.mkdirs()
     val token = "${System.nanoTime()}"
     // Records the guest's pid, which exec keeps; proot doesn't namespace pids. The host
     // shell records proot's own before exec'ing it, so a stop can always reach proot.
@@ -286,6 +290,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     builder.environment().apply {
       put("PROOT_LOADER", loader.path)
       put("PROOT_TMP_DIR", prootTmp.path)
+      put("PROOT_L2S_DIR", hardLinks.path)
       remove("LD_PRELOAD")
     }
     return GuestProcess(builder.start(), File(rootfs, "tmp/.t3-pids.$token"), prootPidFile)
