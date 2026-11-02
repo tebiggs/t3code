@@ -9,11 +9,33 @@ Hard rules:
 
 - Never push to `upstream`, and never open or comment on anything in
   `pingdotgg/t3code`. PRs go to the fork: `gh pr create --repo tebiggs/t3code --base main`.
-- Never force-push, never merge a PR, and never push to `main` except through
-  `sync.sh`.
+- Never force-push, and never push to `main` except through `sync.sh`.
+- Merge a PR only as "Merging this task's PRs" allows.
 - Follow the host's own instructions for installs, typechecks and tests, and
   run only the targeted ones you need. CI on the PR runs the rest.
 - After opening a PR, register it with `link_pull_request`.
+
+## Merging this task's PRs
+
+Merge `sync-conflict/*` and `fix/fork-*` PRs without waiting for review, once
+nothing blocks them. These block a merge:
+
+- a failed check
+- a review requesting changes
+- a merge conflict with `main`
+- a conflict resolution that changes how a `FORK.md` feature behaves
+
+Merge with a merge commit, pinned to the commit the checks passed on:
+
+```sh
+gh pr merge <number> --repo tebiggs/t3code --merge --match-head-commit <sha>
+```
+
+While checks are still running, call `watch_pull_request` and end the turn. Merge
+when it wakes you, then call `unwatch_pull_request`. If something blocks the PR,
+leave it open and report what.
+
+`dedup/*` PRs always wait for review, because they remove a fork feature.
 
 ## 1. Merge upstream
 
@@ -27,7 +49,9 @@ git fetch --quiet origin main && git checkout --quiet --detach origin/main
 Note the `previous=` and `latest=` lines it prints.
 
 - **Exit 0:** main is current. Go to step 2.
-- **Exit 4:** a sync-conflict PR is still open. Report it and go to step 2.
+- **Exit 4:** a sync-conflict PR is still open. If it can merge under "Merging this
+  task's PRs", merge it and run `sync.sh` again from a fresh `origin/main`. Otherwise
+  report what blocks it and go to step 2.
 - **Exit 3:** the merge conflicts. Resolve it:
   - Take upstream's side unless the conflict touches a feature listed in
     `FORK.md`. Then keep the fork behavior working on top of upstream's new code.
@@ -38,6 +62,7 @@ Note the `previous=` and `latest=` lines it prints.
   - Start the body with "Merge this with **Create a merge commit**, not squash, so
     upstream history stays intact." Then list each conflicted file and how you
     resolved it.
+  - Merge it under "Merging this task's PRs".
 - **Any other exit:** report the output. Then run `git merge --abort` if a merge
   is in progress, and `git checkout --quiet --detach origin/main`.
 

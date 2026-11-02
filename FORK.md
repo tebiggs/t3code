@@ -14,9 +14,10 @@ features listed below.
 - **Upstream sync.** A T3 scheduled task follows `.github/fork/daily-sync.md`
   once a day:
   - It merges upstream's newest nightly tag into `main`.
-  - It opens a `sync-conflict/*` PR when the merge conflicts.
+  - It opens a `sync-conflict/*` PR when the merge conflicts, and merges it
+    once nothing blocks it.
   - It opens a `dedup/*` PR when upstream ships something that replaces a
-    fork feature.
+    fork feature. Those wait for review.
 - **Merge sync-conflict PRs with a merge commit, never squash.** Squashing
   drops upstream's history, and every later sync would then conflict.
 
