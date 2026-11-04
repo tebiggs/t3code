@@ -3,7 +3,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
+import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
@@ -130,7 +130,7 @@ export function EnvironmentPowerSheet({
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
       <NativeStackScreenOptions options={{ sheetCornerRadius: 28 }} />
-      <AndroidSheetHeader title={label} onBack={() => navigation.goBack()} />
+      <AppBar sheet title={label} onBack={() => navigation.goBack()} />
       <View className="gap-3 px-5" style={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}>
         <View className="flex-row items-center gap-3.5 rounded-2xl bg-card py-3.5 pl-4 pr-3.5">
           <View className="size-10 items-center justify-center rounded-xl bg-subtle">
