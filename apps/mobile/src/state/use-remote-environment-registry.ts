@@ -22,6 +22,10 @@ import { phoneServerSettingsAtom, setPhoneServerSettings } from "./phone-server-
 import { relayEnvironmentDiscovery } from "./relay";
 import { connectPairingUrl as connectPairingUrlCommand } from "../connection/onboarding";
 
+// Loaded on demand: the phone server pulls in the expo runtime. Kept outside the hook because
+// the React Compiler cannot compile an import() expression.
+const loadPhoneServer = () => import("../features/phone/phone-server");
+
 const RELAY_REMOVAL_ACCOUNT_NOTE: Record<Discovery.RelayEnvironmentRegistration, string> = {
   registered:
     "It stays on your T3 Connect account and keeps its host space. Deregister it under T3 Account → T3 Connect to free it.",
@@ -220,8 +224,7 @@ export function useRemoteConnections() {
         const previous = appAtomRegistry.get(phoneServerSettingsAtom);
         if (previous) setPhoneServerSettings({ ...previous, autoStart: false });
         try {
-          // Loaded on demand: the phone server pulls in the expo runtime.
-          const phoneServer = await import("../features/phone/phone-server");
+          const phoneServer = await loadPhoneServer();
           await phoneServer.stopPhoneServerWhenSettled();
           forgetPhone();
         } catch (error) {
