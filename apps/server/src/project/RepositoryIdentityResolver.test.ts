@@ -310,6 +310,51 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
+  it.effect.each([
+    {
+      name: "a dotted remote name",
+      remote: ["my.fork", "git@github.com:julius/dotted-fork.git"],
+      marker: ["remote.my.fork.gh-resolved", "base"],
+      expected: "my.fork",
+    },
+    {
+      name: "a value other than base",
+      remote: undefined,
+      marker: ["remote.origin.gh-resolved", "julius/t3code-fork"],
+      expected: "upstream",
+    },
+    {
+      name: "a remote that no longer exists",
+      remote: undefined,
+      marker: ["remote.gone.gh-resolved", "base"],
+      expected: "upstream",
+    },
+    {
+      name: "a local-path remote",
+      remote: ["gb-local", "."],
+      marker: ["remote.gb-local.gh-resolved", "base"],
+      expected: "upstream",
+    },
+  ] as const)("resolves a gh default marking $name to $expected", ({ remote, marker, expected }) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-gh-default-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:julius/t3code-fork.git"]);
+      yield* git(cwd, ["remote", "add", "upstream", "git@github.com:T3Tools/t3code.git"]);
+      if (remote) yield* git(cwd, ["remote", "add", ...remote]);
+      yield* git(cwd, ["config", ...marker]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const identity = yield* resolver.resolve(cwd);
+
+      expect(identity?.locator.remoteName).toBe(expected);
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
