@@ -62,6 +62,8 @@ const REACHABILITY_WAIT = Duration.seconds(60);
 const REACHABILITY_CHECK_TIMEOUT = Duration.seconds(30);
 const REACHABILITY_RETRY = Duration.seconds(5);
 const STOP_STEP_TIMEOUT = Duration.seconds(20);
+// The relay client lets open requests run for up to 30 seconds before it exits.
+const UNLINK_TIMEOUT = Duration.seconds(45);
 const READ_TIMEOUT = Duration.seconds(10);
 
 export const failWith = (message: string) => (cause: unknown) =>
@@ -133,10 +135,15 @@ export const stopServerSharing = Effect.fn("PhoneSharing.stopServerSharing")(fun
   pairingLinkIds: Effect.Effect<ReadonlyArray<string>, E, R>,
 ) {
   const { api, headers } = yield* phoneServerApi(connection);
+  // Signing others out first ends their live connections, which the tunnel would wait on.
+  // Nothing here may block the stop, so defects are dropped too.
+  yield* api.auth
+    .revokeOtherClients({ headers })
+    .pipe(Effect.timeout(STOP_STEP_TIMEOUT), Effect.ignoreCause);
   yield* api.connect
     .unlink({ headers })
     .pipe(
-      Effect.timeout(STOP_STEP_TIMEOUT),
+      Effect.timeout(UNLINK_TIMEOUT),
       Effect.mapError(failWith("Couldn't stop sharing this phone.")),
     );
   yield* Effect.gen(function* () {

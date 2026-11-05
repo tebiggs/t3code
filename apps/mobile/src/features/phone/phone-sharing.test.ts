@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 
 import {
   phoneSharingFromLinkState,
@@ -31,10 +33,15 @@ const linkState = {
   holdWebhooksWhileOffline: false,
 };
 
-function layerServer(failing: ReadonlySet<string> = new Set()) {
+function layerServer(
+  failing: ReadonlySet<string> = new Set(),
+  failingOnce = new Set<string>(),
+  holdUnlink?: { readonly reached: () => void; readonly released: Promise<void> },
+) {
   const requests: Array<string> = [];
   const respond = (path: string) => {
     if (failing.has(path)) return Response.json({ error: "no" }, { status: 500 });
+    if (failingOnce.delete(path)) return Response.json({ error: "no" }, { status: 500 });
     if (path === "/api/connect/unlink") {
       return Response.json({ ok: true, endpointRuntimeStatus: { status: "disabled" } });
     }
@@ -45,6 +52,10 @@ function layerServer(failing: ReadonlySet<string> = new Set()) {
   const layer = layerRemoteHttpClient((input) => {
     const path = new URL(String(input)).pathname;
     requests.push(path);
+    if (holdUnlink && path === "/api/connect/unlink") {
+      holdUnlink.reached();
+      return holdUnlink.released.then(() => respond(path));
+    }
     return Promise.resolve(respond(path));
   });
   return { requests, layer };
@@ -97,15 +108,48 @@ describe("phoneSharingFromLinkState", () => {
 });
 
 describe("stopServerSharing", () => {
-  it.effect("stops the tunnel, then signs out other clients and their pairing links", () => {
+  it.effect("signs others out around stopping the tunnel, then revokes pairing links", () => {
     const server = layerServer();
     return Effect.gen(function* () {
       yield* stopServerSharing(connection, Effect.succeed(["link-1"]));
       expect(server.requests).toEqual([
+        "/api/auth/clients/revoke-others",
         "/api/connect/unlink",
         "/api/auth/clients/revoke-others",
         "/api/auth/pairing-links/revoke",
       ]);
+    }).pipe(Effect.provide(server.layer));
+  });
+
+  it.effect("still stops the tunnel when the first sign-out fails", () => {
+    const server = layerServer(new Set(), new Set(["/api/auth/clients/revoke-others"]));
+    return Effect.gen(function* () {
+      yield* stopServerSharing(connection, Effect.succeed([]));
+      expect(server.requests).toEqual([
+        "/api/auth/clients/revoke-others",
+        "/api/connect/unlink",
+        "/api/auth/clients/revoke-others",
+      ]);
+    }).pipe(Effect.provide(server.layer));
+  });
+
+  it.effect("waits out the 30 seconds the tunnel takes to drain a connection", () => {
+    let reached = () => {};
+    const unlinkReached = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = layerServer(new Set(), new Set(), { reached, released });
+    return Effect.gen(function* () {
+      const stop = yield* stopServerSharing(connection, Effect.succeed([])).pipe(Effect.forkChild);
+      yield* Effect.promise(() => unlinkReached);
+      yield* TestClock.adjust("30 seconds");
+      release();
+      yield* Fiber.join(stop);
+      expect(server.requests.at(-1)).toBe("/api/auth/clients/revoke-others");
     }).pipe(Effect.provide(server.layer));
   });
 
