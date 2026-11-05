@@ -70,10 +70,21 @@ function parseRemoteFetchUrls(stdout: string): Map<string, string> {
   return remotes;
 }
 
+/** `gh repo set-default` marks the chosen remote `remote.<name>.gh-resolved base`. */
+function parseGhDefaultRemote(stdout: string): string | undefined {
+  for (const line of stdout.split("\n")) {
+    const match = /^remote\.(.+)\.gh-resolved\s+base$/.exec(line.trim());
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
 function pickPrimaryRemote(
   remotes: ReadonlyMap<string, string>,
+  ghDefaultRemote: string | undefined,
 ): { readonly remoteName: string; readonly remoteUrl: string } | null {
-  for (const preferredRemoteName of ["upstream", "origin"] as const) {
+  for (const preferredRemoteName of [ghDefaultRemote, "upstream", "origin"]) {
+    if (preferredRemoteName === undefined) continue;
     const remoteUrl = remotes.get(preferredRemoteName);
     if (remoteUrl) {
       return { remoteName: preferredRemoteName, remoteUrl };
@@ -227,20 +238,31 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn(
   cacheKey: RepositoryIdentityCacheKey,
 ): Effect.fn.Return<RepositoryIdentity | null, never, ProcessRunner.ProcessRunner> {
   const processRunner = yield* ProcessRunner.ProcessRunner;
-  const remoteResult = yield* processRunner
-    .run({
-      command: "git",
-      args: ["-C", cacheKey.rootPath, ...(cacheKey.isBare ? ["--git-dir=."] : []), "remote", "-v"],
-      env: explicitBareRepositoryEnv(process.env, yield* HostProcess.Platform),
-      timeoutBehavior: "timedOutResult",
-    })
-    .pipe(Effect.option);
+  const env = explicitBareRepositoryEnv(process.env, yield* HostProcess.Platform);
+  const runGit = (args: ReadonlyArray<string>) =>
+    processRunner
+      .run({
+        command: "git",
+        args: ["-C", cacheKey.rootPath, ...(cacheKey.isBare ? ["--git-dir=."] : []), ...args],
+        env,
+        timeoutBehavior: "timedOutResult",
+      })
+      .pipe(Effect.option);
+  const [remoteResult, ghDefaultResult] = yield* Effect.all(
+    [runGit(["remote", "-v"]), runGit(["config", "--get-regexp", "^remote\\..+\\.gh-resolved$"])],
+    { concurrency: 2 },
+  );
   if (remoteResult._tag === "None" || remoteResult.value.code !== 0) {
     return null;
   }
 
   const remotes = parseRemoteFetchUrls(remoteResult.value.stdout);
-  const remote = pickPrimaryRemote(remotes);
+  const remote = pickPrimaryRemote(
+    remotes,
+    ghDefaultResult._tag === "Some" && ghDefaultResult.value.code === 0
+      ? parseGhDefaultRemote(ghDefaultResult.value.stdout)
+      : undefined,
+  );
   return remote
     ? buildRepositoryIdentity({
         ...remote,
