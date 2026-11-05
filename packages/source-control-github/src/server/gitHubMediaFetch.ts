@@ -2,6 +2,7 @@ import type { SourceControlMediaRequest } from "@t3tools/source-control-core/ser
 import * as Cache from "effect/Cache";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import {
   FetchHttpClient,
@@ -13,6 +14,7 @@ import {
 import { GITHUB_CREDENTIALED_MEDIA_HOSTS, gitHubAttachmentId } from "../shared/gitHubMedia.ts";
 
 import * as GitHubCredentials from "./GitHubCredentials.ts";
+import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as GitHubRest from "./GitHubRest.ts";
 
 /**
@@ -89,9 +91,11 @@ export const make = Effect.gen(function* () {
   });
 
   // A private repository's attachment URL is a 404 to any token. Only GitHub's own rendering of it
-  // says where the file is, as a short-lived signed link that needs no credential.
+  // says where the file is, as a short-lived signed link that needs no credential, so a link is
+  // reused only under the credential GitHub signed it for.
   const signedLinks = yield* Cache.makeWith(
     Effect.fnUntraced(function* (key: {
+      readonly fingerprint: string;
       readonly url: string;
       readonly attachmentId: string;
       readonly repository: string;
@@ -120,11 +124,22 @@ export const make = Effect.gen(function* () {
     if (response?.status !== 404 || request.repository === undefined || attachmentId === null) {
       return response;
     }
+    const signer = yield* api.credential("github.com").pipe(Effect.option);
+    if (Option.isNone(signer)) return response;
+    const { token: signerToken, fingerprint } = signer.value;
     const link = yield* Cache.get(signedLinks, {
+      fingerprint,
       url: request.url,
       attachmentId,
       repository: request.repository,
-    }).pipe(Effect.orElseSucceed(() => null));
+    }).pipe(
+      Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, {
+        host: "github.com",
+        token: signerToken,
+        credentialFingerprint: fingerprint,
+      }),
+      Effect.orElseSucceed(() => null),
+    );
     return link === null ? response : yield* follow(link, request.headers, bearer);
   });
 });

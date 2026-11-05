@@ -19,8 +19,11 @@ const signedIn = Layer.mock(GitHubCredentials.GitHubCredentials)({
     }),
 });
 
-const renderedBy = (rest: GitHubRest.GitHubRest["Service"]["rest"]) =>
-  Layer.mock(GitHubRest.GitHubRest)({ rest });
+const renderedBy = (
+  rest: GitHubRest.GitHubRest["Service"]["rest"],
+  credential: GitHubRest.GitHubRest["Service"]["credential"] = () =>
+    Effect.succeed({ token: Redacted.make("signed-in"), fingerprint: "fingerprint" }),
+) => Layer.mock(GitHubRest.GitHubRest)({ rest, credential });
 
 const neverRendered = renderedBy(() => Effect.die("rendered markdown for media it did not need"));
 
@@ -128,7 +131,8 @@ describe("GitHubMediaFetch", () => {
 
   it.effect("loads a private attachment through the signed link GitHub renders for it", () => {
     const requests: Array<[string, string | undefined, string | undefined]> = [];
-    const rendered: Array<GitHubRest.GitHubRestInput> = [];
+    const rendered: Array<[string | undefined, GitHubRest.GitHubRestInput]> = [];
+    let account: string | null = "first";
     return Effect.gen(function* () {
       const fetchMedia = yield* GitHubMediaFetch.make;
       const request = {
@@ -139,15 +143,22 @@ describe("GitHubMediaFetch", () => {
       expect((yield* fetchMedia(request))?.status).toBe(206);
       // A video's range requests must not each spend quota on a new link.
       expect((yield* fetchMedia(request))?.status).toBe(206);
+      // Nor may another account, or no account, reuse a link GitHub signed for this one.
+      account = "second";
+      expect((yield* fetchMedia(request))?.status).toBe(206);
+      account = null;
+      expect((yield* fetchMedia(request))?.status).toBe(404);
+      const rendering = {
+        host: "github.com",
+        operation: "renderAttachmentLink",
+        method: "POST",
+        path: "markdown",
+        body: { text: `![](${ATTACHMENT_URL})`, mode: "gfm", context: "owner/private" },
+        allowReserve: true,
+      };
       expect(rendered).toEqual([
-        {
-          host: "github.com",
-          operation: "renderAttachmentLink",
-          method: "POST",
-          path: "markdown",
-          body: { text: `![](${ATTACHMENT_URL})`, mode: "gfm", context: "owner/private" },
-          allowReserve: true,
-        },
+        ["first", rendering],
+        ["second", rendering],
       ]);
       expect(requests.slice(0, 2)).toEqual([
         ["github.com", "Bearer signed-in", "bytes=0-1"],
@@ -157,12 +168,25 @@ describe("GitHubMediaFetch", () => {
       Effect.provide(
         Layer.merge(
           signedIn,
-          renderedBy((input) => {
-            rendered.push(input);
-            return Effect.succeed(
-              renderedHtml(`<p><a href="${SIGNED_LINK}"><img src="${SIGNED_LINK}" alt=""></a></p>`),
-            );
-          }),
+          renderedBy(
+            (input) =>
+              Effect.gen(function* () {
+                const pinned = yield* GitHubRequestPolicy.PinnedGitHubCredential;
+                rendered.push([pinned?.credentialFingerprint, input]);
+                return renderedHtml(
+                  `<p><a href="${SIGNED_LINK}"><img src="${SIGNED_LINK}" alt=""></a></p>`,
+                );
+              }),
+            (host) =>
+              account === null
+                ? Effect.fail(
+                    new GitHubRequestPolicy.GitHubApiAuthenticationError({
+                      host,
+                      operation: "credential",
+                    }),
+                  )
+                : Effect.succeed({ token: Redacted.make(account), fingerprint: account }),
+          ),
         ),
       ),
       Effect.provideService(
