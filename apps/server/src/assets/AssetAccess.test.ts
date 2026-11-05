@@ -35,6 +35,7 @@ import { assetFileResponse } from "../http.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, readMcpAppHtml, resolveAsset } from "./AssetAccess.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import type { SourceControlMediaRequest } from "@t3tools/source-control-core/server/driver";
 import { fakeSourceControlDriverInstance } from "@t3tools/source-control-testing/fakeSourceControlDriver";
 import * as BuiltInDrivers from "../sourceControl/builtInDrivers.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
@@ -1469,7 +1470,7 @@ describe("AssetAccess", () => {
   );
 
   it.effect("serves a host's credentialed media through that host's driver", () => {
-    const fetched: Array<{ url: string; headers: Readonly<Record<string, string>> }> = [];
+    const fetched: Array<SourceControlMediaRequest> = [];
     const url = "https://github.com/owner/repo/blob/main/docs/shot.png";
     const media = sourceControlDefinitions.mediaUrl(url)!;
     const layerDrivers = Layer.succeed(BuiltInDrivers.SourceControlDrivers, [
@@ -1493,7 +1494,7 @@ describe("AssetAccess", () => {
 
       // Every client and server release spells the resource this way on the wire.
       const { resource } = yield* decodeAssetCreateUrlInput({
-        resource: { _tag: "github-media", cwd: "/repo", url },
+        resource: { _tag: "github-media", cwd: "/repo", url, repository: "owner/repo" },
       });
       const issued = yield* issueAssetUrl({ resource });
       const suffix = issued.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
@@ -1503,6 +1504,7 @@ describe("AssetAccess", () => {
         kind: "source-control-media",
         url: media.fetchUrl,
         cwd: "/repo",
+        repository: "owner/repo",
         expiresAt: issued.expiresAt,
       });
       if (asset?.kind !== "source-control-media") return;
@@ -1511,7 +1513,9 @@ describe("AssetAccess", () => {
         range: "bytes=0-4",
         cookie: "session",
       });
-      expect(fetched).toEqual([{ url: media.fetchUrl, headers: { range: "bytes=0-4" } }]);
+      expect(fetched).toEqual([
+        { url: media.fetchUrl, repository: "owner/repo", headers: { range: "bytes=0-4" } },
+      ]);
       expect(response.status).toBe(206);
       // The upstream sent no type, so it comes from the file name the host gave the media.
       expect(response.headers["content-type"]).toBe("image/png");

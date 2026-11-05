@@ -23,6 +23,8 @@ export const PullRequestMarkdownContext = createContext<{
   remarkPlugins: PluggableList;
   lineBreaks: boolean;
   threadRef: ScopedThreadRef | null;
+  /** `owner/name` of the change request, which the host needs to resolve its private uploads. */
+  repository?: string;
 } | null>(null);
 
 function PullRequestHostVideo({
@@ -30,13 +32,20 @@ function PullRequestHostVideo({
   cwd,
   url,
   fetchUrl,
+  repository,
 }: {
   environmentId: EnvironmentId;
   cwd: string;
   url: string;
   fetchUrl: string;
+  repository: string | undefined;
 }) {
-  const resource: AssetResource = { _tag: SOURCE_CONTROL_MEDIA_ASSET, cwd, url: fetchUrl };
+  const resource: AssetResource = {
+    _tag: SOURCE_CONTROL_MEDIA_ASSET,
+    cwd,
+    url: fetchUrl,
+    ...(repository === undefined ? {} : { repository }),
+  };
   const assetUrl = useAssetUrlState(environmentId, resource);
   const refreshAssetUrl = useAssetUrlRefresh(environmentId, resource);
   const src =
@@ -92,6 +101,7 @@ export function PullRequestMarkdown({
               {...(context ? { extraRemarkPlugins: context.remarkPlugins } : {})}
               lineBreaks={lineBreaks ?? context?.lineBreaks ?? false}
               sourceControlMedia
+              sourceControlMediaRepository={context?.repository}
             />
           );
         }
@@ -104,6 +114,7 @@ export function PullRequestMarkdown({
               cwd={cwd}
               url={segment.url}
               fetchUrl={hostMedia.fetchUrl}
+              repository={context?.repository}
             />
           );
         }

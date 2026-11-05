@@ -14,12 +14,17 @@ export const GITHUB_CREDENTIALED_MEDIA_HOSTS: ReadonlySet<string> = new Set([
   LFS_HOST,
 ]);
 
-const ATTACHMENT_PATH_PATTERN = /^\/user-attachments\/assets\/[\w-]+$/u;
+const ATTACHMENT_PATH_PATTERN = /^\/user-attachments\/assets\/([\w-]+)$/u;
 const LEGACY_ATTACHMENT_PATH_PATTERN = /^\/[^/]+\/[^/]+\/assets\/\d+\/[\w-]+$/u;
 /** `blob` and `raw` both address file bytes; `raw` is the one the token is honoured on. */
 const REPOSITORY_FILE_PATTERN = /^\/([^/]+)\/([^/]+)\/(?:raw|blob)\/(.*[^/])$/u;
 /** GitHub rejects 40-hex branch and tag names, and serves no SHA-256 repositories. */
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
+
+/** The id of an uploaded attachment, which the file name of its signed link also carries. */
+export function gitHubAttachmentId(fetchUrl: string): string | null {
+  return ATTACHMENT_PATH_PATTERN.exec(new URL(fetchUrl).pathname)?.[1] ?? null;
+}
 
 function fileName(fetchUrl: string): string {
   const segment = new URL(fetchUrl).pathname.split("/").pop() ?? "";

@@ -25,7 +25,12 @@ const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inlin
 export const sourceControlMediaResponse = Effect.fn(
   "SourceControlMediaResponse.sourceControlMediaResponse",
 )(function* (
-  asset: { readonly url: string; readonly cwd: string; readonly expiresAt: number },
+  asset: {
+    readonly url: string;
+    readonly cwd: string;
+    readonly repository?: string;
+    readonly expiresAt: number;
+  },
   requestHeaders: Record<string, string | undefined>,
 ) {
   const remainingSeconds = Math.floor((asset.expiresAt - (yield* Clock.currentTimeMillis)) / 1000);
@@ -46,7 +51,11 @@ export const sourceControlMediaResponse = Effect.fn(
     const value = requestHeaders[name];
     if (value !== undefined) forwarded[name] = value;
   }
-  const response = yield* fetchMedia({ url: asset.url, headers: forwarded });
+  const response = yield* fetchMedia({
+    url: asset.url,
+    ...(asset.repository === undefined ? {} : { repository: asset.repository }),
+    headers: forwarded,
+  });
   if (response === null) return HttpServerResponse.empty({ status: 502, headers });
   // It carries none of the upstream entity headers: a `content-length` with no body behind it
   // holds the connection open until the browser gives up on it.
