@@ -25,6 +25,7 @@ import * as SessionStore from "../auth/SessionStore.ts";
 import { assetResponseHeaders } from "../http.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { requestUrl } from "../requestUrl.ts";
 
 const PREVIEW_STREAM_ROUTE_PREFIX = "/api/preview-stream";
 const TAB_GONE_CODE = 4404;
@@ -57,7 +58,7 @@ const makeHandler = Effect.fnUntraced(function* (
   sessions: SessionStore.SessionStore["Service"],
 ) {
   const request = yield* HttpServerRequest.HttpServerRequest;
-  const url = HttpServerRequest.toURL(request);
+  const url = requestUrl(request);
   if (Option.isNone(url)) return HttpServerResponse.text("Bad Request", { status: 400 });
   if (url.value.pathname === `${PREVIEW_STREAM_ROUTE_PREFIX}/download`) {
     return yield* serveDownload(browser, url.value.searchParams);

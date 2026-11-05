@@ -38,7 +38,7 @@ const makeAuth = (
   const layer = Layer.merge(
     Layer.mock(EnvironmentAuth.EnvironmentAuth, {
       authenticateWebSocketUpgrade: (request) => {
-        requests.push(request.originalUrl);
+        requests.push(request.url);
         return error
           ? Effect.fail(error)
           : Effect.succeed({
