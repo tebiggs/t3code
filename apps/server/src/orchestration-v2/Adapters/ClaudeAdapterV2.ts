@@ -138,6 +138,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -1522,6 +1523,27 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+const CLAUDE_BACKGROUND_WAIT_REMINDER =
+  "If you will report on this task's result, call `t3_background_wait` with its task ID before you end your turn. If you are leaving it running, do not mark it.";
+
+// The system prompt's line fades in long threads, so repeat it where the decision happens.
+// A Monitor always runs in the background. Subagents' work is not the thread's to mark.
+const backgroundWaitReminder: HookCallback = (input) =>
+  Promise.resolve(
+    input.hook_event_name === "PostToolUse" &&
+      input.agent_id === undefined &&
+      (input.tool_name === "Monitor" ||
+        (Predicate.isObject(input.tool_input) &&
+          Reflect.get(input.tool_input, "run_in_background") === true))
+      ? {
+          hookSpecificOutput: {
+            hookEventName: "PostToolUse",
+            additionalContext: CLAUDE_BACKGROUND_WAIT_REMINDER,
+          },
+        }
+      : {},
+  );
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
@@ -1667,9 +1689,16 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions
-      ? { hooks: { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] } }
-      : {}),
+    ...(input.mcpServers === undefined
+      ? {}
+      : {
+          hooks: {
+            PostToolUse: [{ matcher: "Bash|Monitor", hooks: [backgroundWaitReminder] }],
+            ...(deviceInstructions
+              ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
+              : {}),
+          },
+        }),
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
   const additionalDirectories = [
