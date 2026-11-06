@@ -114,6 +114,7 @@ vi.mock("./threads", async () => {
       queueWorkflowAtom: () => Atom.make(null),
       checkpointSummariesAtom: () => Atom.make([]),
       sequenceAtom: () => Atom.make(0),
+      historyAtom: () => Atom.make({ hasMoreHistory: false }),
       pendingRequestsAtom: () => Atom.make(state.pendingRequests),
     },
     threadEnvironment: {
@@ -333,6 +334,7 @@ describe("mobile handoff preview and submission", () => {
       auth: { status: "authenticated" as const },
       availability: "available" as "available" | "unavailable",
       models: [{ slug: selection.model }],
+      slashCommands: [],
     };
     const projectOverride = { enabled: false };
     state.serverConfig = {

@@ -4,18 +4,21 @@ import type {
   EnvironmentConnectReachability,
   EnvironmentSharingMode,
 } from "@t3tools/contracts";
-import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
 
-export class PhoneSharingError extends Data.TaggedError("PhoneSharingError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+export class PhoneSharingError extends Schema.TaggedError<PhoneSharingError>()(
+  "PhoneSharingError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
 
 export const PHONE_STILL_LISTED =
   "T3 Connect still lists this phone. Remove it under Settings > T3 Connect, signed in to the account it was shared with.";

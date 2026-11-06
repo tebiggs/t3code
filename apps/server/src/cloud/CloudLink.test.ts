@@ -20,6 +20,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
+import * as EnvironmentKeys from "./environmentKeys.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -71,7 +72,7 @@ const mintRequest = Effect.gen(function* () {
     },
   });
   return { proof };
-}).pipe(Effect.orDie);
+}).pipe(Effect.orDie, Effect.provide(NodePlatformCrypto.layerSignature));
 
 const withService = <A, E>(
   options: {
@@ -182,7 +183,18 @@ const withService = <A, E>(
         relayCalls,
       });
     }).pipe(
-      Effect.provide(CloudLink.layer.pipe(Layer.provide(layerDependencies))),
+      Effect.provide(
+        CloudLink.layer.pipe(
+          // The mocked secret store can't create a key pair, and no test checks a signature.
+          Layer.provide(
+            Layer.mock(EnvironmentKeys.EnvironmentSigningKey)({
+              publicKey: "",
+              sign: () => Effect.succeed("signed"),
+            }),
+          ),
+          Layer.provide(layerDependencies),
+        ),
+      ),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
     );
   });
@@ -635,6 +647,14 @@ it.effect("unlinks on startup and refuses to link when the policy turns Connect 
       assert.equal(applyError.message, "Example Corp's policy does not allow T3 Connect.");
       assert.equal(mintError._tag, "ManagedPolicyRefusedError");
       assert.equal(modeError._tag, "ManagedPolicyRefusedError");
-    }).pipe(Effect.provide(CloudLink.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        CloudLink.layer.pipe(
+          // These tests never sign proofs; the mocked secret store cannot create a key pair.
+          Layer.provide(Layer.mock(EnvironmentKeys.EnvironmentSigningKey)({ publicKey: "" })),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }),
 );

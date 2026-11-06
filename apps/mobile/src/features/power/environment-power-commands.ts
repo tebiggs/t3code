@@ -6,9 +6,11 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { WS_METHODS, type EnvironmentId, type TerminalAttachStreamEvent } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -33,6 +35,7 @@ export class PowerCommandError extends Schema.TaggedError<PowerCommandError>()(
   "PowerCommandError",
   { message: Schema.String },
 ) {}
+const isPowerCommandError = Schema.is(PowerCommandError);
 
 // Terminals are keyed by thread; these ids belong to no real thread, so the
 // sessions never show up in a thread's terminal drawer. Built-in sleeps get
@@ -96,7 +99,7 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
   const target = {
     threadId,
     // Unique even for commands started in the same millisecond on one relay.
-    terminalId: `power-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    terminalId: `power-${(yield* Clock.currentTimeMillis).toString(36)}-${(yield* Random.next).toString(36).slice(2, 10)}`,
   };
   const attachInput = {
     ...target,
@@ -181,7 +184,7 @@ export const runPowerCommand = createRuntimeCommand(connectionAtomRuntime, {
     EnvironmentRegistry.EnvironmentRegistry.pipe(
       Effect.flatMap((registry) => registry.run(input.environmentId, runToSuccess(input.command))),
       Effect.mapError((cause) =>
-        cause instanceof PowerCommandError
+        isPowerCommandError(cause)
           ? cause
           : new PowerCommandError({ message: failureMessage(cause) }),
       ),
