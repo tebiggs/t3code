@@ -137,11 +137,10 @@ describe("CloudManagedEndpointRuntime", () => {
         const executablePath = path.join(yield* fs.makeTempDirectoryScoped(), "cloudflared");
         yield* fs.writeFileString(
           executablePath,
+          // CI runs tests with a node that isn't on PATH.
           [
-            "#!/usr/bin/env node",
-            "process.on('SIGTERM', () => {});",
-            "console.error('2026-10-06T00:00:01Z INF Registered tunnel connection connIndex=0');",
-            "setInterval(() => {}, 1000);",
+            "#!/bin/sh",
+            `exec '${process.execPath}' -e "process.on('SIGTERM', () => {}); console.error('2026-10-06T00:00:01Z INF Registered tunnel connection connIndex=0'); setInterval(() => {}, 1000);"`,
           ].join("\n"),
         );
         yield* fs.chmod(executablePath, 0o755);
