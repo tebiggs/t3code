@@ -33,7 +33,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -529,6 +531,16 @@ export class EnvironmentAuth extends Context.Service<
     readonly revokeOtherClientSessions: (
       currentSessionId: AuthSessionId,
     ) => Effect.Effect<number, ServerAuthInternalError>;
+    /** Runs a step that grants access so it can't straddle `revokeOtherAccess`. Not reentrant. */
+    readonly withGrantLock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+    /** For a request that waited: its session may have been revoked since it was authenticated. */
+    readonly isSessionActive: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<boolean, ServerAuthInternalError>;
+    /** Ends every other session and pairing link, including credentials being exchanged now. */
+    readonly revokeOtherAccess: (
+      currentSessionId: AuthSessionId,
+    ) => Effect.Effect<void, ServerAuthInternalError>;
     readonly authenticateHttpRequest: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
@@ -558,6 +570,23 @@ export class EnvironmentAuth extends Context.Service<
         readonly expiresAt: DateTime.DateTime;
       },
       ServerAuthInternalError
+    >;
+    /** Advances when other access is revoked, so an approval from before it can be refused. */
+    readonly accessGeneration: Effect.Effect<number>;
+    /** Issues a session for an approval, unless other access was revoked since it was given. */
+    readonly redeemMcpApproval: (input: {
+      readonly label: string;
+      readonly access: AuthMcpClientAccess;
+      readonly peerLink: boolean;
+      readonly client: AuthClientMetadata;
+      readonly approvedAtGeneration: number;
+    }) => Effect.Effect<
+      {
+        readonly sessionId: AuthSessionId;
+        readonly token: string;
+        readonly expiresAt: DateTime.DateTime;
+      },
+      ServerAuthInternalError | ServerAuthScopeNotGrantedError
     >;
     /** Spends a code covering all granted scopes. Rejects desktop grants and leaves refused proof-bound codes unspent. */
     readonly consumeMcpApprovalCode: (
@@ -713,6 +742,9 @@ export const make = Effect.gen(function* () {
   const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
+  // Spending a credential and issuing its session are separate steps; revocation must not fit between.
+  const credentialExchangeLock = yield* Semaphore.make(1);
+  const accessGenerationRef = yield* Ref.make(0);
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const digest = yield* Digest.Digest;
   const descriptor = yield* policy.getDescriptor();
@@ -878,23 +910,29 @@ export const make = Effect.gen(function* () {
             Effect.catchIf(SessionStore.isSessionCredentialInvalidError, () => Effect.void),
             Effect.mapError((cause) => new ServerAuthSessionCredentialValidationError({ cause })),
           );
-    const grant = yield* bootstrapCredentials
-      .consume(credential)
-      .pipe(Effect.mapError(toBootstrapExchangeError));
-    const session = yield* sessions
-      .issue({
-        method: "browser-session-cookie",
-        subject: grant.subject,
-        scopes: grant.scopes,
-        ...(previousSession?.method === "browser-session-cookie"
-          ? { replaceSessionId: previousSession.sessionId }
-          : {}),
-        client: {
-          ...requestMetadata,
-          ...(grant.label ? { label: grant.label } : {}),
-        },
-      })
-      .pipe(Effect.mapError((cause) => new ServerAuthAuthenticatedSessionIssueError({ cause })));
+    const session = yield* credentialExchangeLock.withPermits(1)(
+      bootstrapCredentials.consume(credential).pipe(
+        Effect.mapError(toBootstrapExchangeError),
+        Effect.flatMap((grant) =>
+          sessions
+            .issue({
+              method: "browser-session-cookie",
+              subject: grant.subject,
+              scopes: grant.scopes,
+              ...(previousSession?.method === "browser-session-cookie"
+                ? { replaceSessionId: previousSession.sessionId }
+                : {}),
+              client: {
+                ...requestMetadata,
+                ...(grant.label ? { label: grant.label } : {}),
+              },
+            })
+            .pipe(
+              Effect.mapError((cause) => new ServerAuthAuthenticatedSessionIssueError({ cause })),
+            ),
+        ),
+      ),
+    );
     return {
       response: {
         authenticated: true,
@@ -955,64 +993,69 @@ export const make = Effect.gen(function* () {
 
   const exchangeBootstrapCredentialForAccessToken: EnvironmentAuth["Service"]["exchangeBootstrapCredentialForAccessToken"] =
     (credential, requestedScopes, requestMetadata, input) => {
-      return resolveBootstrapGrant(credential, {
-        ...input,
-        ...(requestedScopes !== undefined ? { requestedScopes } : {}),
-      }).pipe(
-        Effect.flatMap((grant) =>
-          Effect.gen(function* () {
-            const grantedScopes =
-              requestedScopes === undefined
-                ? grant.scopes
-                : [...new Set(requestedScopes)].filter((scope) => grant.scopes.includes(scope));
-            if (grantedScopes.length === 0) {
-              return yield* new ServerAuthScopeNotGrantedError({});
-            }
-            return yield* sessions
-              .issue({
-                method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
-                subject: grant.subject,
-                scopes: grantedScopes,
-                ...(input?.proofKeyThumbprint
-                  ? {
-                      proofKeyThumbprint: input.proofKeyThumbprint,
-                      ttl: Duration.hours(1),
-                    }
-                  : {}),
-                replaceActiveForSubjectAndMethod: grant.method === "desktop-bootstrap",
-                client: {
-                  ...requestMetadata,
-                  ...(grant.label ? { label: grant.label } : {}),
-                },
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
-                ),
-              );
-          }),
-        ),
-        Effect.flatMap((session) =>
-          DateTime.now.pipe(
-            Effect.map(
-              (now) =>
-                ({
-                  access_token: session.token,
-                  issued_token_type: AuthAccessTokenType,
-                  token_type: input?.proofKeyThumbprint ? "DPoP" : "Bearer",
-                  expires_in: Math.max(
-                    0,
-                    Math.floor(
-                      (session.expiresAt.epochMilliseconds - now.epochMilliseconds) / 1000,
+      return credentialExchangeLock
+        .withPermits(1)(
+          resolveBootstrapGrant(credential, {
+            ...input,
+            ...(requestedScopes !== undefined ? { requestedScopes } : {}),
+          }).pipe(
+            Effect.flatMap((grant) =>
+              Effect.gen(function* () {
+                const grantedScopes =
+                  requestedScopes === undefined
+                    ? grant.scopes
+                    : [...new Set(requestedScopes)].filter((scope) => grant.scopes.includes(scope));
+                if (grantedScopes.length === 0) {
+                  return yield* new ServerAuthScopeNotGrantedError({});
+                }
+                return yield* sessions
+                  .issue({
+                    method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
+                    subject: grant.subject,
+                    scopes: grantedScopes,
+                    ...(input?.proofKeyThumbprint
+                      ? {
+                          proofKeyThumbprint: input.proofKeyThumbprint,
+                          ttl: Duration.hours(1),
+                        }
+                      : {}),
+                    replaceActiveForSubjectAndMethod: grant.method === "desktop-bootstrap",
+                    client: {
+                      ...requestMetadata,
+                      ...(grant.label ? { label: grant.label } : {}),
+                    },
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
                     ),
-                  ),
-                  scope: encodeOAuthScope(session.scopes),
-                }) satisfies AuthAccessTokenResult,
+                  );
+              }),
             ),
           ),
-        ),
-        Effect.withSpan("EnvironmentAuth.exchangeBootstrapCredentialForAccessToken"),
-      );
+        )
+        .pipe(
+          Effect.flatMap((session) =>
+            DateTime.now.pipe(
+              Effect.map(
+                (now) =>
+                  ({
+                    access_token: session.token,
+                    issued_token_type: AuthAccessTokenType,
+                    token_type: input?.proofKeyThumbprint ? "DPoP" : "Bearer",
+                    expires_in: Math.max(
+                      0,
+                      Math.floor(
+                        (session.expiresAt.epochMilliseconds - now.epochMilliseconds) / 1000,
+                      ),
+                    ),
+                    scope: encodeOAuthScope(session.scopes),
+                  }) satisfies AuthAccessTokenResult,
+              ),
+            ),
+          ),
+          Effect.withSpan("EnvironmentAuth.exchangeBootstrapCredentialForAccessToken"),
+        );
     };
 
   const toPairingCredential = (issued: IssuedPairingLink): AuthPairingCredentialResult => ({
@@ -1198,6 +1241,24 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.revokeOtherClientSessions"),
     );
 
+  const isSessionActive: EnvironmentAuth["Service"]["isSessionActive"] = (sessionId) =>
+    listSessions().pipe(
+      Effect.map((active) => active.some((session) => session.sessionId === sessionId)),
+    );
+
+  const revokeOtherAccess: EnvironmentAuth["Service"]["revokeOtherAccess"] = (currentSessionId) =>
+    credentialExchangeLock.withPermits(1)(
+      Ref.update(accessGenerationRef, (generation) => generation + 1).pipe(
+        Effect.andThen(listPairingLinks()),
+        Effect.flatMap((pairingLinks) =>
+          Effect.forEach(pairingLinks, (link) => revokePairingLink(link.id), { discard: true }),
+        ),
+        Effect.andThen(revokeOtherSessionsExcept(currentSessionId)),
+        Effect.asVoid,
+        Effect.withSpan("EnvironmentAuth.revokeOtherAccess"),
+      ),
+    );
+
   const issueStartupPairingUrl: EnvironmentAuth["Service"]["issueStartupPairingUrl"] = (baseUrl) =>
     issueStartupPairingCredential().pipe(
       Effect.map((issued) => {
@@ -1341,6 +1402,19 @@ export const make = Effect.gen(function* () {
         Effect.withSpan("EnvironmentAuth.issueMcpClientSession"),
       );
 
+  const redeemMcpApproval: EnvironmentAuth["Service"]["redeemMcpApproval"] = ({
+    approvedAtGeneration,
+    ...input
+  }) =>
+    credentialExchangeLock.withPermits(1)(
+      Effect.gen(function* () {
+        if ((yield* Ref.get(accessGenerationRef)) !== approvedAtGeneration) {
+          return yield* new ServerAuthScopeNotGrantedError({});
+        }
+        return yield* issueMcpClientSession(input);
+      }),
+    );
+
   const authenticateBrowserSession: EnvironmentAuth["Service"]["authenticateBrowserSession"] = (
     request,
   ) => {
@@ -1399,12 +1473,17 @@ export const make = Effect.gen(function* () {
     listClientSessions,
     revokeClientSession,
     revokeOtherClientSessions,
+    withGrantLock: credentialExchangeLock.withPermits(1),
+    isSessionActive,
+    revokeOtherAccess,
     authenticateHttpRequest,
     authenticateWebSocketUpgrade,
     issueWebSocketTicket,
     issueStartupPairingUrl,
     authenticateMcpClient,
     issueMcpClientSession,
+    accessGeneration: Ref.get(accessGenerationRef),
+    redeemMcpApproval,
     consumeMcpApprovalCode,
     authenticateBrowserSession,
   });
@@ -1455,7 +1534,9 @@ const revokePairedClientsThePolicyDisallows = Effect.fn(
   }
 });
 
-export const layer = Layer.effect(EnvironmentAuth, make).pipe(
+export const layerFromStores = Layer.effect(EnvironmentAuth, make);
+
+export const layer = layerFromStores.pipe(
   Layer.provideMerge(PairingGrantStore.layer),
   Layer.provideMerge(SessionStore.layer),
   Layer.provideMerge(EnvironmentAuthPolicy.layer),

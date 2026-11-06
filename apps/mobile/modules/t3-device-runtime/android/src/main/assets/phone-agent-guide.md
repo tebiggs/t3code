@@ -23,10 +23,11 @@ There is no Termux, Termux:API app or `pkg`: install packages with `apt-get` (ru
     always allow or never): `termux-location`, `termux-telephony-cellinfo`,
     `termux-camera-photo`, `termux-microphone-record`, `termux-contact-list`,
     `termux-sms-list`, `termux-sms-send`, `termux-call-log`, `termux-telephony-call`,
-    `termux-telephony-deviceinfo`, `termux-notification-list`. Run them by name so the user
-    is asked. The first use also shows Android's own permission prompt on the phone. If one
-    fails because it's set to Never or Android wasn't allowed, pass on the place the error
-    names instead of working around it.
+    `termux-telephony-deviceinfo`, `termux-notification-list`. With Ask each time, each run
+    waits up to a minute for the user to answer on the phone, and fails if nobody does. The
+    first use also shows Android's own permission prompt. If one fails because it's set to
+    Never, wasn't approved or Android wasn't allowed, pass on the place the error names
+    instead of working around it.
 - While T3 Code isn't on screen, the clipboard can't be read, the camera, microphone and
   location fail, and links, files, shares and calls arrive as a notification for the user
   to tap.

@@ -229,7 +229,12 @@ import * as DefectReporter from "./observability/DefectReporter.ts";
 import * as EventLoopMonitor from "./observability/EventLoopMonitor.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { requiredScopeForDeviceList, rpcAuthorizationError } from "./auth/RpcAuthorization.ts";
+import {
+  deviceListIsPassive,
+  readOnlyVcsStatusInput,
+  requiredScopeForDeviceList,
+  rpcAuthorizationError,
+} from "./auth/RpcAuthorization.ts";
 import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
 import { RpcInstrumentation, rpcInstrumentationLayer } from "./observability/RpcInstrumentation.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -2436,6 +2441,10 @@ export const layerWsRpc = (
         [WS_METHODS.serverRefreshProviders]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
+            // Refreshing can install or start a provider, so a read-only session gets what's known.
+            if (!currentSession.scopes.includes(AuthOrchestrationOperateScope)) {
+              return { providers: yield* providerRegistry.getProviders };
+            }
             if (input.refreshModels) {
               yield* providerRegistry.invalidateModelCaches({
                 instanceId: input.instanceId,
@@ -3071,14 +3080,24 @@ export const layerWsRpc = (
           }),
         [WS_METHODS.assetsPersistChatAttachments]: (input) =>
           persistChatAttachments(input).pipe(Effect.map((attachments) => ({ attachments }))),
-        [WS_METHODS.subscribeVcsStatus]: (input) => vcsStatusBroadcaster.streamStatus(input),
+        [WS_METHODS.subscribeVcsStatus]: (input) =>
+          vcsStatusBroadcaster.streamStatus(
+            readOnlyVcsStatusInput(
+              input,
+              currentSession.scopes.includes(AuthOrchestrationOperateScope),
+            ),
+          ),
         [WS_METHODS.subscribeWorktreeSetup]: (input) => worktreeSetupTracker.stream(input.threadId),
         [WS_METHODS.worktreeSetupCancel]: (input) =>
           worktreeSetupTracker
             .cancel(input.threadId)
             .pipe(Effect.map((cancelled) => ({ cancelled }))),
         [WS_METHODS.vcsRefreshStatus]: (input) =>
-          vcsStatusBroadcaster.refreshStatus(input.cwd, { localOnly: input.localOnly ?? false }),
+          vcsStatusBroadcaster.refreshStatus(input.cwd, {
+            localOnly:
+              input.localOnly === true ||
+              !currentSession.scopes.includes(AuthOrchestrationOperateScope),
+          }),
         [WS_METHODS.vcsPull]: (input) =>
           gitWorkflow.pullCurrentBranch(input.cwd).pipe(
             Effect.matchCauseEffect({
@@ -3182,7 +3201,7 @@ export const layerWsRpc = (
         [WS_METHODS.deviceEasAccount]: (input) => deviceService.easAccount(input),
         [WS_METHODS.deviceSimlockIdentity]: (input) => deviceService.simlockIdentity(input),
         [WS_METHODS.deviceList]: (input) =>
-          input.inspectOnly && !input.updateTool
+          deviceListIsPassive(input, currentSession.scopes.includes(AuthOrchestrationOperateScope))
             ? deviceService.inspect
             : authorizeEffect(
                 requiredScopeForDeviceList(input),

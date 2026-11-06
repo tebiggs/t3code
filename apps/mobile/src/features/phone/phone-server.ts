@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -13,9 +14,11 @@ import {
   phoneServerSettingsAtom,
   setPhoneServerSettings,
   usePhoneServerSettings,
+  usePhoneSharingRecord,
 } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
 import { deviceRuntime, deviceServer } from "../device-runtime/device-runtime";
+import { reconcilePhoneSharing } from "./phone-sharing-commands";
 import { phoneServerPort } from "./phone-setup";
 
 // The first start migrates a fresh database inside proot, which is slow on a phone.
@@ -273,11 +276,26 @@ export function usePhoneServerWorker() {
   useEffect(() => {
     if (deviceRuntime !== null && down) void autoStartPhoneServer();
   }, [down]);
+  const connected = phone?.connectionState === "connected";
+  const sharing = usePhoneSharingRecord();
+  const relayAccount = useAtomValue(managedRelaySessionAtom)?.accountId ?? null;
+  const sharingUnfinished =
+    sharing !== null &&
+    (sharing.phase !== "on" || (relayAccount !== null && relayAccount !== sharing.accountId));
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- finishes stopping or deregistering once the server or the account comes back
+  useEffect(() => {
+    if (deviceRuntime !== null && sharingUnfinished && (connected || relayAccount !== null)) {
+      void reconcilePhoneSharing();
+    }
+  }, [connected, sharingUnfinished, relayAccount]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the app returning to the foreground
   useEffect(() => {
     if (deviceRuntime === null) return;
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") void autoStartPhoneServer();
+      if (state === "active") {
+        void autoStartPhoneServer();
+        void reconcilePhoneSharing();
+      }
     });
     return () => subscription.remove();
   }, []);

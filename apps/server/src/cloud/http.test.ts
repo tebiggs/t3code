@@ -156,7 +156,11 @@ const linkProofClient = Effect.gen(function* () {
     const payload = (yield* responseJson(response)) as { access_token: string };
     return payload.access_token;
   });
-  return { post, exchange };
+  const get = (path: string, headers?: Record<string, string>) =>
+    Effect.promise(() =>
+      handler(new Request(`${NON_LOOPBACK_ORIGIN}${path}`, headers ? { headers } : {})),
+    );
+  return { post, get, exchange };
 });
 
 describe("link proof over a non-loopback desktop transport", () => {
@@ -287,6 +291,85 @@ describe("link proof over a non-loopback desktop transport", () => {
       const { post } = yield* linkProofClient;
       const response = yield* post("/api/connect/link-proof", proofRequest);
       expect(response.status).toBe(401);
+    }),
+  );
+});
+
+describe("sharing mode", () => {
+  const pairedSession = Effect.fnUntraced(function* (
+    { post, exchange }: Effect.Success<typeof linkProofClient>,
+    scopes: ReadonlyArray<string>,
+  ) {
+    const phone = yield* exchange(DESKTOP_BOOTSTRAP_TOKEN);
+    const paired = yield* post(
+      "/api/auth/pairing-token",
+      { scopes },
+      { authorization: `Bearer ${phone}` },
+    );
+    const { credential } = (yield* responseJson(paired)) as { credential: string };
+    return { phone, other: yield* exchange(credential) };
+  });
+
+  it.effect("changes the mode, signs out other clients and keeps the caller", () =>
+    Effect.gen(function* () {
+      const client = yield* linkProofClient;
+      const { post, get } = client;
+      const { phone, other } = yield* pairedSession(client, ["orchestration:read"]);
+      const headers = { authorization: `Bearer ${phone}` };
+
+      const changed = yield* post("/api/connect/sharing-mode", { mode: "view-only" }, headers);
+      expect(changed.status).toBe(200);
+      expect(yield* responseJson(changed)).toMatchObject({
+        sharingMode: "view-only",
+        sharingModeChangePending: false,
+      });
+
+      const state = yield* get("/api/connect/link-state", headers);
+      expect(yield* responseJson(state)).toMatchObject({ sharingMode: "view-only" });
+      const otherSession = yield* get("/api/auth/session", { authorization: `Bearer ${other}` });
+      expect(yield* responseJson(otherSession)).toMatchObject({ authenticated: false });
+    }),
+  );
+
+  it.effect("reports no mode for a host that never set one", () =>
+    Effect.gen(function* () {
+      const { get, exchange } = yield* linkProofClient;
+      const token = yield* exchange(DESKTOP_BOOTSTRAP_TOKEN);
+      const state = yield* get("/api/connect/link-state", { authorization: `Bearer ${token}` });
+      expect(yield* responseJson(state)).not.toHaveProperty("sharingMode");
+    }),
+  );
+
+  it.effect.each([
+    { path: "/api/connect/sharing-mode", payload: { mode: "full-control" }, scope: "relay:write" },
+    { path: "/api/connect/unlink", payload: {}, scope: "relay:write" },
+    { path: "/api/connect/link-proof", payload: proofRequest, scope: "relay:write" },
+    {
+      path: "/api/auth/pairing-token",
+      payload: { scopes: ["orchestration:read"] },
+      scope: "access:write",
+    },
+    { path: "/api/auth/clients/revoke-others", payload: {}, scope: "access:write" },
+  ])("refuses a View only session at $path", ({ path, payload, scope }) =>
+    Effect.gen(function* () {
+      const client = yield* linkProofClient;
+      const { other: viewer } = yield* pairedSession(client, ["orchestration:read"]);
+      const refused = yield* client.post(path, payload, { authorization: `Bearer ${viewer}` });
+      expect(refused.status).toBe(403);
+      expect(yield* responseJson(refused)).toMatchObject({ requiredScope: scope });
+    }),
+  );
+
+  it.effect("needs both relay and access write, since it signs clients out", () =>
+    Effect.gen(function* () {
+      const client = yield* linkProofClient;
+      const { other: relayOnly } = yield* pairedSession(client, ["relay:write"]);
+      const refused = yield* client.post(
+        "/api/connect/sharing-mode",
+        { mode: "view-only" },
+        { authorization: `Bearer ${relayOnly}` },
+      );
+      expect(refused.status).toBe(403);
     }),
   );
 });

@@ -38,6 +38,7 @@ import type {
 import {
   EnvironmentRequestInvalidError,
   AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   clampManagedRuntimeMode,
   managedRuntimeModeDenial,
   ProviderDriverKind,
@@ -261,7 +262,11 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSoftwareKeyboardOpen } from "../../hooks/useSoftwareKeyboardOpen";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { usePanelAnimationSettings } from "../../panelAnimations";
-import { readEnvironmentScope, readPreparedConnection } from "../../state/session";
+import {
+  readEnvironmentScope,
+  readPreparedConnection,
+  useEnvironmentScope,
+} from "../../state/session";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import { useComposerRestingTransition } from "./useComposerRestingTransition";
 import { ComposerCommandMenuLayer } from "./ComposerCommandMenuLayer";
@@ -1198,6 +1203,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (!isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan !== null);
   const showCollapsedMobilePromptRow = isComposerCollapsedMobile;
   const showComposerAttachAction =
+    canOperateThread &&
     fileStagingLimit !== null &&
     (!activePendingProgress ||
       (supportsQuestionAttachments &&
@@ -3134,6 +3140,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       focusComposer={focusComposer}
     />
   ) : null;
+  // Read scope also proves the session has loaded, so this doesn't flash while connecting.
+  const viewOnly =
+    useEnvironmentScope(environmentId, AuthOrchestrationReadScope) && !canOperateThread;
+
   return (
     <form
       ref={composerFormRef}
@@ -3582,6 +3592,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
+      {viewOnly ? (
+        <p className="px-1 pt-1.5 text-xs text-muted-foreground">
+          This connection can only view threads. You can't send messages or answer requests here.
+        </p>
+      ) : null}
     </form>
   );
 });

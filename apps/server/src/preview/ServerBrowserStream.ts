@@ -21,6 +21,7 @@ import {
 import * as Socket from "effect/socket/Socket";
 
 import { authenticateMediaRequest } from "../auth/http.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import { assetResponseHeaders } from "../http.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
@@ -52,7 +53,10 @@ const parseMessage = (chunk: Uint8Array | string): unknown => {
 };
 
 // Request middleware owns tracing, including long-lived WebSocket sessions.
-const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBrowser["Service"]) {
+const makeHandler = Effect.fnUntraced(function* (
+  browser: ServerBrowser.ServerBrowser["Service"],
+  sessions: SessionStore.SessionStore["Service"],
+) {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const url = requestUrl(request);
   if (Option.isNone(url)) return HttpServerResponse.text("Bad Request", { status: 400 });
@@ -198,7 +202,17 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
       const receiveInput = reader.pull.pipe(
         Effect.flatMap((chunks) => Effect.forEach(chunks, receive, { discard: true })),
       );
-      return yield* Effect.raceFirst(Effect.forever(sendOutput), Effect.forever(receiveInput));
+      // `canOperate` was decided at connect, so this socket mustn't outlive its session.
+      const sessionEnded = sessions
+        .awaitInvalidation(session.sessionId, session.proofKeyThumbprint)
+        .pipe(
+          Effect.andThen(writer.write(new Socket.CloseEvent(1008, "session ended"))),
+          Effect.as(HttpServerResponse.empty()),
+        );
+      return yield* Effect.raceFirst(
+        Effect.raceFirst(Effect.forever(sendOutput), Effect.forever(receiveInput)),
+        sessionEnded,
+      );
     }),
   ).pipe(
     Effect.catchTags({
@@ -288,10 +302,11 @@ const receiveUpload = Effect.fnUntraced(
 export const routeLayer = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const browser = yield* ServerBrowser.ServerBrowser;
+    const sessions = yield* SessionStore.SessionStore;
     const platform = yield* Effect.context<
       HttpPlatform.HttpPlatform | FileSystem.FileSystem | Path.Path
     >();
-    const handler = makeHandler(browser).pipe(Effect.provideContext(platform));
+    const handler = makeHandler(browser, sessions).pipe(Effect.provideContext(platform));
     yield* router.add("GET", `${PREVIEW_STREAM_ROUTE_PREFIX}/*`, handler);
     yield* router.add("POST", `${PREVIEW_STREAM_ROUTE_PREFIX}/upload`, handler);
   }),

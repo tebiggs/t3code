@@ -1,9 +1,12 @@
 import {
+  type AuthSessionId,
   AuthStandardClientScopes,
+  AuthViewOnlyClientScopes,
   EnvironmentAuthenticatedPrincipal,
   type EnvironmentCloudLinkStateResult,
   type EnvironmentCloudPreferencesRequest,
   type EnvironmentCloudRelayConfigResult,
+  type EnvironmentSharingMode,
 } from "@t3tools/contracts";
 import {
   RelayCloudEnvironmentHealthProofPayload,
@@ -81,6 +84,8 @@ import {
   CLOUD_ENDPOINT_CONFIRMED_ORIGIN,
   CLOUD_ENDPOINT_RUNTIME_CONFIG,
   CLOUD_LINK_REVOKED,
+  CLOUD_SHARING_MODE,
+  CLOUD_SHARING_MODE_CHANGE_PENDING,
   CLOUD_LINKED_USER_ID,
   CLOUD_MINT_PUBLIC_KEY,
   decodeConfirmedOrigin,
@@ -253,6 +258,7 @@ const INTERNAL_OPERATION_MESSAGES = {
   "update-webhook-settings": "Could not update T3 Connect webhook settings.",
   "read-preferences": "Could not read environment cloud preferences.",
   "persist-preferences": "Could not persist environment cloud preferences.",
+  "change-sharing-mode": "Could not finish changing the sharing mode.",
   "answer-health": "Could not answer cloud health request.",
   "issue-credential": "Could not issue cloud connection credential.",
 } as const;
@@ -278,6 +284,10 @@ const internalError =
   (operation: CloudLinkInternalError["operation"]) =>
   (cause: unknown): Effect.Effect<never, CloudLinkInternalError> =>
     Effect.fail(new CloudLinkInternalError({ operation, cause }));
+
+// Anything but an explicit Full control is read-only, so a bad value can't widen access.
+const decodeSharingMode = (bytes: Uint8Array): EnvironmentSharingMode =>
+  bytesToString(bytes) === "full-control" ? "full-control" : "view-only";
 
 const isPermanentLinkError = Schema.is(
   Schema.Union([
@@ -453,6 +463,14 @@ export class CloudLink extends Context.Service<
     ) => Effect.Effect<
       EnvironmentCloudLinkStateResult,
       CloudLinkNotLinkedError | CloudLinkInternalError | ManagedLimits.ManagedPolicyRefusedError
+    >;
+    /** Signs out everyone but the caller, so nobody keeps what the previous mode gave them. */
+    readonly setSharingMode: (
+      mode: EnvironmentSharingMode,
+      callerSessionId: AuthSessionId,
+    ) => Effect.Effect<
+      EnvironmentCloudLinkStateResult,
+      CloudLinkInternalError | ManagedLimits.ManagedPolicyRefusedError
     >;
     readonly answerHealthRequest: (
       request: RelayCloudEnvironmentHealthRequest,
@@ -1270,6 +1288,8 @@ const make = Effect.gen(function* () {
       holdWebhooks,
       revoked,
       latestReachability,
+      sharingMode,
+      sharingModeChangePending,
     ] = yield* Effect.all(
       [
         secrets.get(CLOUD_LINKED_USER_ID),
@@ -1280,8 +1300,10 @@ const make = Effect.gen(function* () {
         secrets.get(HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET),
         secrets.get(CLOUD_LINK_REVOKED),
         reachability.latest,
+        secrets.get(CLOUD_SHARING_MODE),
+        secrets.get(CLOUD_SHARING_MODE_CHANGE_PENDING),
       ],
-      { concurrency: 8 },
+      { concurrency: 10 },
     );
     // A not-linked check predates the stored tunnel config; the next check replaces it.
     const currentReachability = Option.filter(
@@ -1303,6 +1325,8 @@ const make = Effect.gen(function* () {
       holdWebhooksWhileOffline:
         Option.isSome(holdWebhooks) && bytesToString(holdWebhooks.value) === "true",
       ...(Option.isSome(currentReachability) ? { reachability: currentReachability.value } : {}),
+      ...(Option.isSome(sharingMode) ? { sharingMode: decodeSharingMode(sharingMode.value) } : {}),
+      sharingModeChangePending: Option.isSome(sharingModeChangePending),
     } satisfies EnvironmentCloudLinkStateResult;
   });
 
@@ -1410,6 +1434,31 @@ const make = Effect.gen(function* () {
       return yield* readCloudLinkState();
     },
     Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("read-preferences")),
+  );
+
+  // Held across choosing a credential's scopes and issuing it, so no mint straddles a mode change.
+  const sharingModeLock = yield* Semaphore.make(1);
+
+  const setSharingMode = Effect.fn("environment.cloud.setSharingMode")(
+    function* (mode: EnvironmentSharingMode, callerSessionId: AuthSessionId) {
+      // A change this one waited behind may have signed this caller out.
+      if (!(yield* environmentAuth.isSessionActive(callerSessionId))) {
+        return yield* internalError("change-sharing-mode")(
+          new Error("The session asking for this change was signed out while it waited."),
+        );
+      }
+      // Pending goes first and clears last, so a failure at any step still shows on the phone.
+      yield* secrets.set(CLOUD_SHARING_MODE_CHANGE_PENDING, stringToBytes("true"));
+      yield* secrets.set(CLOUD_SHARING_MODE, stringToBytes(mode));
+      yield* environmentAuth.revokeOtherAccess(callerSessionId);
+      yield* secrets.remove(CLOUD_SHARING_MODE_CHANGE_PENDING);
+      return yield* readCloudLinkState();
+    },
+    // Finish even if the phone's app walks away mid-change.
+    Effect.uninterruptible,
+    sharingModeLock.withPermits(1),
+    Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("change-sharing-mode")),
+    Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, internalError("change-sharing-mode")),
   );
 
   const answerHealthRequest = Effect.fn("environment.cloud.health")(
@@ -1578,13 +1627,22 @@ const make = Effect.gen(function* () {
         return yield* new CloudLinkProofReplayedError({ request: "mint" });
       }
 
-      const issued = yield* environmentAuth.createPairingLink({
-        scopes: AuthStandardClientScopes,
-        subject: "cloud-connect",
-        ttl: Duration.minutes(2),
-        label: "T3 Connect connect",
-        proofKeyThumbprint: proof.clientProofKeyThumbprint,
-      });
+      const issued = yield* sharingModeLock.withPermits(1)(
+        secrets.get(CLOUD_SHARING_MODE).pipe(
+          Effect.flatMap((mode) =>
+            environmentAuth.createPairingLink({
+              scopes:
+                Option.isSome(mode) && decodeSharingMode(mode.value) === "view-only"
+                  ? AuthViewOnlyClientScopes
+                  : AuthStandardClientScopes,
+              subject: "cloud-connect",
+              ttl: Duration.minutes(2),
+              label: "T3 Connect connect",
+              proofKeyThumbprint: proof.clientProofKeyThumbprint,
+            }),
+          ),
+        ),
+      );
       const responsePayload = {
         iss: `t3-env:${environmentId}`,
         aud: normalizeRelayIssuer(relayIssuer),
@@ -1641,6 +1699,7 @@ const make = Effect.gen(function* () {
       linkState,
       unlink,
       updatePreferences: refused,
+      setSharingMode: refused,
       answerHealthRequest: refused,
       mintCredential: refused,
       reconcileDesiredLinkIfStillDesired: notDesired,
@@ -1657,6 +1716,7 @@ const make = Effect.gen(function* () {
     linkState,
     unlink,
     updatePreferences,
+    setSharingMode,
     answerHealthRequest,
     mintCredential,
     reconcileDesiredLinkIfStillDesired,

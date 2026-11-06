@@ -492,6 +492,9 @@ export function connectReachabilityHelpUrl(cause: EnvironmentConnectReachability
   return t3ConnectTroubleshootingUrl(REACHABILITY_SECTION[cause]);
 }
 
+export const EnvironmentSharingMode = Schema.Literals(["view-only", "full-control"]);
+export type EnvironmentSharingMode = typeof EnvironmentSharingMode.Type;
+
 export const EnvironmentCloudLinkStateResult = Schema.Struct({
   linked: Schema.Boolean,
   cloudUserId: Schema.NullOr(Schema.String),
@@ -503,6 +506,10 @@ export const EnvironmentCloudLinkStateResult = Schema.Struct({
   linkRevoked: Schema.optional(Schema.Boolean),
   /** The latest check the server ran on its own, absent until one finishes. */
   reachability: Schema.optional(EnvironmentConnectReachability),
+  /** What T3 Connect devices get. Absent when never set, which means full control. */
+  sharingMode: Schema.optional(EnvironmentSharingMode),
+  /** The last mode change didn't finish: devices signed in before it may keep their old access. */
+  sharingModeChangePending: Schema.optional(Schema.Boolean),
 });
 export type EnvironmentCloudLinkStateResult = typeof EnvironmentCloudLinkStateResult.Type;
 
@@ -511,6 +518,11 @@ export const EnvironmentCloudPreferencesRequest = Schema.Struct({
   holdWebhooksWhileOffline: Schema.optional(Schema.Boolean),
 });
 export type EnvironmentCloudPreferencesRequest = typeof EnvironmentCloudPreferencesRequest.Type;
+
+export const EnvironmentCloudSharingModeRequest = Schema.Struct({
+  mode: EnvironmentSharingMode,
+});
+export type EnvironmentCloudSharingModeRequest = typeof EnvironmentCloudSharingModeRequest.Type;
 
 export const AuthPairingLinkRevokeResult = Schema.Struct({
   revoked: Schema.Boolean,
@@ -798,6 +810,14 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     HttpApiEndpoint.post("preferences", "/api/connect/preferences", {
       headers: OptionalBearerHeaders,
       payload: EnvironmentCloudPreferencesRequest,
+      success: EnvironmentCloudLinkStateResult,
+      error: EnvironmentHttpCloudErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("sharingMode", "/api/connect/sharing-mode", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentCloudSharingModeRequest,
       success: EnvironmentCloudLinkStateResult,
       error: EnvironmentHttpCloudErrors,
     }).middleware(EnvironmentAuthenticatedAuth),

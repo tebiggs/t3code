@@ -55,7 +55,7 @@ examples.
 ### More machines with T3 Chat
 
 Each T3 Connect account can link up to 3 machines. Phones and browsers do not
-count. A paid T3 Chat plan raises the limit to 10 machines with Pro, or 100 with
+count, unless the phone shares a server of its own. A paid T3 Chat plan raises the limit to 10 machines with Pro, or 100 with
 Premier.
 
 To link T3 Chat, open your account menu on the web or desktop app, go to
@@ -418,6 +418,30 @@ link to change a client's permissions.
 `filesystem:read` allows browsing host files, opening workspace files, and viewing
 local changes. Add `filesystem:write` to allow editing files or saving plans to
 the workspace. These scopes control direct file access from the client.
+
+### Share a phone's server
+
+On Android, the app can run a server on the phone. To reach it from your other
+devices, open phone setup or the phone's environment page and choose a mode under
+**Other devices**:
+
+- **Off:** only the app on the phone can open its threads.
+- **View only:** devices signed in to your T3 Connect account can read threads,
+  and see the phone's projects, pull requests and open previews. They can't send
+  messages, answer approvals, or use the terminal or files. Anyone on the account
+  can read any secrets that appear in a thread.
+- **Full control:** those devices can also run agents, use a terminal running as
+  root in the phone's Ubuntu, and reach phone files if you've allowed storage.
+  Agent access isn't a hard barrier against someone using that terminal.
+
+Changing the mode signs out every other device, and they reconnect with the new
+one. Anything a device changed or set up while it had full control stays,
+including guest links and scheduled tasks. Off also stops the tunnel.
+
+The phone's public T3 Connect address stays reachable in every mode except Off.
+Requests still need a credential, apart from the server description, the web
+files, a request signed by T3 Connect for a new credential, guest links, and
+webhooks with a token in their URL.
 
 To remove an environment from T3 Connect, open your account menu's **T3 Connect**
 page, or **Settings → T3 Connect** on mobile, and choose **Deregister**. This
