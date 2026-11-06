@@ -101,6 +101,9 @@ const CONNECTOR_READINESS_INTERVAL = Duration.seconds(30);
 const CONNECTOR_READINESS_REQUEST_TIMEOUT = Duration.seconds(5);
 const CONNECTOR_NOT_READY_CHECKS_BEFORE_RESTART = 6;
 const CONNECTOR_NOT_READY_CHECKS_MAX = 60;
+// cloudflared drains open requests for 30 seconds after SIGTERM, and one that never exits would
+// hold every later stop, unlink included.
+const RELAY_CLIENT_FORCE_KILL_AFTER = Duration.seconds(5);
 const RELAY_CLIENT_METRICS_LINE = /\bStarting metrics server on (127\.0\.0\.1:\d+)\/metrics\b/u;
 const RELAY_CLIENT_PROTOCOL = /\bprotocol=(\w+)/u;
 // cloudflared's metrics server: `/ready` answers 200 or 503 with this body, and
@@ -526,7 +529,9 @@ export const make = Effect.gen(function* () {
         tunnelId: connector.config.tunnelId,
         tunnelName: connector.config.tunnelName,
       });
-      yield* connector.child.kill().pipe(Effect.ignore);
+      yield* connector.child
+        .kill({ forceKillAfter: RELAY_CLIENT_FORCE_KILL_AFTER })
+        .pipe(Effect.ignore);
     }
   });
 
@@ -720,6 +725,7 @@ export const make = Effect.gen(function* () {
           ],
           {
             detached: false,
+            forceKillAfter: RELAY_CLIENT_FORCE_KILL_AFTER,
             env: {
               ...process.env,
               TUNNEL_TOKEN: config.connectorToken,

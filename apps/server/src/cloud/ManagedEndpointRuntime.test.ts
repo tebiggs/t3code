@@ -22,6 +22,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient } from "effect/http";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as RelayClient from "@t3tools/shared/relayClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -29,20 +30,23 @@ import * as ServerConfig from "../config.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
-const layerRelayClientAvailable = Layer.succeed(
-  RelayClient.RelayClient,
-  RelayClient.RelayClient.of({
-    resolve: Effect.succeed({
-      status: "available",
-      executablePath: "cloudflared",
-      source: "path",
-      version: RelayClient.CLOUDFLARED_VERSION,
+const layerRelayClientAt = (executablePath: string) =>
+  Layer.succeed(
+    RelayClient.RelayClient,
+    RelayClient.RelayClient.of({
+      resolve: Effect.succeed({
+        status: "available",
+        executablePath,
+        source: "path",
+        version: RelayClient.CLOUDFLARED_VERSION,
+      }),
+      install: Effect.die("unused"),
+      installWithProgress: () => Effect.die("unused"),
+      pruneManagedVersions: Effect.void,
     }),
-    install: Effect.die("unused"),
-    installWithProgress: () => Effect.die("unused"),
-    pruneManagedVersions: Effect.void,
-  }),
-);
+  );
+
+const layerRelayClientAvailable = layerRelayClientAt("cloudflared");
 
 const unusedHttpClient = HttpClient.make(() => Effect.die("unused"));
 
@@ -118,6 +122,41 @@ function makeHandle(input: {
 }
 
 describe("CloudManagedEndpointRuntime", () => {
+  // Windows has no SIGTERM to ignore: taskkill ends the process outright.
+  it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "stops a relay client that ignores SIGTERM",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const executablePath = path.join(yield* fs.makeTempDirectoryScoped(), "cloudflared");
+        yield* fs.writeFileString(
+          executablePath,
+          [
+            "#!/usr/bin/env node",
+            "process.on('SIGTERM', () => {});",
+            "console.error('2026-10-06T00:00:01Z INF Registered tunnel connection connIndex=0');",
+            "setInterval(() => {}, 1000);",
+          ].join("\n"),
+        );
+        yield* fs.chmod(executablePath, 0o755);
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          yield* ChildProcessSpawner.ChildProcessSpawner,
+          layerRelayClientAt(executablePath),
+        );
+        const started = yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "connector-token",
+          tunnelId: "tunnel-1",
+        });
+        expect(started.status).toBe("running");
+        // Logged once the script ignores SIGTERM.
+        yield* Stream.runHead(runtime.tunnelConnected);
+
+        expect((yield* runtime.applyConfig(null)).status).toBe("disabled");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("serializes updates to persisted cloud link state", () =>
     Effect.gen(function* () {
       const firstEntered = yield* Deferred.make<void>();
