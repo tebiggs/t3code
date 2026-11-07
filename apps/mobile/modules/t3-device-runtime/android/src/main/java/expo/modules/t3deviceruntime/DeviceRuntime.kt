@@ -18,11 +18,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.file.FileVisitResult
 import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.LinkOption
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
@@ -33,6 +30,7 @@ private const val CLAUDE_KEY_FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7E
 private const val CONNECT_ATTEMPTS = 3
 private const val TERMINATE_GRACE_SECONDS = 5L
 private const val PID_POLL_MS = 100L
+private const val MAX_SYMLINKS = 8
 internal const val TAG = "T3DeviceRuntime"
 const val GUEST_PATH = "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -101,6 +99,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   val proot = File(libDir, "libproot.so")
   private val loader = File(libDir, "libproot-loader.so")
   val home = File(context.filesDir, "device-runtime")
+  private val trash = File(context.filesDir, "device-runtime.trash")
   val rootfs = File(home, "ubuntu")
   private val installedMarker = File(home, "ubuntu.installed")
   private val architecture = ubuntuArchitecture(libDir.name)
@@ -116,8 +115,26 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   @Volatile private var guest: GuestProcess? = null
   @Volatile private var cancelled = false
 
+  /** Also checks the program proot starts first, which an interrupted delete can take. */
   val ubuntuInstalled: Boolean
-    get() = installedMarker.isFile && installedMarker.readText().trim() == ubuntuTarball
+    get() = installedMarker.isFile && installedMarker.readText().trim() == ubuntuTarball &&
+      guestFileExists("usr/bin/env")
+
+  // Follows symlinks as the guest sees them. The extractor's hard links point at guest paths;
+  // the ones proot emulates point at host paths inside the rootfs.
+  private fun guestFileExists(path: String): Boolean {
+    var file = File(rootfs, path).toPath()
+    repeat(MAX_SYMLINKS) {
+      if (!Files.isSymbolicLink(file)) return Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+      val target = Files.readSymbolicLink(file).toString()
+      file = when {
+        target.startsWith(rootfs.path + "/") -> File(target).toPath()
+        target.startsWith("/") -> File(rootfs, target).toPath()
+        else -> file.resolveSibling(target)
+      }
+    }
+    return false
+  }
 
   fun cancel() {
     cancelled = true
@@ -147,9 +164,10 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
       throw IOException("$ubuntuTarball has SHA-256 $actual, expected $expected")
     }
     val staging = File(home, "ubuntu.staging")
-    deleteTree(staging)
-    deleteTree(rootfs)
     installedMarker.delete()
+    discard(staging)
+    discard(rootfs)
+    clearTrash()
     staging.mkdirs()
     log("Extracting $ubuntuTarball")
     tarball.inputStream().buffered(1 shl 16).use { extractTar(GZIPInputStream(it, 1 shl 16), staging) }
@@ -205,7 +223,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
     }
     fakeProc.mkdirs()
     val sdcard = File(rootfs, "sdcard").toPath()
-    if (!Files.exists(sdcard, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+    if (!Files.exists(sdcard, LinkOption.NOFOLLOW_LINKS)) {
       Os.symlink("/storage/emulated/0", sdcard.toString())
     }
   }
@@ -275,6 +293,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   /** Starts a command in the guest with stderr merged into stdout. */
   fun start(guestCommand: List<String>, environment: Map<String, String> = emptyMap()): GuestProcess {
     checkCancelled()
+    if (!ubuntuInstalled) throw IOException("Ubuntu on this phone is missing or damaged. Install it again.")
     writeGuestConfig()
     prootTmp.mkdirs()
     hardLinks.mkdirs()
@@ -329,8 +348,24 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
 
   /** Deletes Ubuntu and everything installed in it, including the server's data. */
   fun remove() {
-    deleteTree(home)
+    discard(home)
     deleteTree(prootTmp)
+    clearTrash()
+  }
+
+  // Moved aside before deleting, so a delete that stops partway can't leave an install that
+  // still looks whole.
+  private fun discard(file: File) {
+    if (!Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)) return
+    trash.mkdirs()
+    if (!file.renameTo(File(trash, "${file.name}.${System.nanoTime()}"))) {
+      throw IOException("Couldn't move ${file.path} aside to delete it")
+    }
+  }
+
+  // Leftovers only take space; the next remove or install tries again.
+  private fun clearTrash() {
+    runCatching { deleteTree(trash) }.onFailure { Log.w(TAG, "Couldn't delete ${trash.path}", it) }
   }
 
   // Phones drop DNS and connections while they switch networks, so connecting retries.
@@ -521,27 +556,14 @@ fun openPgpFingerprint(armored: String): String {
 
 fun megabytes(bytes: Long): String = "%.1f MB".format(bytes / 1_000_000.0)
 
-/** Deletes a tree without following symlinks, making read-only directories writable first. */
+/** Deletes a tree without following symlinks, first giving its owner every directory in full. */
 fun deleteTree(root: File) {
-  val start = root.toPath()
-  if (!Files.exists(start, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
-  Files.walkFileTree(start, object : SimpleFileVisitor<Path>() {
-    override fun preVisitDirectory(dir: Path, attributes: BasicFileAttributes): FileVisitResult {
-      dir.toFile().setWritable(true, true)
-      dir.toFile().setExecutable(true, true)
-      return FileVisitResult.CONTINUE
-    }
-
-    override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
-      Files.delete(file)
-      return FileVisitResult.CONTINUE
-    }
-
-    override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
-      Files.delete(dir)
-      return FileVisitResult.CONTINUE
-    }
-  })
+  val path = root.toPath()
+  if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+    Os.chmod(root.path, OWNER_ALL)
+    Files.newDirectoryStream(path).use { it.toList() }.forEach { deleteTree(it.toFile()) }
+  }
+  Files.deleteIfExists(path)
 }
 
 private fun ByteArray.int32(at: Int): Int =

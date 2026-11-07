@@ -55,7 +55,7 @@ class T3DeviceRuntimeModule : Module() {
       mapOf(
         "supported" to runtime.supported,
         "storageAccess" to hasStorageAccess(requireContext()),
-        "installed" to installedMarker(runtime).isFile,
+        "installed" to installed(runtime),
         "serverRunning" to DeviceServer.running,
         "job" to jobState,
         "login" to loginState,
@@ -138,7 +138,7 @@ class T3DeviceRuntimeModule : Module() {
     // The server keeps running its old build until the app restarts it.
     AsyncFunction("update") { promise: Promise ->
       val context = requireContext()
-      if (!installedMarker(DeviceRuntime(context) {}).isFile) {
+      if (!installed(DeviceRuntime(context) {})) {
         throw CodedException("ERR_DEVICE_RUNTIME_MISSING", "The on-device runtime isn't installed.", null)
       }
       startJob(context, "update", UPDATE_STEPS, promise) { runtime, step, script ->
@@ -235,6 +235,8 @@ class T3DeviceRuntimeModule : Module() {
 
   private fun installedMarker(runtime: DeviceRuntime) = File(runtime.home, "setup.done")
 
+  private fun installed(runtime: DeviceRuntime) = installedMarker(runtime).isFile && runtime.ubuntuInstalled
+
   private fun <T> inBackground(promise: Promise, body: () -> T) {
     work.execute {
       try {
@@ -266,6 +268,7 @@ class T3DeviceRuntimeModule : Module() {
     jobs.execute {
       var failure: String? = null
       try {
+        if (kind == "install") installedMarker(runtime).delete()
         val script = context.assets.open("device-runtime-setup.sh").bufferedReader().readText()
         for ((index, step) in steps.withIndex()) {
           setJobState(kind, true, step, index, steps.size, null)
