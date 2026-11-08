@@ -12,6 +12,7 @@ import {
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -22,6 +23,7 @@ import { HttpRouter, HttpServer } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { routeLayer } from "./ServerBrowserStream.ts";
 
@@ -30,21 +32,27 @@ const platformLayer = NodeHttpPlatform.layer.pipe(Layer.provideMerge(NodeService
 const makeAuth = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   error?: EnvironmentAuth.ServerAuthCredentialError,
+  sessionEnded: Effect.Effect<void> = Effect.never,
 ) => {
   const requests: string[] = [];
-  const layer = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
-    authenticateWebSocketUpgrade: (request) => {
-      requests.push(request.url);
-      return error
-        ? Effect.fail(error)
-        : Effect.succeed({
-            sessionId: AuthSessionId.make("stream-test"),
-            subject: "stream-test",
-            method: "bearer-access-token",
-            scopes,
-          });
-    },
-  });
+  const layer = Layer.merge(
+    Layer.mock(EnvironmentAuth.EnvironmentAuth, {
+      authenticateWebSocketUpgrade: (request) => {
+        requests.push(request.url);
+        return error
+          ? Effect.fail(error)
+          : Effect.succeed({
+              sessionId: AuthSessionId.make("stream-test"),
+              subject: "stream-test",
+              method: "bearer-access-token",
+              scopes,
+            });
+      },
+    }),
+    Layer.succeed(SessionStore.SessionStore, {
+      awaitInvalidation: () => sessionEnded,
+    } as unknown as SessionStore.SessionStore["Service"]),
+  );
   return { layer, requests };
 };
 
@@ -264,6 +272,57 @@ it.effect.each([
     );
     expect(response.status).toBe(testCase.status);
     expect(attachments).toBe(0);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("closes a viewer's socket when its session is revoked", () =>
+  Effect.gen(function* () {
+    const ended = yield* Deferred.make<void>();
+    const input: unknown[] = [];
+    const output = yield* Queue.make<ServerBrowser.ServerBrowserViewerOutput>();
+    const browser = ServerBrowser.ServerBrowser.of({
+      clearProfile: () => Effect.void,
+      profileReporter: Effect.succeed(() => Effect.void),
+      openDownload: () => Effect.succeedNone,
+      answerFileChooser: () => Effect.succeed(false),
+      attachViewer: () =>
+        Effect.succeed({
+          output,
+          input: (message) => Effect.sync(() => void input.push(message)),
+        }),
+    });
+    const services = yield* Layer.build(
+      HttpRouter.serve(
+        routeLayer.pipe(
+          Layer.provide(Layer.succeed(ServerBrowser.ServerBrowser, browser)),
+          Layer.provide(platformLayer),
+        ),
+        { disableListenLog: true },
+      ).pipe(
+        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provide(
+          makeAuth(
+            [AuthOrchestrationReadScope, AuthPreviewOperateScope],
+            undefined,
+            Deferred.await(ended),
+          ).layer,
+        ),
+      ),
+    );
+    const server = Context.get(services, HttpServer.HttpServer);
+    const origin = HttpServer.formatAddress(server.address).replace(/^http/, "ws");
+    const socket = new WebSocket(
+      `${origin}/api/preview-stream/ws?threadId=thread&tabId=tab&wsTicket=one-use-ticket`,
+    );
+    const opened = Promise.withResolvers<void>();
+    const closed = Promise.withResolvers<number>();
+    socket.addEventListener("open", () => opened.resolve());
+    socket.addEventListener("close", (event) => closed.resolve(event.code));
+    yield* Effect.promise(() => opened.promise);
+
+    yield* Deferred.succeed(ended, undefined);
+    expect(yield* Effect.promise(() => closed.promise)).toBe(1008);
+    expect(input).toEqual([]);
   }).pipe(Effect.scoped),
 );
 

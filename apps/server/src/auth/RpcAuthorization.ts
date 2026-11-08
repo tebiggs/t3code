@@ -51,6 +51,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadTitles]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getWorktreeThreadIds]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: AuthOrchestrationReadScope,
@@ -92,10 +93,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthProvidersManageScope,
   [WS_METHODS.serverUninstallAcpRegistryManagedBinary]: AuthProvidersManageScope,
   [WS_METHODS.serverAcceptAcpRegistryUrlAuth]: AuthProvidersManageScope,
-  [WS_METHODS.serverListAcpRegistrySessions]: AuthOrchestrationReadScope,
+  // Listing resolves the agent, which can install it and start it.
+  [WS_METHODS.serverListAcpRegistrySessions]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverImportAcpRegistrySession]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDeleteAcpRegistrySession]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverListAcpRegistryProviders]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverListAcpRegistryProviders]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverSetAcpRegistryProvider]: AuthProvidersManageScope,
   [WS_METHODS.serverDisableAcpRegistryProvider]: AuthProvidersManageScope,
   [WS_METHODS.serverLogoutAcpRegistry]: AuthProvidersManageScope,
@@ -164,7 +166,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerUploadFeedback]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsCallTool]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsToolInfo]: AuthOrchestrationReadScope,
-  [WS_METHODS.mcpAppsReadResource]: AuthOrchestrationReadScope,
+  // Takes any URI on the app's server, which can hold more than the thread shows.
+  [WS_METHODS.mcpAppsReadResource]: AuthOrchestrationOperateScope,
   [WS_METHODS.mcpAppsUpdateModelContext]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribeVcsStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeWorktreeSetup]: AuthOrchestrationReadScope,
@@ -203,7 +206,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.deviceOpen]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceClose]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceShutdown]: AuthOrchestrationOperateScope,
-  [WS_METHODS.deviceDetail]: AuthOrchestrationReadScope,
+  // Reading a device first readies its host, which can install tools and start the hub.
+  [WS_METHODS.deviceDetail]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceAction]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribeDeviceState]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
@@ -292,6 +296,18 @@ export const layer = (
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */
+/** Remote polling can auto-pull into the workspace, so it's only for a session that can operate. */
+export const readOnlyVcsStatusInput = <
+  Input extends { readonly includeRemote?: boolean | undefined },
+>(
+  input: Input,
+  canOperate: boolean,
+): Input => (canOperate ? input : { ...input, includeRemote: false });
+
+/** A full listing also readies hosts, so a session that can't operate gets the passive view. */
+export const deviceListIsPassive = (input: DeviceListInput, canOperate: boolean): boolean =>
+  !input.updateTool && (input.inspectOnly === true || (!canOperate && !input.retryHostId));
+
 export const requiredScopeForDeviceList = (input: DeviceListInput): AuthEnvironmentScope =>
   input.retryHostId || input.updateTool
     ? AuthOrchestrationOperateScope

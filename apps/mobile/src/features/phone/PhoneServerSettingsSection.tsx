@@ -14,6 +14,7 @@ import {
   usePhoneServerRuntime,
 } from "./phone-server";
 import { inspectDeviceRuntime } from "../device-runtime/device-runtime";
+import { PhoneSharingSection } from "./PhoneSharingSection";
 
 interface ClaudeSignIn {
   readonly signedIn: boolean;
@@ -48,95 +49,100 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
   const connected = environment?.connectionState === "connected";
 
   return (
-    <SettingsSection
-      title="Phone server"
-      footer={
-        actionError ??
-        runtime.error ??
-        (server.claude?.signedIn === false
-          ? "Claude Code is signed out on this phone, so Claude threads here will fail. Sign in from phone setup."
-          : null) ??
-        "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification."
-      }
-    >
-      <ListRow
-        icon="iphone"
-        label="Setup and checks"
-        description="Install, Claude sign-in, phone storage and removal"
-        onPress={() => navigation.navigate("PhoneSetup")}
-      />
-      {server.claude ? (
+    <>
+      <SettingsSection
+        title="Phone server"
+        footer={
+          actionError ??
+          runtime.error ??
+          (server.claude?.signedIn === false
+            ? "Claude Code is signed out on this phone, so Claude threads here will fail. Sign in from phone setup."
+            : null) ??
+          "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification."
+        }
+      >
         <ListRow
-          icon="person.crop.circle"
-          label="Claude Code"
-          description={
-            server.claude.signedIn
-              ? server.claude.plan
-                ? `Signed in · ${server.claude.plan}`
-                : "Signed in"
-              : "Signed out. Sign in from phone setup."
-          }
+          icon="iphone"
+          label="Setup and checks"
+          description="Install, Claude sign-in, phone storage and removal"
           onPress={() => navigation.navigate("PhoneSetup")}
         />
-      ) : null}
-      <ListRow
-        icon="exclamationmark.shield"
-        label="Agent access"
-        description="Location, contacts, messages and more: ask, allow or never"
-        onPress={() => navigation.navigate("AgentAccess")}
-      />
-      <SettingsSwitchRow
-        icon="play"
-        label="Start when T3 Code opens"
-        subtitle="Starts the server on this phone if it isn't running."
-        value={settings.autoStart}
-        onValueChange={(autoStart) => setPhoneServerSettings({ ...settings, autoStart })}
-      />
-      {connected ? (
+        {server.claude ? (
+          <ListRow
+            icon="person.crop.circle"
+            label="Claude Code"
+            description={
+              server.claude.signedIn
+                ? server.claude.plan
+                  ? `Signed in · ${server.claude.plan}`
+                  : "Signed in"
+                : "Signed out. Sign in from phone setup."
+            }
+            onPress={() => navigation.navigate("PhoneSetup")}
+          />
+        ) : null}
         <ListRow
-          icon="stop.fill"
-          label={busy === "stopping" ? "Stopping…" : "Stop server"}
-          description="Also turns off starting when T3 Code opens."
-          disabled={busy !== null}
+          icon="exclamationmark.shield"
+          label="Agent access"
+          description="Location, contacts, messages and more: ask, allow or never"
+          onPress={() => navigation.navigate("AgentAccess")}
+        />
+        <SettingsSwitchRow
+          icon="play"
+          label="Start when T3 Code opens"
+          subtitle="Starts the server on this phone if it isn't running."
+          value={settings.autoStart}
+          onValueChange={(autoStart) => setPhoneServerSettings({ ...settings, autoStart })}
+        />
+        {connected ? (
+          <ListRow
+            icon="stop.fill"
+            label={busy === "stopping" ? "Stopping…" : "Stop server"}
+            description="Also turns off starting when T3 Code opens."
+            disabled={busy !== null}
+            onPress={() => {
+              setBusy("stopping");
+              setActionError(null);
+              setPhoneServerSettings({ ...settings, autoStart: false });
+              stopPhoneServerWhenSettled()
+                .catch((error: unknown) =>
+                  setActionError(
+                    error instanceof Error ? error.message : "Couldn't stop the server.",
+                  ),
+                )
+                .finally(() => setBusy(null));
+            }}
+          />
+        ) : (
+          <ListRow
+            icon="play"
+            label={runtime.starting ? "Starting…" : "Start server"}
+            disabled={runtime.starting || busy !== null}
+            onPress={() => void startAndReconnectPhoneServer(settings)}
+          />
+        )}
+        <ListRow
+          icon="arrow.down.circle"
+          label={busy === "updating" ? "Updating…" : "Update T3 Code and Claude Code"}
+          description="Installs the newest server build and Claude Code, then restarts the server."
+          disabled={busy !== null || runtime.starting}
           onPress={() => {
-            setBusy("stopping");
+            setBusy("updating");
             setActionError(null);
-            setPhoneServerSettings({ ...settings, autoStart: false });
-            stopPhoneServerWhenSettled()
+            updatePhoneServer(settings)
               .catch((error: unknown) =>
                 setActionError(
-                  error instanceof Error ? error.message : "Couldn't stop the server.",
+                  error instanceof Error ? error.message : "The update didn't finish.",
                 ),
               )
-              .finally(() => setBusy(null));
+              .finally(() => {
+                setBusy(null);
+                server.check();
+              });
           }}
         />
-      ) : (
-        <ListRow
-          icon="play"
-          label={runtime.starting ? "Starting…" : "Start server"}
-          disabled={runtime.starting || busy !== null}
-          onPress={() => void startAndReconnectPhoneServer(settings)}
-        />
-      )}
-      <ListRow
-        icon="arrow.down.circle"
-        label={busy === "updating" ? "Updating…" : "Update T3 Code and Claude Code"}
-        description="Installs the newest server build and Claude Code, then restarts the server."
-        disabled={busy !== null || runtime.starting}
-        onPress={() => {
-          setBusy("updating");
-          setActionError(null);
-          updatePhoneServer(settings)
-            .catch((error: unknown) =>
-              setActionError(error instanceof Error ? error.message : "The update didn't finish."),
-            )
-            .finally(() => {
-              setBusy(null);
-              server.check();
-            });
-        }}
-      />
-    </SettingsSection>
+      </SettingsSection>
+      <PhoneSharingSection environmentId={props.environmentId} />
+    </>
   );
 }

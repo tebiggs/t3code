@@ -197,9 +197,7 @@ function setup(kind: "thread" | "PR" | "files", compact = false) {
                 />
               </ThreadMediaVisibleContext>
             ) : (
-              <PullRequestMediaContext
-                value={{ environmentId, cwd: "/project", repository: "owner/repo" }}
-              >
+              <PullRequestMediaContext value={{ environmentId, cwd: "/project" }}>
                 <PullRequestMediaVisibleContext value={visible}>
                   <PullRequestMedia
                     url="https://github.com/user-attachments/assets/video"

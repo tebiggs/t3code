@@ -8,6 +8,7 @@ import {
   deactivateCloudRelayAccount,
 } from "./cloudAccountService";
 import { setAgentAwarenessRelayTokenProvider } from "../agent-awareness/remoteRegistration";
+import { stopPhoneSharingAfterSignOut } from "../phone/phone-sharing-commands";
 import { requestConnectOnboarding } from "./connectOnboarding";
 import { restoreCloudComposerDrafts } from "../../state/use-composer-drafts";
 
@@ -33,6 +34,9 @@ vi.mock("../../connection/catalog", () => ({
 }));
 
 vi.mock("./cloud-drafts", () => ({ removeCloudEnvironments: {} }));
+vi.mock("../phone/phone-sharing-commands", () => ({
+  stopPhoneSharingAfterSignOut: vi.fn(async () => undefined),
+}));
 vi.mock("./connectOnboarding", () => ({
   clearConnectOnboardingRequest: vi.fn(),
   requestConnectOnboarding: vi.fn(),
@@ -107,6 +111,19 @@ describe("cloudAccountService", () => {
     expect(vi.mocked(restoreCloudComposerDrafts)).toHaveBeenCalledWith("account-1");
     // Clerk already had this account on its first emission, so this is not a fresh sign-in.
     expect(vi.mocked(requestConnectOnboarding)).not.toHaveBeenCalled();
+  });
+
+  it("stops sharing the phone when the account signs out", async () => {
+    const { clerk, emit } = fakeClerk();
+    using _detach = { [Symbol.dispose]: cloudAccountService.attach(clerk) };
+    emit("account-1");
+    await vi.waitFor(() =>
+      expect(appAtomRegistry.get(managedRelaySessionAtom)?.accountId).toBe("account-1"),
+    );
+    expect(vi.mocked(stopPhoneSharingAfterSignOut)).not.toHaveBeenCalled();
+
+    emit(null);
+    await vi.waitFor(() => expect(vi.mocked(stopPhoneSharingAfterSignOut)).toHaveBeenCalledOnce());
   });
 
   it("retries an activation whose draft restore failed on the next emission", async () => {

@@ -25,6 +25,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { HttpClientRequest, HttpClientResponse, HttpServerResponse } from "effect/http";
 import { vi } from "vite-plus/test";
 
+import * as AssetSigner from "./AssetSigner.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -34,8 +35,8 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { assetFileResponse } from "../http.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, readMcpAppHtml, resolveAsset } from "./AssetAccess.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
-import type { SourceControlMediaRequest } from "@t3tools/source-control-core/server/driver";
 import { fakeSourceControlDriverInstance } from "@t3tools/source-control-testing/fakeSourceControlDriver";
 import * as BuiltInDrivers from "../sourceControl/builtInDrivers.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
@@ -120,7 +121,9 @@ const layerTest = Layer.mergeAll(
     Layer.provide(T3ProjectFileLoader.layer),
   ),
   NativeAppIconResolver.layer.pipe(Layer.provide(layerConfig)),
-  ServerSecretStore.layer.pipe(Layer.provide(layerConfig)),
+  AssetSigner.layer.pipe(
+    Layer.provideMerge(ServerSecretStore.layer.pipe(Layer.provide(layerConfig))),
+  ),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 describe("AssetAccess", () => {
@@ -1469,8 +1472,37 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect("preserves the change request repository through RPC decoding and signed media", () =>
+    Effect.gen(function* () {
+      const decodeAssetCreateUrlInput = Schema.decodeEffect(AssetCreateUrlInput);
+      const resource = {
+        _tag: SOURCE_CONTROL_MEDIA_ASSET,
+        cwd: "/personal-fork",
+        url: "https://github.com/user-attachments/assets/1a1842fb-6383-492f-873c-57aa0033fa6c",
+        repository: "enterprise/private",
+      };
+      const input = yield* decodeAssetCreateUrlInput({ resource });
+      const issued = yield* issueAssetUrl(input);
+      const suffix = issued.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separator = suffix.indexOf("/");
+      const resolved = yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1));
+
+      expect(resolved).toEqual({
+        kind: "source-control-media",
+        url: resource.url,
+        cwd: resource.cwd,
+        repository: resource.repository,
+        expiresAt: issued.expiresAt,
+      });
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("serves a host's credentialed media through that host's driver", () => {
-    const fetched: Array<SourceControlMediaRequest> = [];
+    const fetched: Array<{
+      url: string;
+      headers: Readonly<Record<string, string>>;
+      repository?: string;
+    }> = [];
     const url = "https://github.com/owner/repo/blob/main/docs/shot.png";
     const media = sourceControlDefinitions.mediaUrl(url)!;
     const layerDrivers = Layer.succeed(BuiltInDrivers.SourceControlDrivers, [
@@ -1489,12 +1521,23 @@ describe("AssetAccess", () => {
         }),
       },
     ]);
+    // Clients that predate `repository` get the checkout's.
+    const layerIdentities = Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+      resolve: () =>
+        Effect.succeed({
+          canonicalKey: "github.com/owner/repo",
+          locator: { source: "git-remote", remoteName: "origin", remoteUrl: "" },
+          provider: media.definition.kind,
+          owner: "owner",
+          name: "repo",
+        }),
+    });
     return Effect.gen(function* () {
       const decodeAssetCreateUrlInput = Schema.decodeEffect(AssetCreateUrlInput);
 
       // Every client and server release spells the resource this way on the wire.
       const { resource } = yield* decodeAssetCreateUrlInput({
-        resource: { _tag: "github-media", cwd: "/repo", url, repository: "owner/repo" },
+        resource: { _tag: "github-media", cwd: "/repo", url },
       });
       const issued = yield* issueAssetUrl({ resource });
       const suffix = issued.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
@@ -1504,7 +1547,6 @@ describe("AssetAccess", () => {
         kind: "source-control-media",
         url: media.fetchUrl,
         cwd: "/repo",
-        repository: "owner/repo",
         expiresAt: issued.expiresAt,
       });
       if (asset?.kind !== "source-control-media") return;
@@ -1514,13 +1556,20 @@ describe("AssetAccess", () => {
         cookie: "session",
       });
       expect(fetched).toEqual([
-        { url: media.fetchUrl, repository: "owner/repo", headers: { range: "bytes=0-4" } },
+        { url: media.fetchUrl, headers: { range: "bytes=0-4" }, repository: "owner/repo" },
       ]);
       expect(response.status).toBe(206);
       // The upstream sent no type, so it comes from the file name the host gave the media.
       expect(response.headers["content-type"]).toBe("image/png");
       expect(response.headers["content-length"]).toBe("5");
-    }).pipe(Effect.provide(Layer.merge(layerTest, layerDrivers)), Effect.scoped);
+
+      // A pull request's own repository wins over the checkout it is shown in.
+      yield* sourceControlMediaResponse({ ...asset, repository: "enterprise/private" }, {});
+      expect(fetched.at(-1)?.repository).toBe("enterprise/private");
+    }).pipe(
+      Effect.provide(Layer.mergeAll(layerTest, layerDrivers, layerIdentities)),
+      Effect.scoped,
+    );
   });
 
   it.effect("refuses media no host keeps behind a credential, without echoing the URL", () =>

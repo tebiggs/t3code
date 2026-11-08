@@ -23,6 +23,7 @@ import {
   setAgentAwarenessRelayTokenProvider,
   unregisterAgentAwarenessDeviceForCurrentUser,
 } from "../agent-awareness/remoteRegistration";
+import { stopPhoneSharingAfterSignOut } from "../phone/phone-sharing-commands";
 import { removeCloudEnvironments } from "./cloud-drafts";
 import { clearConnectOnboardingRequest, requestConnectOnboarding } from "./connectOnboarding";
 import { resolveRelayClerkTokenOptions } from "./publicConfig";
@@ -55,6 +56,10 @@ const cleanUpCloudAccount = async (
   accountId: string | null,
   wasActive: boolean,
 ) => {
+  // Not awaited: it waits behind any share in flight, and cleanup shouldn't wait with it.
+  void stopPhoneSharingAfterSignOut().catch((error: unknown) =>
+    console.warn("Couldn't stop sharing this phone after sign-out", error),
+  );
   const removal = await runAtomCommand(appAtomRegistry, removeCloudEnvironments, accountId, {
     reportFailure: false,
     reportDefect: false,

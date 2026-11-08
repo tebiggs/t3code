@@ -5,7 +5,7 @@ import type { FilePreviewItem } from "../../components/FilePreviewModal.types";
 export interface PullRequestMediaLocation {
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
-  readonly repository: string;
+  readonly repository?: string;
 }
 
 /** Keep the original resource identity so previewers can resolve and renew its capability. */
@@ -17,8 +17,8 @@ export function pullRequestMediaSource(url: string, location: PullRequestMediaLo
         resource: {
           _tag: SOURCE_CONTROL_MEDIA_ASSET,
           cwd: location.cwd,
-          repository: location.repository,
           url: fetchUrl,
+          ...(location.repository ? { repository: location.repository } : {}),
         },
       }
     : { uri: url };

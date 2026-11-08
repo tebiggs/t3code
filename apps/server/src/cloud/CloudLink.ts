@@ -1,11 +1,12 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createPublicKey.
-import * as NodeCrypto from "node:crypto";
 import {
+  type AuthSessionId,
   AuthStandardClientScopes,
+  AuthViewOnlyClientScopes,
   EnvironmentAuthenticatedPrincipal,
   type EnvironmentCloudLinkStateResult,
   type EnvironmentCloudPreferencesRequest,
   type EnvironmentCloudRelayConfigResult,
+  type EnvironmentSharingMode,
 } from "@t3tools/contracts";
 import {
   RelayCloudEnvironmentHealthProofPayload,
@@ -38,12 +39,13 @@ import {
   RELAY_MANAGED_TUNNEL_RECOVERY_TYP,
   RELAY_MINT_REQUEST_TYP,
   RELAY_MINT_RESPONSE_TYP,
-  signRelayJwt,
   verifyRelayJwt,
 } from "@t3tools/shared/relayJwt";
 import { isSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Signature from "effect/crypto/Signature";
+import * as Jwk from "effect/jose/Jwk";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -82,6 +84,8 @@ import {
   CLOUD_ENDPOINT_CONFIRMED_ORIGIN,
   CLOUD_ENDPOINT_RUNTIME_CONFIG,
   CLOUD_LINK_REVOKED,
+  CLOUD_SHARING_MODE,
+  CLOUD_SHARING_MODE_CHANGE_PENDING,
   CLOUD_LINKED_USER_ID,
   CLOUD_MINT_PUBLIC_KEY,
   decodeConfirmedOrigin,
@@ -95,7 +99,7 @@ import {
   RELAY_ISSUER_SECRET,
   RELAY_URL_SECRET,
 } from "./config.ts";
-import { getOrCreateEnvironmentKeyPairFromSecretStore } from "./environmentKeys.ts";
+import { EnvironmentSigningKey } from "./environmentKeys.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
@@ -254,6 +258,7 @@ const INTERNAL_OPERATION_MESSAGES = {
   "update-webhook-settings": "Could not update T3 Connect webhook settings.",
   "read-preferences": "Could not read environment cloud preferences.",
   "persist-preferences": "Could not persist environment cloud preferences.",
+  "change-sharing-mode": "Could not finish changing the sharing mode.",
   "answer-health": "Could not answer cloud health request.",
   "issue-credential": "Could not issue cloud connection credential.",
 } as const;
@@ -279,6 +284,10 @@ const internalError =
   (operation: CloudLinkInternalError["operation"]) =>
   (cause: unknown): Effect.Effect<never, CloudLinkInternalError> =>
     Effect.fail(new CloudLinkInternalError({ operation, cause }));
+
+// Anything but an explicit Full control is read-only, so a bad value can't widen access.
+const decodeSharingMode = (bytes: Uint8Array): EnvironmentSharingMode =>
+  bytesToString(bytes) === "full-control" ? "full-control" : "view-only";
 
 const isPermanentLinkError = Schema.is(
   Schema.Union([
@@ -338,14 +347,9 @@ export function consumeCloudReplayGuards(input: {
 function validateCloudMintPublicKey(
   publicKey: string,
 ): Effect.Effect<void, CloudLinkRelayConfigInvalidError> {
-  const invalid = new CloudLinkRelayConfigInvalidError({ field: "cloudMintPublicKey" });
-  return Effect.try({
-    try: () => NodeCrypto.createPublicKey(publicKey.replace(/\\n/g, "\n")),
-    catch: () => invalid,
-  }).pipe(
-    Effect.flatMap((key) =>
-      key.asymmetricKeyType === "ed25519" ? Effect.void : Effect.fail(invalid),
-    ),
+  return Jwk.importSpki(publicKey.replace(/\\n/g, "\n"), "EdDSA").pipe(
+    Effect.asVoid,
+    Effect.mapError(() => new CloudLinkRelayConfigInvalidError({ field: "cloudMintPublicKey" })),
   );
 }
 
@@ -373,9 +377,6 @@ function validateRelayConfigPayload(
 function normalizePemForSignedPayload(value: string): string {
   return value.trim();
 }
-
-const decodeCloudHealthProof = Schema.decodeUnknownEffect(RelayCloudEnvironmentHealthProofPayload);
-const decodeCloudMintProof = Schema.decodeUnknownEffect(RelayCloudMintCredentialProofPayload);
 
 type ManagedTunnelRecoveryProofInput = {
   readonly environmentId: RelayManagedEndpointRecoveryProofPayload["environmentId"];
@@ -463,6 +464,14 @@ export class CloudLink extends Context.Service<
       EnvironmentCloudLinkStateResult,
       CloudLinkNotLinkedError | CloudLinkInternalError | ManagedLimits.ManagedPolicyRefusedError
     >;
+    /** Signs out everyone but the caller, so nobody keeps what the previous mode gave them. */
+    readonly setSharingMode: (
+      mode: EnvironmentSharingMode,
+      callerSessionId: AuthSessionId,
+    ) => Effect.Effect<
+      EnvironmentCloudLinkStateResult,
+      CloudLinkInternalError | ManagedLimits.ManagedPolicyRefusedError
+    >;
     readonly answerHealthRequest: (
       request: RelayCloudEnvironmentHealthRequest,
     ) => Effect.Effect<
@@ -532,6 +541,8 @@ const make = Effect.gen(function* () {
   const httpServer = yield* HttpServer.HttpServer;
   const awarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const random = yield* SecureRandom.SecureRandom;
+  const signature = yield* Signature.Signature;
+  const signingKey = yield* EnvironmentSigningKey;
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -588,7 +599,6 @@ const make = Effect.gen(function* () {
     requestUrl: string,
     allowNonLoopbackRequestHost = false,
   ) {
-    const keyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
     if (
       !isSupportedLinkProviderKind(request) ||
       !isAllowedEndpointOrigin({
@@ -613,23 +623,24 @@ const make = Effect.gen(function* () {
       challenge: request.challenge,
       descriptor,
       environmentId: descriptor.environmentId,
-      environmentPublicKey: normalizePemForSignedPayload(keyPair.publicKey),
+      environmentPublicKey: normalizePemForSignedPayload(signingKey.publicKey),
       endpoint: request.endpoint,
       origin: request.origin,
       scopes: linkProofScopes(request),
     } satisfies RelayEnvironmentLinkProofPayload;
-    return yield* signRelayJwt({
-      privateKey: keyPair.privateKey,
-      typ: RELAY_LINK_PROOF_TYP,
-      payload,
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new EnvironmentAuth.ServerAuthCloudLinkJwtSigningError({
-            cause,
-          }),
-      ),
-    );
+    return yield* signingKey
+      .sign({
+        typ: RELAY_LINK_PROOF_TYP,
+        payload,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new EnvironmentAuth.ServerAuthCloudLinkJwtSigningError({
+              cause,
+            }),
+        ),
+      );
   });
 
   const linkProof = Effect.fn("environment.cloud.linkProof")(
@@ -929,7 +940,6 @@ const make = Effect.gen(function* () {
   const makeManagedTunnelRecoveryProof = Effect.fn(
     "environment.cloud.makeManagedTunnelRecoveryProof",
   )(function* (input: ManagedTunnelRecoveryProofInput) {
-    const keyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
     const configuredIssuer = yield* secrets.get(RELAY_ISSUER_SECRET);
     const now = yield* DateTime.now;
     const issuedAt = Math.floor(now.epochMilliseconds / 1_000);
@@ -955,15 +965,16 @@ const make = Effect.gen(function* () {
           }
         : { ...claims, action: "recover" as const, origin: input.origin };
 
-    return yield* signRelayJwt({
-      privateKey: keyPair.privateKey,
-      typ: RELAY_MANAGED_TUNNEL_RECOVERY_TYP,
-      payload,
-    }).pipe(
-      Effect.mapError(
-        (cause) => new CloudLinkInternalError({ operation: "sign-recovery-proof", cause }),
-      ),
-    );
+    return yield* signingKey
+      .sign({
+        typ: RELAY_MANAGED_TUNNEL_RECOVERY_TYP,
+        payload,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) => new CloudLinkInternalError({ operation: "sign-recovery-proof", cause }),
+        ),
+      );
   });
 
   /** Keep credentials: clock skew can cause 401s. A relink during the request returns false without marking; accepted registration clears the mark. */
@@ -1277,6 +1288,8 @@ const make = Effect.gen(function* () {
       holdWebhooks,
       revoked,
       latestReachability,
+      sharingMode,
+      sharingModeChangePending,
     ] = yield* Effect.all(
       [
         secrets.get(CLOUD_LINKED_USER_ID),
@@ -1287,8 +1300,10 @@ const make = Effect.gen(function* () {
         secrets.get(HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET),
         secrets.get(CLOUD_LINK_REVOKED),
         reachability.latest,
+        secrets.get(CLOUD_SHARING_MODE),
+        secrets.get(CLOUD_SHARING_MODE_CHANGE_PENDING),
       ],
-      { concurrency: 8 },
+      { concurrency: 10 },
     );
     // A not-linked check predates the stored tunnel config; the next check replaces it.
     const currentReachability = Option.filter(
@@ -1310,6 +1325,8 @@ const make = Effect.gen(function* () {
       holdWebhooksWhileOffline:
         Option.isSome(holdWebhooks) && bytesToString(holdWebhooks.value) === "true",
       ...(Option.isSome(currentReachability) ? { reachability: currentReachability.value } : {}),
+      ...(Option.isSome(sharingMode) ? { sharingMode: decodeSharingMode(sharingMode.value) } : {}),
+      sharingModeChangePending: Option.isSome(sharingModeChangePending),
     } satisfies EnvironmentCloudLinkStateResult;
   });
 
@@ -1419,6 +1436,31 @@ const make = Effect.gen(function* () {
     Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("read-preferences")),
   );
 
+  // Held across choosing a credential's scopes and issuing it, so no mint straddles a mode change.
+  const sharingModeLock = yield* Semaphore.make(1);
+
+  const setSharingMode = Effect.fn("environment.cloud.setSharingMode")(
+    function* (mode: EnvironmentSharingMode, callerSessionId: AuthSessionId) {
+      // A change this one waited behind may have signed this caller out.
+      if (!(yield* environmentAuth.isSessionActive(callerSessionId))) {
+        return yield* internalError("change-sharing-mode")(
+          new Error("The session asking for this change was signed out while it waited."),
+        );
+      }
+      // Pending goes first and clears last, so a failure at any step still shows on the phone.
+      yield* secrets.set(CLOUD_SHARING_MODE_CHANGE_PENDING, stringToBytes("true"));
+      yield* secrets.set(CLOUD_SHARING_MODE, stringToBytes(mode));
+      yield* environmentAuth.revokeOtherAccess(callerSessionId);
+      yield* secrets.remove(CLOUD_SHARING_MODE_CHANGE_PENDING);
+      return yield* readCloudLinkState();
+    },
+    // Finish even if the phone's app walks away mid-change.
+    Effect.uninterruptible,
+    sharingModeLock.withPermits(1),
+    Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("change-sharing-mode")),
+    Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, internalError("change-sharing-mode")),
+  );
+
   const answerHealthRequest = Effect.fn("environment.cloud.health")(
     function* (request: RelayCloudEnvironmentHealthRequest) {
       const cloudMintPublicKey = yield* secrets
@@ -1453,14 +1495,13 @@ const make = Effect.gen(function* () {
       const linkedCloudUserId = yield* readInstalledCloudUserId;
       const now = yield* DateTime.now;
       const nowSeconds = Math.floor(now.epochMilliseconds / 1_000);
-      const proofOption = yield* verifyRelayJwt({
+      const proofOption = yield* verifyRelayJwt(RelayCloudEnvironmentHealthProofPayload, {
         publicKey: cloudMintPublicKey,
         token: request.proof,
         typ: RELAY_HEALTH_REQUEST_TYP,
         issuer: normalizeRelayIssuer(relayIssuer),
         audience: `t3-env:${environmentId}`,
-        nowEpochSeconds: nowSeconds,
-      }).pipe(Effect.flatMap(decodeCloudHealthProof), Effect.option);
+      }).pipe(Effect.provideService(Signature.Signature, signature), Effect.option);
       if (
         Option.isNone(proofOption) ||
         proofOption.value.environmentId !== environmentId ||
@@ -1483,7 +1524,6 @@ const make = Effect.gen(function* () {
         return yield* new CloudLinkProofReplayedError({ request: "health" });
       }
 
-      const keyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
       const descriptor = yield* environment.getDescriptor;
       const responseExpiresAt = DateTime.add(now, { minutes: 5 });
       const responsePayload = {
@@ -1499,18 +1539,19 @@ const make = Effect.gen(function* () {
         descriptor,
         checkedAt: DateTime.formatIso(now),
       } satisfies RelayEnvironmentHealthResponseProofPayload;
-      const responseProof = yield* signRelayJwt({
-        privateKey: keyPair.privateKey,
-        typ: RELAY_HEALTH_RESPONSE_TYP,
-        payload: responsePayload,
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new EnvironmentAuth.ServerAuthCloudHealthJwtSigningError({
-              cause,
-            }),
-        ),
-      );
+      const responseProof = yield* signingKey
+        .sign({
+          typ: RELAY_HEALTH_RESPONSE_TYP,
+          payload: responsePayload,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new EnvironmentAuth.ServerAuthCloudHealthJwtSigningError({
+                cause,
+              }),
+          ),
+        );
       return {
         environmentId,
         status: "online",
@@ -1556,14 +1597,13 @@ const make = Effect.gen(function* () {
       const linkedCloudUserId = yield* readInstalledCloudUserId;
       const now = yield* DateTime.now;
       const nowSeconds = Math.floor(now.epochMilliseconds / 1_000);
-      const proofOption = yield* verifyRelayJwt({
+      const proofOption = yield* verifyRelayJwt(RelayCloudMintCredentialProofPayload, {
         publicKey: cloudMintPublicKey,
         token: request.proof,
         typ: RELAY_MINT_REQUEST_TYP,
         issuer: normalizeRelayIssuer(relayIssuer),
         audience: `t3-env:${environmentId}`,
-        nowEpochSeconds: nowSeconds,
-      }).pipe(Effect.flatMap(decodeCloudMintProof), Effect.option);
+      }).pipe(Effect.provideService(Signature.Signature, signature), Effect.option);
       if (
         Option.isNone(proofOption) ||
         proofOption.value.environmentId !== environmentId ||
@@ -1587,14 +1627,22 @@ const make = Effect.gen(function* () {
         return yield* new CloudLinkProofReplayedError({ request: "mint" });
       }
 
-      const keyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
-      const issued = yield* environmentAuth.createPairingLink({
-        scopes: AuthStandardClientScopes,
-        subject: "cloud-connect",
-        ttl: Duration.minutes(2),
-        label: "T3 Connect connect",
-        proofKeyThumbprint: proof.clientProofKeyThumbprint,
-      });
+      const issued = yield* sharingModeLock.withPermits(1)(
+        secrets.get(CLOUD_SHARING_MODE).pipe(
+          Effect.flatMap((mode) =>
+            environmentAuth.createPairingLink({
+              scopes:
+                Option.isSome(mode) && decodeSharingMode(mode.value) === "view-only"
+                  ? AuthViewOnlyClientScopes
+                  : AuthStandardClientScopes,
+              subject: "cloud-connect",
+              ttl: Duration.minutes(2),
+              label: "T3 Connect connect",
+              proofKeyThumbprint: proof.clientProofKeyThumbprint,
+            }),
+          ),
+        ),
+      );
       const responsePayload = {
         iss: `t3-env:${environmentId}`,
         aud: normalizeRelayIssuer(relayIssuer),
@@ -1607,18 +1655,19 @@ const make = Effect.gen(function* () {
         requestNonce: proof.nonce,
         credential: issued.credential,
       } satisfies RelayEnvironmentMintResponseProofPayload;
-      const responseProof = yield* signRelayJwt({
-        privateKey: keyPair.privateKey,
-        typ: RELAY_MINT_RESPONSE_TYP,
-        payload: responsePayload,
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new EnvironmentAuth.ServerAuthCloudMintJwtSigningError({
-              cause,
-            }),
-        ),
-      );
+      const responseProof = yield* signingKey
+        .sign({
+          typ: RELAY_MINT_RESPONSE_TYP,
+          payload: responsePayload,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new EnvironmentAuth.ServerAuthCloudMintJwtSigningError({
+                cause,
+              }),
+          ),
+        );
       return {
         credential: issued.credential,
         expiresAt: DateTime.formatIso(issued.expiresAt),
@@ -1650,6 +1699,7 @@ const make = Effect.gen(function* () {
       linkState,
       unlink,
       updatePreferences: refused,
+      setSharingMode: refused,
       answerHealthRequest: refused,
       mintCredential: refused,
       reconcileDesiredLinkIfStillDesired: notDesired,
@@ -1666,6 +1716,7 @@ const make = Effect.gen(function* () {
     linkState,
     unlink,
     updatePreferences,
+    setSharingMode,
     answerHealthRequest,
     mintCredential,
     reconcileDesiredLinkIfStillDesired,

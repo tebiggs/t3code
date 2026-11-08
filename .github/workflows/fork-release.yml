@@ -323,6 +323,27 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The runner image lacks the NDK version React Native pins, so Gradle
+      # would download it (about 1 GB) on every run.
+      - id: ndk
+        name: Resolve the NDK version
+        run: |
+          version="$(sed -n 's/^ndkVersion = "\(.*\)"$/\1/p' apps/mobile/node_modules/react-native/gradle/libs.versions.toml)"
+          if [[ -z "$version" ]]; then
+            echo "::error::React Native's libs.versions.toml has no ndkVersion."
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "path=$ANDROID_HOME/ndk/$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cache the NDK
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.ndk.outputs.path }}
+          key: android-ndk-${{ runner.os }}-${{ runner.arch }}-${{ steps.ndk.outputs.version }}
+
       # The APK's JavaScript ships inside it; OTA updates would swap in
       # upstream's preview bundles. The release version replaces upstream's
       # store version so Obtainium can match the APK to its release tag. It
