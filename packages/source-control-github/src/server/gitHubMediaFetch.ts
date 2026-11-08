@@ -1,7 +1,12 @@
 import type { SourceControlMediaRequest } from "@t3tools/source-control-core/server/driver";
+import { decodeJsonResult } from "@t3tools/shared/schemaJson";
+import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import {
   FetchHttpClient,
   HttpClient,
@@ -39,6 +44,7 @@ const REPOSITORY_PATTERN = /^[\w.-]+\/[\w.-]+$/u;
 // GitHub's signed upload links last about five minutes.
 const SIGNED_URL_CACHE_TTL_MS = 4 * 60_000;
 const SIGNED_URL_CACHE_MAX_ENTRIES = 64;
+const decodeVisibility = decodeJsonResult(Schema.Struct({ private: Schema.Boolean }));
 
 const contentTypeOf = (response: HttpClientResponse.HttpClientResponse) =>
   response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
@@ -112,6 +118,25 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  // Only a private repository's uploads are worth rendering after a 404; in a public one the file
+  // is gone.
+  const privateRepositories = yield* Cache.makeWith(
+    Effect.fnUntraced(function* (repository: string) {
+      const [owner = "", name = ""] = repository.split("/");
+      const response = yield* rest.rest({
+        host: "github.com",
+        operation: "getRepository",
+        path: `repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+      });
+      const decoded = decodeVisibility(response.body);
+      return Result.isSuccess(decoded) && decoded.success.private;
+    }),
+    {
+      capacity: SIGNED_URL_CACHE_MAX_ENTRIES,
+      timeToLive: (exit) => (Exit.isSuccess(exit) ? "1 hour" : 0),
+    },
+  );
+
   // An organization with SAML SSO answers a token-authenticated upload request with its sign-in
   // page. Rendering the link as markdown in the repository's context hands back a signed URL.
   const renderSignedUrl = Effect.fnUntraced(function* (url: string, repository: string) {
@@ -164,7 +189,15 @@ export const make = Effect.gen(function* () {
         request.headers,
         signedIn?.token ?? null,
       );
-      if (response === null || contentTypeOf(response) !== "text/html") return response;
+      if (response === null) return response;
+      if (contentTypeOf(response) !== "text/html") {
+        // A private repository's upload is a plain 404 to any token.
+        if (response.status !== 404 || repository === undefined) return response;
+        const isPrivate = yield* Cache.get(privateRepositories, repository).pipe(
+          Effect.orElseSucceed(() => false),
+        );
+        if (!isPrivate) return response;
+      }
     }
     if (cacheKey === null || repository === undefined || signedIn === null) return response;
     const signed = yield* renderSignedUrl(request.url, repository);

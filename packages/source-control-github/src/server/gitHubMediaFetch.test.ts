@@ -7,14 +7,22 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 
 import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubMediaFetch from "./gitHubMediaFetch.ts";
+import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as GitHubRest from "./GitHubRest.ts";
 
 const PR_REPOSITORY = "enterprise/private";
 
-/** An SSO organization: the upload URL answers with a sign-in page, a rendered signed URL with bytes. */
-const makeSsoFixture = (uploadUrl: string) => {
+/**
+ * The upload URL answers with an SSO organization's sign-in page, or with the plain 404 a token gets
+ * in a private repository, a public one, or one the account cannot see. A signed URL has bytes.
+ */
+const makeUploadFixture = (
+  uploadUrl: string,
+  repository: "sso" | "private" | "public" | "hidden" = "sso",
+) => {
   const state = { account: "account-a", expired: new Set<string>() };
   const rendered: Array<GitHubRest.GitHubRestInput> = [];
+  const lookups: Array<string> = [];
   const signedUrls: Array<string> = [];
   const requests: Array<{ url: string; authorization?: string; range?: string }> = [];
   const credential = (host: string) =>
@@ -27,8 +35,28 @@ const makeSsoFixture = (uploadUrl: string) => {
   const layer = Layer.mergeAll(
     Layer.mock(GitHubCredentials.GitHubCredentials)({ get: credential }),
     Layer.mock(GitHubRest.GitHubRest)({
-      rest: (input) =>
-        Effect.sync(() => {
+      rest: (input) => {
+        if (input.path !== "markdown") {
+          lookups.push(input.path);
+          return repository === "hidden"
+            ? Effect.fail(
+                new GitHubRequestPolicy.GitHubApiNotFoundError({
+                  host: input.host,
+                  operation: input.operation,
+                }),
+              )
+            : Effect.succeed({
+                status: 200,
+                headers: {},
+                body: JSON.stringify({
+                  full_name: PR_REPOSITORY,
+                  private: repository !== "public",
+                }),
+                truncated: false,
+                invalidUtf8: false,
+              });
+        }
+        return Effect.sync(() => {
           rendered.push(input);
           const signed = `https://private-user-images.githubusercontent.com/1/upload.mp4?jwt=${state.account}-${rendered.length}&x=1`;
           const inRepository =
@@ -41,7 +69,8 @@ const makeSsoFixture = (uploadUrl: string) => {
             truncated: false,
             invalidUtf8: false,
           };
-        }),
+        });
+      },
     }),
     Layer.succeed(
       HttpClient.HttpClient,
@@ -57,9 +86,14 @@ const makeSsoFixture = (uploadUrl: string) => {
           if (request.url === uploadUrl) {
             return HttpClientResponse.fromWeb(
               request,
-              new Response("<html>Sign in with SSO</html>", {
-                headers: { "content-type": "text/html; charset=utf-8" },
-              }),
+              repository === "sso"
+                ? new Response("<html>Sign in with SSO</html>", {
+                    headers: { "content-type": "text/html; charset=utf-8" },
+                  })
+                : new Response("Not Found", {
+                    status: 404,
+                    headers: { "content-type": "text/plain; charset=utf-8" },
+                  }),
             );
           }
           expect(signedUrls).toContain(request.url);
@@ -72,7 +106,7 @@ const makeSsoFixture = (uploadUrl: string) => {
       ),
     ),
   );
-  return { layer, state, rendered, signedUrls, requests };
+  return { layer, state, rendered, lookups, signedUrls, requests };
 };
 
 describe("GitHubMediaFetch", () => {
@@ -180,7 +214,7 @@ describe("GitHubMediaFetch", () => {
     "renders SSO uploads in the PR repository and reuses the signed URL for a range",
     () => {
       const url = "https://github.com/user-attachments/assets/explicit-pr-context";
-      const fixture = makeSsoFixture(url);
+      const fixture = makeUploadFixture(url);
       return Effect.gen(function* () {
         const fetchMedia = yield* GitHubMediaFetch.make;
         const request = { url, headers: {}, repository: PR_REPOSITORY };
@@ -205,9 +239,46 @@ describe("GitHubMediaFetch", () => {
     },
   );
 
+  it.effect(
+    "renders an upload in a private repository, where it is a plain 404 to any token",
+    () => {
+      const url = "https://github.com/user-attachments/assets/private-repository";
+      const fixture = makeUploadFixture(url, "private");
+      const request = { url, headers: {}, repository: PR_REPOSITORY };
+      return Effect.gen(function* () {
+        const fetchMedia = yield* GitHubMediaFetch.make;
+        expect((yield* fetchMedia(request))?.status).toBe(200);
+        yield* TestClock.adjust("6 minutes");
+        expect((yield* fetchMedia(request))?.status).toBe(200);
+        expect(fixture.rendered).toHaveLength(2);
+        // The repository's visibility outlives a signed URL.
+        expect(fixture.lookups).toEqual([`repos/${PR_REPOSITORY}`]);
+      }).pipe(Effect.provide(fixture.layer), Effect.scoped);
+    },
+  );
+
+  it.effect("leaves a 404 alone unless the repository is known to be private", () =>
+    Effect.gen(function* () {
+      for (const [repository, request] of [
+        ["public", { repository: PR_REPOSITORY }],
+        ["hidden", { repository: PR_REPOSITORY }],
+        ["private", {}],
+      ] as const) {
+        const url = "https://github.com/user-attachments/assets/missing";
+        const fixture = makeUploadFixture(url, repository);
+        const response = yield* Effect.gen(function* () {
+          const fetchMedia = yield* GitHubMediaFetch.make;
+          return yield* fetchMedia({ url, headers: {}, ...request });
+        }).pipe(Effect.provide(fixture.layer));
+        expect(response?.status).toBe(404);
+        expect(fixture.rendered).toEqual([]);
+      }
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("renders a legacy upload in the repository its path names", () => {
     const url = `https://github.com/${PR_REPOSITORY}/assets/123/legacy`;
-    const fixture = makeSsoFixture(url);
+    const fixture = makeUploadFixture(url);
     return Effect.gen(function* () {
       const fetchMedia = yield* GitHubMediaFetch.make;
       const response = yield* fetchMedia({ url, headers: {}, repository: "personal/unrelated" });
@@ -220,7 +291,7 @@ describe("GitHubMediaFetch", () => {
 
   it.effect("renders a fresh signed URL after an account switch, early expiry, or its TTL", () => {
     const url = "https://github.com/user-attachments/assets/cache-lifecycle";
-    const fixture = makeSsoFixture(url);
+    const fixture = makeUploadFixture(url);
     const request = { url, headers: {}, repository: PR_REPOSITORY };
     return Effect.gen(function* () {
       const fetchMedia = yield* GitHubMediaFetch.make;
