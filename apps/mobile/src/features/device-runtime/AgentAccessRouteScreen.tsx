@@ -33,10 +33,10 @@ const POLICIES: ReadonlyArray<{
   {
     policy: "ask",
     label: "Ask each time",
-    description: "Claude asks in the thread before it runs one.",
+    description: "This phone asks you before each command runs.",
   },
   { policy: "allow", label: "Always allow", description: "Agents use it without asking." },
-  { policy: "deny", label: "Never", description: "Agents can't use it." },
+  { policy: "deny", label: "Never", description: "These commands are refused." },
 ];
 
 /** Asks Android for what a category needs; notification access is a system settings page. */
@@ -87,7 +87,9 @@ export function AgentAccessRouteScreen() {
       >
         <Text className="px-2 text-sm leading-normal text-foreground-muted">
           Agents on this phone reach Android through termux-* commands. These need your say: with
-          Ask each time, Claude asks in the thread before it runs one.
+          Ask each time, this phone asks you before each one runs, even when another device started
+          it. Nobody answering within a minute counts as no. This covers those commands. It isn't a
+          hard barrier against someone using a terminal on this phone's server.
         </Text>
         {categories.map((category) => {
           const meta = CATEGORIES[category.id];

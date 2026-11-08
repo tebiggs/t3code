@@ -7,6 +7,8 @@ import {
   authScopeRequiredResponse,
   AuthGrantScopes,
   AuthStandardClientScopes,
+  AuthViewOnlyClientScopes,
+  sessionHasLegacyPermissions,
   authScopeResponse,
   AuthSessionState,
   sessionGrantsScope,
@@ -72,6 +74,17 @@ describe("authorization grants", () => {
     expect(session.permissions).toEqual([]);
     expect(sessionGrantsScope(session, "orchestration:operate")).toBe(false);
     expect(sessionGrantsScope(session, "settings:write")).toBe(false);
+  });
+
+  it("doesn't call a View only session outdated, unlike an old session with more scopes", () => {
+    const session = (permissions: ReadonlyArray<AuthEnvironmentScope>) => ({
+      authenticated: true,
+      permissions,
+    });
+    expect(sessionHasLegacyPermissions(session(AuthViewOnlyClientScopes))).toBe(false);
+    expect(
+      sessionHasLegacyPermissions(session(["orchestration:read", "orchestration:operate"])),
+    ).toBe(true);
   });
 
   it.each([

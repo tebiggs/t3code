@@ -14,6 +14,7 @@ import {
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import { ToolCallVisibility } from "@t3tools/contracts/settings";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
@@ -25,6 +26,7 @@ import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-sto
 
 const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
+const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 export const PullRequestListControls = Schema.Struct({
   state: PullRequestListState,
@@ -76,6 +78,19 @@ export const PhoneServerSettings = Schema.Struct({
 export type PhoneServerSettings = typeof PhoneServerSettings.Type;
 
 /**
+ * Sharing the phone's server, saved before each change so unfinished work can be picked up. It
+ * stands apart from PhoneServerSettings because it has to outlive the phone's connection.
+ */
+export const PhoneSharingRecord = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** The T3 Connect account listing the phone. */
+  accountId: Schema.NullOr(Schema.String),
+  /** on: shared. stopping: the server's tunnel and sessions must go. listed: only the listing. */
+  phase: Schema.Literals(["on", "stopping", "listed"]),
+});
+export type PhoneSharingRecord = typeof PhoneSharingRecord.Type;
+
+/**
  * The page each workspace tab last showed, reopened when the tab returns with columns. `key` is
  * that page's route key: reopening under the same key reuses the screen a tab kept mounted.
  */
@@ -109,6 +124,7 @@ const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const isEnvironmentPowerPreferences = Schema.is(EnvironmentPowerPreferences);
 const isPhoneServerSettings = Schema.is(PhoneServerSettings);
+const isPhoneSharingRecord = Schema.is(PhoneSharingRecord);
 const ThreadProject = Schema.Struct({
   environmentId: Schema.NonEmptyString,
   projectId: Schema.NonEmptyString,
@@ -144,6 +160,7 @@ export interface Preferences {
   readonly projectGroupingEnabled?: boolean;
   readonly projectGroupingMode?: SidebarProjectGroupingMode;
   readonly planModeEnabled?: boolean;
+  readonly toolCallVisibility?: ToolCallVisibility;
   readonly workingShelfEnabled?: boolean;
   readonly useLastProjectForNewThreads?: boolean;
   readonly lastThreadProject?: typeof ThreadProject.Type;
@@ -160,6 +177,7 @@ export interface Preferences {
   readonly environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
   /** Null once the phone environment is removed. */
   readonly phoneServer?: PhoneServerSettings | null;
+  readonly phoneSharing?: PhoneSharingRecord | null;
   readonly workspaceSelections?: WorkspaceSelections;
 }
 
@@ -181,6 +199,8 @@ export class MobilePreferencesSaveError extends Schema.TaggedError<MobilePrefere
   }
 }
 
+const isMobilePreferencesSaveError = Schema.is(MobilePreferencesSaveError);
+
 interface PreferencesFallback {
   readonly payload: string;
   readonly updatedAt: number;
@@ -198,7 +218,9 @@ export class MobilePreferencesStore extends Context.Service<
       transform: (current: Preferences) => Partial<Preferences>,
     ) => Effect.Effect<Preferences, MobilePreferencesSaveError>;
   }
->()("@t3tools/mobile/persistence/MobilePreferencesStore") {}
+>()("@t3tools/mobile/persistence/mobile-preferences/MobilePreferencesStore") {}
+
+const isToolCallVisibility = Schema.is(ToolCallVisibility);
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
@@ -228,6 +250,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     projectGroupingEnabled?: boolean;
     projectGroupingMode?: SidebarProjectGroupingMode;
     planModeEnabled?: boolean;
+    toolCallVisibility?: ToolCallVisibility;
     workingShelfEnabled?: boolean;
     useLastProjectForNewThreads?: boolean;
     lastThreadProject?: typeof ThreadProject.Type;
@@ -239,6 +262,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     pullRequestListFilters?: PullRequestListPreferences;
     environmentPower?: Readonly<Record<string, EnvironmentPowerSettings>>;
     phoneServer?: PhoneServerSettings;
+    phoneSharing?: PhoneSharingRecord;
     workspaceSelections?: WorkspaceSelections;
   } = {};
 
@@ -356,6 +380,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.planModeEnabled === "boolean") {
     preferences.planModeEnabled = parsed.planModeEnabled;
   }
+  if (isToolCallVisibility(parsed.toolCallVisibility)) {
+    preferences.toolCallVisibility = parsed.toolCallVisibility;
+  }
   if (typeof parsed.workingShelfEnabled === "boolean") {
     preferences.workingShelfEnabled = parsed.workingShelfEnabled;
   }
@@ -397,6 +424,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   // A Termux-era server isn't one this app can start, so its settings are dropped.
   if (isPhoneServerSettings(parsed.phoneServer) && parsed.phoneServer.host === "device") {
     preferences.phoneServer = parsed.phoneServer;
+  }
+  if (isPhoneSharingRecord(parsed.phoneSharing)) {
+    preferences.phoneSharing = parsed.phoneSharing;
   }
   if (isWorkspaceSelections(parsed.workspaceSelections)) {
     preferences.workspaceSelections = parsed.workspaceSelections;
@@ -459,10 +489,9 @@ const make = Effect.fn("MobilePreferencesStore.make")(function* () {
     key: string,
     value: unknown,
   ) {
-    return yield* Effect.try({
-      try: () => JSON.stringify(value),
-      catch: (cause) => new MobileStorageEncodeError({ key, cause }),
-    });
+    return yield* encodeJson(value).pipe(
+      Effect.mapError((cause) => new MobileStorageEncodeError({ key, cause })),
+    );
   });
 
   const nextUpdatedAt = Ref.modify(lastUpdatedAt, (last) => {
@@ -575,34 +604,33 @@ const make = Effect.fn("MobilePreferencesStore.make")(function* () {
     .withPermits(1)(loadUnlocked)
     .pipe(Effect.mapError((cause) => new MobilePreferencesLoadError({ cause })));
 
-  const update = Effect.fn("MobilePreferencesStore.update")((transform) =>
-    lock
-      .withPermits(1)(
-        Effect.gen(function* () {
-          const current = yield* loadUnlocked;
-          const patch = yield* Effect.try({
-            try: () => transform(current),
-            catch: (cause) => new MobilePreferencesSaveError({ cause }),
-          });
-          const next: Preferences = { ...current, ...patch };
-          const payload = yield* encode(PREFERENCES_KEY, next);
-          yield* saveJson(payload);
-          return next;
-        }),
-      )
-      .pipe(
-        Effect.mapError((cause) =>
-          cause instanceof MobilePreferencesSaveError
-            ? cause
-            : new MobilePreferencesSaveError({ cause }),
+  const update = Effect.fn("MobilePreferencesStore.update")(
+    (transform: (current: Preferences) => Partial<Preferences>) =>
+      lock
+        .withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* loadUnlocked;
+            const patch = yield* Effect.try({
+              try: () => transform(current),
+              catch: (cause) => new MobilePreferencesSaveError({ cause }),
+            });
+            const next: Preferences = { ...current, ...patch };
+            const payload = yield* encode(PREFERENCES_KEY, next);
+            yield* saveJson(payload);
+            return next;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isMobilePreferencesSaveError(cause) ? cause : new MobilePreferencesSaveError({ cause }),
+          ),
         ),
-      ),
   );
 
   return MobilePreferencesStore.of({
     load,
     update,
-    savePatch: (patch) => update(() => patch),
+    savePatch: Effect.fn("MobilePreferencesStore.savePatch")((patch) => update(() => patch)),
   });
 });
 

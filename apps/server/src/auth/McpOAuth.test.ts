@@ -382,6 +382,38 @@ it.live("signs in a hosted agent with an https callback that asked for a client 
   ),
 );
 
+it.live("a code approved before other access is revoked can't be redeemed after it", () =>
+  withRoutes((handler, auth) =>
+    Effect.gen(function* () {
+      const clientId = yield* registeredClientId(handler);
+      const pairing = yield* auth.issuePairingCredential();
+      const params = authorizeParams(clientId);
+      const approved = yield* decide(handler, params, {
+        _tag: "pairing-code",
+        access: "approval-required",
+        code: pairing.credential,
+      });
+      const phone = yield* auth.issueSession({ label: "phone" });
+      yield* auth.revokeOtherAccess(phone.sessionId);
+
+      const late = yield* handler(
+        at(
+          "/oauth/mcp/token",
+          form({
+            grant_type: "authorization_code",
+            code: new URL(approved.redirectTo!).searchParams.get("code")!,
+            redirect_uri: params.redirect_uri,
+            client_id: clientId,
+            code_verifier: verifier,
+          }),
+        ),
+      );
+      expect(late.status).toBe(400);
+      expect(yield* json<{ error: string }>(late)).toMatchObject({ error: "invalid_grant" });
+    }),
+  ),
+);
+
 it.live("rejects a wrong PKCE verifier and spends the code", () =>
   withRoutes((handler, auth) =>
     Effect.gen(function* () {
@@ -559,6 +591,10 @@ it.live("one-click approves only access the browser session holds the scopes for
       );
       expect(forged.status).toBe(400);
       expect(forged.message).toContain("Enter a pairing code instead");
+
+      // A session shared View only, so it can't hand an MCP client more than it has.
+      const viewer = yield* browserCookie(["orchestration:read"]);
+      expect((yield* details(viewer)).csrfToken).toBeUndefined();
 
       const reader = yield* browserCookie(["access:write", "orchestration:read"]);
       const readerDetails = yield* details(reader);

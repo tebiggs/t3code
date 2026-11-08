@@ -11,6 +11,8 @@ import {
   ThreadId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthViewOnlyClientScopes,
+  ORCHESTRATION_V2_WS_METHODS,
   AuthSourceControlWriteScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
@@ -25,6 +27,8 @@ import * as RpcTest from "effect/rpc/RpcTest";
 
 import {
   RPC_REQUIRED_SCOPES,
+  deviceListIsPassive,
+  readOnlyVcsStatusInput,
   requiredScopeForRpcMethod,
   requiredScopeForDeviceList,
 } from "./RpcAuthorization.ts";
@@ -192,6 +196,12 @@ describe("settings mutation authorization", () => {
           providerInstanceMutation,
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      // Removing a secret provider clears settings fields that read from it.
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
       expect(handled).toBe(2);
     }).pipe(Effect.scoped),
   );
@@ -316,6 +326,61 @@ describe("thread context authorization", () => {
         expect(handled.at(-1)).toBe("allowed");
       }).pipe(Effect.scoped),
   );
+});
+
+it("drops remote VCS polling, which can auto-pull, for a session that can't operate", () => {
+  const input = { cwd: "/repo", includeRemote: true };
+  expect(readOnlyVcsStatusInput(input, true)).toEqual(input);
+  expect(readOnlyVcsStatusInput(input, false)).toEqual({ cwd: "/repo", includeRemote: false });
+});
+
+it("lists devices passively for a session that can't ready their hosts", () => {
+  expect(deviceListIsPassive({}, false)).toBe(true);
+  expect(deviceListIsPassive({}, true)).toBe(false);
+  expect(deviceListIsPassive({ inspectOnly: true }, true)).toBe(true);
+  // These stay active so the scope check refuses them instead of quietly answering.
+  expect(deviceListIsPassive({ updateTool: "hub" }, false)).toBe(false);
+  expect(deviceListIsPassive({ retryHostId: "local" }, false)).toBe(false);
+});
+
+it("a View only session reads threads and reaches nothing that changes them", () => {
+  const viewerMethods = [
+    ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+    ORCHESTRATION_V2_WS_METHODS.launchThread,
+    ORCHESTRATION_V2_WS_METHODS.forceStopThread,
+    ORCHESTRATION_V2_WS_METHODS.subscribeThread,
+    ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+    WS_METHODS.terminalOpen,
+    WS_METHODS.terminalAttach,
+    WS_METHODS.terminalWrite,
+    WS_METHODS.terminalObserve,
+    WS_METHODS.subscribeTerminalMetadata,
+    WS_METHODS.projectsReadFile,
+    WS_METHODS.projectsWriteFile,
+    WS_METHODS.filesystemBrowse,
+    WS_METHODS.attachmentsCreateUploadUrl,
+    WS_METHODS.assetsPersistChatAttachments,
+    WS_METHODS.secretsAnswerRequest,
+    WS_METHODS.serverUpdateSettings,
+    WS_METHODS.cloudInstallRelayClient,
+    WS_METHODS.subscribeAuthAccess,
+    WS_METHODS.guestShareCreate,
+    WS_METHODS.peerLinksAnswerRequest,
+    WS_METHODS.mcpAppsCallTool,
+    WS_METHODS.mcpAppsReadResource,
+    WS_METHODS.deviceDetail,
+    WS_METHODS.serverListAcpRegistrySessions,
+    WS_METHODS.serverListAcpRegistryProviders,
+    WS_METHODS.shellOpenInEditor,
+    WS_METHODS.scheduledTasksUpsert,
+  ];
+  const allowed = viewerMethods.filter((method) =>
+    AuthViewOnlyClientScopes.some((scope) => scope === requiredScopeForRpcMethod(method)),
+  );
+  expect(allowed).toEqual([
+    ORCHESTRATION_V2_WS_METHODS.subscribeThread,
+    ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+  ]);
 });
 
 it.effect("separates host file URLs from readable attachment URLs", () =>

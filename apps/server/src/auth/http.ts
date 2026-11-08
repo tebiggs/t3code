@@ -57,7 +57,7 @@ const appendDpopChallengeOnUnauthorized =
     const request = yield* HttpServerRequest.HttpServerRequest;
     const usesDpop =
       (request.originalUrl.startsWith("/oauth/token") && request.headers.dpop !== undefined) ||
-      request.headers.authorization?.startsWith("DPoP ") === true;
+      /^DPoP /i.test(request.headers.authorization ?? "");
     if (usesDpop) {
       yield* appendDpopChallengeHeader;
     }
@@ -458,7 +458,14 @@ export const layer = HttpApiBuilder.group(
                 return yield* failEnvironmentScopeRequired(delegatedScope);
               }
             }
-            return yield* serverAuth.issuePairingCredential(args.payload);
+            return yield* serverAuth.withGrantLock(
+              Effect.gen(function* () {
+                if (!(yield* serverAuth.isSessionActive(session.sessionId))) {
+                  return yield* failEnvironmentAuthInvalid("invalid_credential");
+                }
+                return yield* serverAuth.issuePairingCredential(args.payload);
+              }),
+            );
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("pairing_credential_issuance_failed", error),
