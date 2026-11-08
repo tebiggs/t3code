@@ -20,7 +20,11 @@ const makeUploadFixture = (
   uploadUrl: string,
   repository: "sso" | "private" | "public" | "hidden" = "sso",
 ) => {
-  const state = { account: "account-a", expired: new Set<string>() };
+  const state = {
+    account: "account-a",
+    expired: new Set<string>(),
+    unreadableBy: new Set<string>(),
+  };
   const rendered: Array<GitHubRest.GitHubRestInput> = [];
   const lookups: Array<string> = [];
   const signedUrls: Array<string> = [];
@@ -38,7 +42,7 @@ const makeUploadFixture = (
       rest: (input) => {
         if (input.path !== "markdown") {
           lookups.push(input.path);
-          return repository === "hidden"
+          return repository === "hidden" || state.unreadableBy.has(state.account)
             ? Effect.fail(
                 new GitHubRequestPolicy.GitHubApiNotFoundError({
                   host: input.host,
@@ -253,6 +257,13 @@ describe("GitHubMediaFetch", () => {
         expect(fixture.rendered).toHaveLength(2);
         // The repository's visibility outlives a signed URL.
         expect(fixture.lookups).toEqual([`repos/${PR_REPOSITORY}`]);
+
+        // It is not another account's to reuse: one that cannot read the repository renders nothing.
+        fixture.state.account = "account-b";
+        fixture.state.unreadableBy.add("account-b");
+        expect((yield* fetchMedia(request))?.status).toBe(404);
+        expect(fixture.rendered).toHaveLength(2);
+        expect(fixture.lookups).toHaveLength(2);
       }).pipe(Effect.provide(fixture.layer), Effect.scoped);
     },
   );

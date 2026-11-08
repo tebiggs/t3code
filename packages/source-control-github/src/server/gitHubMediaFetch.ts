@@ -119,10 +119,13 @@ export const make = Effect.gen(function* () {
   });
 
   // Only a private repository's uploads are worth rendering after a 404; in a public one the file
-  // is gone.
+  // is gone. Whether an account can read the repository is part of the answer.
   const privateRepositories = yield* Cache.makeWith(
-    Effect.fnUntraced(function* (repository: string) {
-      const [owner = "", name = ""] = repository.split("/");
+    Effect.fnUntraced(function* (key: {
+      readonly fingerprint: string;
+      readonly repository: string;
+    }) {
+      const [owner = "", name = ""] = key.repository.split("/");
       const response = yield* rest.rest({
         host: "github.com",
         operation: "getRepository",
@@ -192,10 +195,13 @@ export const make = Effect.gen(function* () {
       if (response === null) return response;
       if (contentTypeOf(response) !== "text/html") {
         // A private repository's upload is a plain 404 to any token.
-        if (response.status !== 404 || repository === undefined) return response;
-        const isPrivate = yield* Cache.get(privateRepositories, repository).pipe(
-          Effect.orElseSucceed(() => false),
-        );
+        if (response.status !== 404 || repository === undefined || signedIn === null) {
+          return response;
+        }
+        const isPrivate = yield* Cache.get(privateRepositories, {
+          fingerprint: signedIn.fingerprint,
+          repository,
+        }).pipe(Effect.orElseSucceed(() => false));
         if (!isPrivate) return response;
       }
     }
