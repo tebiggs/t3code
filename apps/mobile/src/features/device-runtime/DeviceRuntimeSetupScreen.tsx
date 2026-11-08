@@ -217,7 +217,12 @@ export function DeviceRuntimeSetupScreen() {
         onCancel={() => native.cancelJob()}
       />
     ),
-    signIn: <SignInStepBody status={status} checking={status.installed && inspection === null} />,
+    signIn: (
+      <SignInStepBody
+        status={status}
+        checking={status.installed && inspection === null && error === null}
+      />
+    ),
     connect: (
       <>
         <StepText>Starts T3 Code's server on this phone and adds it to your environments.</StepText>

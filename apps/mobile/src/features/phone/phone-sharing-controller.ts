@@ -58,10 +58,27 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
     return run;
   };
 
+  /**
+   * The phone runs one server, so another one answering under a new id means Ubuntu was
+   * reinstalled, and the old server's tunnel went with it. Only its listing can be left.
+   */
+  const serverReplaced = (record: PhoneSharingRecord) => {
+    const current = effects.phoneEnvironmentId();
+    return (
+      current !== null &&
+      current !== record.environmentId &&
+      effects.connectionFor(record.environmentId) === null
+    );
+  };
+
   /** Works a stopping or listed record as far as it can go. Null means nothing is left to do. */
   const settle = async (): Promise<string | null> => {
     let record = effects.loadRecord();
     if (record === null || record.phase === "on") return null;
+    if (record.phase === "stopping" && serverReplaced(record)) {
+      record = { ...record, phase: "listed" };
+      await effects.saveRecord(record);
+    }
     if (record.phase === "stopping") {
       const connection = effects.connectionFor(record.environmentId);
       if (connection === null) return STOP_UNFINISHED;
@@ -176,7 +193,11 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
           const account = effects.signedInAccount();
           const connection = effects.connectionFor(record.environmentId);
           const sharing = connection === null ? null : await effects.readSharing(connection);
-          if ((account !== null && account !== record.accountId) || sharing?.shared === false) {
+          if (
+            (account !== null && account !== record.accountId) ||
+            sharing?.shared === false ||
+            serverReplaced(record)
+          ) {
             await effects.saveRecord({ ...record, phase: "stopping" });
           }
         }

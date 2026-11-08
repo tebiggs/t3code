@@ -35,6 +35,7 @@ function setup(initial: PhoneSharingRecord | null = null, hydrated = async () =>
     deregisterFailure: null as string | null,
     saveFailure: null as string | null,
     modeFailure: null as string | null,
+    phoneEnvironmentId: environmentId as EnvironmentId | null,
   };
   const setSharingMode = vi.fn(async () => state.modeFailure);
   const stopOnServer = vi.fn(async () => {
@@ -50,8 +51,8 @@ function setup(initial: PhoneSharingRecord | null = null, hydrated = async () =>
       if (state.saveFailure !== null) throw new Error(state.saveFailure);
       state.record = record;
     },
-    phoneEnvironmentId: () => environmentId,
-    connectionFor: () => (state.connected ? connection : null),
+    phoneEnvironmentId: () => state.phoneEnvironmentId,
+    connectionFor: (id) => (state.connected && id === environmentId ? connection : null),
     signedInAccount: () => state.account,
     readSharing: async () => (state.connected ? state.sharing : null),
     ensureRelayClient: async () => null,
@@ -304,6 +305,21 @@ describe("createPhoneSharingController", () => {
     expect(await controller.release()).toBeNull();
     expect(deregister).toHaveBeenCalledOnce();
     expect(state.record).toBeNull();
+  });
+
+  it("lets go of a stop or share whose server Ubuntu's reinstall replaced", async () => {
+    for (const phase of ["stopping", "on"] as const) {
+      const old = EnvironmentId.make("old-phone");
+      const { state, controller, stopOnServer, deregister } = setup({
+        environmentId: old,
+        accountId: "user_a",
+        phase,
+      });
+      expect(await controller.reconcile()).toBeNull();
+      expect(stopOnServer).not.toHaveBeenCalled();
+      expect(deregister).toHaveBeenCalledExactlyOnceWith("user_a", old);
+      expect(state.record).toBeNull();
+    }
   });
 
   it("keeps the listing's record through a release while signed out", async () => {

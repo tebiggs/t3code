@@ -45,13 +45,16 @@ const fixture = Effect.fn("ClaudeMaintenance.test.fixture")(function* (
   npm = false,
   platform: NodeJS.Platform = "linux",
   programFiles?: string,
+  apt?: { readonly uid: number; readonly sources: Record<string, string> },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const directory = yield* fs.makeTempDirectoryScoped();
   const binaryPath = npm
     ? path.join(directory, "lib/node_modules/@anthropic-ai/claude-code/cli.js")
-    : path.join(directory, ".local/bin", platform === "win32" ? "claude.exe" : "claude");
+    : apt
+      ? path.join(directory, "usr/bin/claude")
+      : path.join(directory, ".local/bin", platform === "win32" ? "claude.exe" : "claude");
   yield* fs.makeDirectory(path.dirname(binaryPath), { recursive: true });
   yield* fs.writeFileString(binaryPath, "#!/bin/sh\n");
   yield* fs.chmod(binaryPath, 0o755);
@@ -66,6 +69,16 @@ const fixture = Effect.fn("ClaudeMaintenance.test.fixture")(function* (
         ? "/Library/Application Support/ClaudeCode"
         : "/etc/claude-code";
   let installationReads = 0;
+  const aptFiles = new Map<string, string>(
+    apt
+      ? [
+          ["/var/lib/dpkg/info/claude-code.list", `/usr\n/usr/bin\n${binaryPath}\n`],
+          ...Object.entries(apt.sources).map(
+            ([name, source]) => [`/etc/apt/sources.list.d/${name}`, source] as const,
+          ),
+        ]
+      : [],
+  );
   const testFs = FileSystem.makeNoop({
     ...fs,
     realPath: (file) => {
@@ -73,19 +86,23 @@ const fixture = Effect.fn("ClaudeMaintenance.test.fixture")(function* (
       return fs.realPath(file);
     },
     readFileString: (file, ...args) =>
-      file.replaceAll("\\", "/").startsWith(`${managedDirectory}/`)
-        ? managed.has(file.replaceAll("\\", "/"))
-          ? Effect.succeed(managed.get(file.replaceAll("\\", "/"))!)
-          : fs.readFileString(path.join(directory, "missing"))
-        : fs.readFileString(file, ...args),
+      aptFiles.has(file)
+        ? Effect.succeed(aptFiles.get(file)!)
+        : file.replaceAll("\\", "/").startsWith(`${managedDirectory}/`)
+          ? managed.has(file.replaceAll("\\", "/"))
+            ? Effect.succeed(managed.get(file.replaceAll("\\", "/"))!)
+            : fs.readFileString(path.join(directory, "missing"))
+          : fs.readFileString(file, ...args),
     readDirectory: (file) =>
-      file.replaceAll("\\", "/") === `${managedDirectory}/managed-settings.d`
-        ? Effect.succeed(
-            [...managed.keys()]
-              .filter((key) => key.includes("/managed-settings.d/"))
-              .map((key) => path.basename(key)),
-          )
-        : fs.readDirectory(file),
+      file === "/etc/apt/sources.list.d" && apt
+        ? Effect.succeed(Object.keys(apt.sources))
+        : file.replaceAll("\\", "/") === `${managedDirectory}/managed-settings.d`
+          ? Effect.succeed(
+              [...managed.keys()]
+                .filter((key) => key.includes("/managed-settings.d/"))
+                .map((key) => path.basename(key)),
+            )
+          : fs.readDirectory(file),
   });
   return {
     directory,
@@ -101,6 +118,7 @@ const fixture = Effect.fn("ClaudeMaintenance.test.fixture")(function* (
       ),
       Effect.provideService(FileSystem.FileSystem, testFs),
       Effect.provideService(HostProcess.Platform, platform),
+      Effect.provideService(HostProcess.UserId, apt?.uid ?? 1000),
       Effect.provideService(HostProcess.Environment, {
         PATH: "",
         CLAUDE_CONFIG_DIR: configDirectory,
@@ -370,6 +388,65 @@ it.layer(NodeServices.layer)("ClaudeMaintenance", (it) => {
           "https://downloads.claude.ai/claude-code-releases/stable",
         ]);
         expect(f.installationReads()).toBe(1);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { name: "as root", uid: 0 },
+    { name: "as a user", uid: 1000 },
+  ])("upgrades an apt install through apt $name, on its repository's channel", (row) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(false, "linux", undefined, {
+        uid: row.uid,
+        sources: {
+          "ubuntu.sources": "Types: deb\nURIs: http://archive.ubuntu.com/ubuntu\n",
+          "claude-code.list":
+            "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main\n",
+        },
+      });
+      yield* f.fs.writeFileString(f.settingsPath, '{"autoUpdatesChannel":"latest"}');
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(request.url.endsWith("/stable") ? "2.1.314" : "2.1.319"),
+          ),
+        );
+      });
+      const resolve = yield* f.makeResolution.pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      const capabilities = yield* resolve();
+      const enriched = yield* enrichProviderSnapshotWithVersionAdvisory(
+        snapshot,
+        capabilities,
+      ).pipe(
+        Effect.provide(ProviderLatestVersions.layer),
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      expect(enriched.versionAdvisory).toMatchObject({
+        status: "current",
+        latestVersion: "2.1.314",
+      });
+      expect(requests).toEqual(["https://downloads.claude.ai/claude-code-releases/stable"]);
+      if (row.uid === 0) {
+        expect(capabilities.update).toMatchObject({
+          executable: "/bin/sh",
+          lockKey: "claudeAgent-apt",
+          env: { DEBIAN_FRONTEND: "noninteractive" },
+        });
+        expect(capabilities.update?.args).toEqual([
+          "-c",
+          "apt-get update -o Dir::Etc::SourceList=/etc/apt/sources.list.d/claude-code.list -o Dir::Etc::SourceParts=- -o APT::Get::List-Cleanup=0 && apt-get install -y --only-upgrade claude-code",
+        ]);
+      } else {
+        expect(capabilities.update).toBeNull();
+        expect(capabilities.manualCommand).toBe(
+          "sudo apt-get update && sudo apt-get install -y --only-upgrade claude-code",
+        );
       }
     }).pipe(Effect.scoped),
   );
