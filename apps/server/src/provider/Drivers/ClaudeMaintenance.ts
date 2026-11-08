@@ -1,7 +1,9 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import {
   makeCachedProviderMaintenanceResolution,
+  makeManualOnlyProviderMaintenanceCapabilities,
   makePackageManagedProviderMaintenanceResolver,
+  makeProviderMaintenanceCapabilities,
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
   type ProviderMaintenanceCapabilities,
@@ -23,6 +25,10 @@ const UpdateChannelSettings = fromLenientJson(
   Schema.Struct({ autoUpdatesChannel: Schema.optional(Schema.Literals(["latest", "stable"])) }),
 );
 const NativeVersion = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/));
+const APT_PACKAGE_FILES = "/var/lib/dpkg/info/claude-code.list";
+const APT_SOURCES = "/etc/apt/sources.list.d";
+const APT_SOURCE_CHANNEL = /downloads\.claude\.ai\/claude-code\/apt\/(latest|stable)\b/;
+const APT_UPGRADE = "apt-get install -y --only-upgrade claude-code";
 
 const update = makePackageManagedProviderMaintenanceResolver({
   provider: ProviderDriverKind.make("claudeAgent"),
@@ -73,15 +79,36 @@ const readUpdateChannel = Effect.fn("ClaudeMaintenance.readUpdateChannel")(funct
   return channels.findLast((channel) => channel !== undefined) ?? "latest";
 });
 
+/** Anthropic's apt package refuses `claude update`, and its repository picks the channel. */
+const readAptInstall = Effect.fn("ClaudeMaintenance.readAptInstall")(function* (
+  executable: string,
+) {
+  if ((yield* HostProcess.Platform) !== "linux") return null;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const packageFiles = yield* fs
+    .readFileString(APT_PACKAGE_FILES)
+    .pipe(Effect.orElseSucceed(() => ""));
+  if (!packageFiles.split("\n").includes(executable)) return null;
+  const names = yield* fs.readDirectory(APT_SOURCES).pipe(Effect.orElseSucceed(() => []));
+  for (const name of names.filter((name) => /^[\w.-]+$/.test(name)).toSorted()) {
+    const sourceFile = path.join(APT_SOURCES, name);
+    const source = yield* fs.readFileString(sourceFile).pipe(Effect.orElseSucceed(() => ""));
+    const channel = APT_SOURCE_CHANNEL.exec(source)?.[1];
+    if (channel === "latest" || channel === "stable") return { executable, sourceFile, channel };
+  }
+  return { executable, sourceFile: null, channel: "stable" as const };
+});
+
 const resolveClaudeMaintenance = Effect.fn("ClaudeMaintenance.resolve")(function* (
   capabilities: ProviderMaintenanceCapabilities,
 ) {
   if (capabilities.update?.lockKey !== "claudeAgent-native") return capabilities;
-  const channel = yield* readUpdateChannel();
+  const apt = yield* readAptInstall(capabilities.update.executable);
+  const channel = apt?.channel ?? (yield* readUpdateChannel());
   const client = yield* HttpClient.HttpClient;
   const url = `${NATIVE_RELEASES}/${channel}`;
-  return {
-    ...capabilities,
+  const latest = {
     latestVersion: null,
     latestVersionCacheKey: url,
     lookupLatestVersion: client.get(url).pipe(
@@ -93,6 +120,36 @@ const resolveClaudeMaintenance = Effect.fn("ClaudeMaintenance.resolve")(function
       Effect.map(Option.getOrNull),
       Effect.orElseSucceed(() => null),
     ),
+  };
+  if (apt === null) return { ...capabilities, ...latest };
+  if ((yield* HostProcess.UserId) !== 0) {
+    return {
+      ...makeManualOnlyProviderMaintenanceCapabilities({
+        provider: capabilities.provider,
+        packageName: capabilities.packageName,
+        installPath: apt.executable,
+        manualCommand: `sudo apt-get update && sudo ${APT_UPGRADE}`,
+      }),
+      ...latest,
+    };
+  }
+  // Only Claude's list, as Ubuntu's indexes take long to fetch and the phone deletes them.
+  const refresh =
+    apt.sourceFile === null
+      ? "apt-get update"
+      : `apt-get update -o Dir::Etc::SourceList=${apt.sourceFile} -o Dir::Etc::SourceParts=- -o APT::Get::List-Cleanup=0`;
+  const script = `${refresh} && ${APT_UPGRADE}`;
+  return {
+    ...makeProviderMaintenanceCapabilities({
+      provider: capabilities.provider,
+      packageName: capabilities.packageName,
+      updateExecutable: "/bin/sh",
+      updateArgs: ["-c", script],
+      updateLockKey: "claudeAgent-apt",
+      updateCommand: script,
+      env: { DEBIAN_FRONTEND: "noninteractive" },
+    }),
+    ...latest,
   };
 });
 
