@@ -145,18 +145,12 @@ For mobile verification, a missing or outdated native client is an install step,
 
 `evals/` checks how real models behave with T3 Code's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before you change that text, read [evals/README.md](evals/README.md) and run the evals it names. When you fix a model behavior bug, add a case that fails before the fix.
 
-## Tim's fork: review process
+## Review
 
-Use the console-managed `review` skill for independent code review and its shared
-process; use `council` only when explicitly requested. Load the installed skill from
-`~/.claude/skills/review/SKILL.md` or `~/.codex/skills/review/SKILL.md`, using this
-machine's home directory. The project's checks, product invariants and shipping
-permissions in this repository still apply.
+Before opening a PR, run the `review` skill.
 
-Focus review on contracts, permissions, persistence and the affected clients,
-providers and connection modes. Keep `check:changed` and existing CI requirements;
-do not add repo-wide local checks. Target only `tebiggs/t3code`. Tim still reviews
-and merges ordinary fork PRs; the existing daily-sync exception remains separate.
+PRs target `tebiggs/t3code`; the maintainer reviews and merges them. The existing
+daily-sync exception remains separate.
 
 ## Pull requests
 
