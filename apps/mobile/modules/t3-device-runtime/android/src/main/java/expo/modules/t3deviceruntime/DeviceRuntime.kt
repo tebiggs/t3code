@@ -98,8 +98,11 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   private val libDir = File(context.applicationInfo.nativeLibraryDir)
   val proot = File(libDir, "libproot.so")
   private val loader = File(libDir, "libproot-loader.so")
-  val home = File(context.filesDir, "device-runtime")
-  private val trash = File(context.filesDir, "device-runtime.trash")
+  // filesDir is /data/user/0/..., a symlink to /data/data/.... proot resolves the rootfs but
+  // not PROOT_L2S_DIR, and its faked hard links then point where the guest can't follow.
+  private val filesDir = context.filesDir.canonicalFile
+  val home = File(filesDir, "device-runtime")
+  private val trash = File(filesDir, "device-runtime.trash")
   val rootfs = File(home, "ubuntu")
   private val installedMarker = File(home, "ubuntu.installed")
   private val architecture = ubuntuArchitecture(libDir.name)
