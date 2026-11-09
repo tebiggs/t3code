@@ -33,6 +33,7 @@ const APT_UPGRADE = "apt-get install -y --only-upgrade claude-code";
 const update = makePackageManagedProviderMaintenanceResolver({
   provider: ProviderDriverKind.make("claudeAgent"),
   npmPackageName: "@anthropic-ai/claude-code",
+  mise: { tool: "claude" },
   nativeUpdate: {
     args: ["update"],
     isCommandPath: (commandPath) => {
