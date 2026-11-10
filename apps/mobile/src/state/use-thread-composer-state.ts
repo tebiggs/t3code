@@ -81,7 +81,6 @@ import {
   scheduleUnusedComposerAttachmentCleanup,
   setComposerDraftText,
   setFreshSessionPending,
-  updateComposerDraftSettings,
   useComposerDraft,
   useComposerDraftSettings,
 } from "./use-composer-drafts";
@@ -179,10 +178,6 @@ export function useThreadDraftForThread(input: {
     draftContext: draft.context,
     draftAttachments: draft.attachments,
   };
-}
-
-export function updateThreadDraftModelSelection(threadKey: string, value: ModelSelection): void {
-  updateComposerDraftSettings(threadKey, { modelSelection: value });
 }
 
 export function useThreadComposerState(input: {
