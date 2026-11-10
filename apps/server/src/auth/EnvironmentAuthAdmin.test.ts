@@ -121,6 +121,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
         const startupPhone = yield* startup("192.168.1.20");
         const startupBrowser = yield* startup("127.0.0.1");
         yield* environmentAuth.createPairingLink({ subject: "one-time-token" });
+        yield* environmentAuth.issuePairingCredential({ access: "auto" });
 
         yield* EnvironmentAuth.make.pipe(
           Effect.provide(
@@ -169,6 +170,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
         const caller = yield* environmentAuth.issueSession({ label: "phone" });
         const other = yield* environmentAuth.issueSession({ label: "laptop" });
         const unused = yield* environmentAuth.createPairingLink({ label: "unused" });
+        const approval = yield* environmentAuth.issuePairingCredential({ access: "full-access" });
 
         yield* environmentAuth.revokeOtherAccess(caller.sessionId);
 
@@ -184,6 +186,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
                 deviceType: "unknown",
               },
             ),
+          ),
+        ).toBe(true);
+        expect(
+          yield* Effect.isFailure(
+            environmentAuth.consumeMcpApprovalCode(approval.credential, "full-access"),
           ),
         ).toBe(true);
       }).pipe(Effect.provide(layerEnvironmentAuth())),
@@ -261,6 +268,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
           subject: "one-time-token",
           label: "CI phone",
         });
+        // An app approval code is never listed.
+        yield* environmentAuth.issuePairingCredential({ access: "auto" });
         const listedBeforeRevoke = yield* environmentAuth.listPairingLinks();
         const revoked = yield* environmentAuth.revokePairingLink(created.id);
         const listedAfterRevoke = yield* environmentAuth.listPairingLinks();

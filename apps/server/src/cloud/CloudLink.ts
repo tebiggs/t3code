@@ -1305,6 +1305,10 @@ const make = Effect.gen(function* () {
       ],
       { concurrency: 10 },
     );
+    // The hostname arrives once cloudflared connects, before any check passes.
+    const connector = Option.isSome(endpointRuntimeConfig)
+      ? yield* endpointRuntime.inspectConnector
+      : null;
     // A not-linked check predates the stored tunnel config; the next check replaces it.
     const currentReachability = Option.filter(
       latestReachability,
@@ -1327,6 +1331,7 @@ const make = Effect.gen(function* () {
       ...(Option.isSome(currentReachability) ? { reachability: currentReachability.value } : {}),
       ...(Option.isSome(sharingMode) ? { sharingMode: decodeSharingMode(sharingMode.value) } : {}),
       sharingModeChangePending: Option.isSome(sharingModeChangePending),
+      ...(connector?.hostname ? { tunnelHostname: connector.hostname } : {}),
     } satisfies EnvironmentCloudLinkStateResult;
   });
 
