@@ -188,6 +188,18 @@ jobs:
 
       - name: Install bundle dependencies
         run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+        env:
+          pnpm_config_cache_dir: ${{ runner.temp }}/pnpm-metadata
+
+      # release-desktop.yml downloads pnpm's lockfile check result from this
+      # run. Upstream's release preflight uploads it; this job stands in.
+      - name: Upload dependency verification
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dependency-verification
+          path: ${{ runner.temp }}/pnpm-metadata/lockfile-verified.jsonl
+          retention-days: 1
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.prepare.outputs.version }}"
