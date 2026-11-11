@@ -124,7 +124,9 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --quiet --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$UPSTREAM_TAG"
-          declare -A tests=()
+          # The budget measures agent text spread across many files, and upstream's
+          # check is disabled here, so it always runs.
+          declare -A tests=([apps/server]=" src/provider/AgentContextBudget.test.ts")
           while read -r file; do
             [[ "$file" =~ ^((apps|packages)/[^/]+|scripts)/(.+)$ ]] || continue
             dir="${BASH_REMATCH[1]}"
@@ -142,10 +144,6 @@ jobs:
             done
           done < <(git diff --name-only FETCH_HEAD HEAD)
 
-          if [[ ${#tests[@]} -eq 0 ]]; then
-            echo "The fork changes no tested files."
-            exit 0
-          fi
           for dir in "${!tests[@]}"; do
             package="$(jq -r .name "$dir/package.json")"
             files="$(tr ' ' '\n' <<< "${tests[$dir]}" | sort -u | xargs)"
