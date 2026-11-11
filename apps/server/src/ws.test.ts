@@ -1493,7 +1493,7 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
             sessionId: AuthSessionId.make("worktree-skills-test"),
             subject: "worktree-skills-test",
             method: "browser-session-cookie",
-            scopes: [],
+            scopes: [AuthOrchestrationOperateScope],
           },
           {},
           yield* ServerBrowser.ServerBrowser,
