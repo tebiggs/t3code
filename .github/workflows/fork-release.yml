@@ -451,6 +451,48 @@ jobs:
             --title "T3 Code v${VERSION} (fork)" \
             --notes "$notes"
 
+      # Tells Sail, the app manager on the phone, that a build has landed, so it
+      # checks now and not at its next periodic check. The message names this
+      # repo and carries no build data. The release is already out by this
+      # point, so a failed push must not fail the run.
+      - name: Notify Sail
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        env:
+          SAIL_FCM_KEY: ${{ secrets.SAIL_FCM_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SAIL_FCM_KEY:-}" ]; then
+            echo "No SAIL_FCM_KEY secret, so no push."
+            exit 0
+          fi
+          field() { printf '%s' "$SAIL_FCM_KEY" | jq -er ".$1"; }
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          token_uri="$(field token_uri)"
+          project_id="$(field project_id)"
+          client_email="$(field client_email)"
+          now="$(date +%s)"
+          claims="$(jq -nc --arg iss "$client_email" --arg aud "$token_uri" --argjson now "$now" \
+            '{iss: $iss, scope: "https://www.googleapis.com/auth/firebase.messaging", aud: $aud, iat: $now, exp: ($now + 600)}')"
+          unsigned="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url).$(printf '%s' "$claims" | b64url)"
+          signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign <(field private_key) | b64url)"
+          # The assertion and the token go to curl through pipes, never as
+          # arguments, where another process could read them. printf is a
+          # shell builtin, so it has no argument list of its own. Both values
+          # are base64url, so the form body needs no further encoding.
+          access_token="$(printf 'grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Ajwt-bearer&assertion=%s.%s' "$unsigned" "$signature" \
+            | curl -fsS --max-time 20 --data-binary @- "$token_uri" | jq -er .access_token)"
+          echo "::add-mask::${access_token}"
+          message="$(jq -nc --arg source "github:${GH_REPO}" \
+            '{message: {topic: "builds", data: {source: $source}, android: {priority: "high"}}}')"
+          curl -fsS --max-time 20 -o /dev/null \
+            -H @<(printf 'Authorization: Bearer %s\n' "$access_token") \
+            -H 'Content-Type: application/json' \
+            -d "$message" \
+            "https://fcm.googleapis.com/v1/projects/${project_id}/messages:send"
+          echo "Told Sail about github:${GH_REPO}."
+
       # Keeps the newest few so a client mid-update still finds its files.
       - name: Prune old releases
         if: github.ref == 'refs/heads/main'
