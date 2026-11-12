@@ -79,6 +79,8 @@ type Delivery =
     }
   | { readonly kind: "replay"; readonly deviceId: string };
 
+const SEND_RETRY_DELAYS = ["1 second", "4 seconds", "16 seconds"] as const;
+
 const rowKey = (environmentId: string, threadId: string) =>
   JSON.stringify([environmentId, threadId]);
 
@@ -141,6 +143,27 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // Ingest has already answered its peer, so a send FCM could not take is retried here, and only
+  // while the registration still holds the token it was meant for.
+  const sendWithRetries = Effect.fn("PushHost.sendWithRetries")(function* (
+    device: PushHostStore.PushDevice,
+    input: { readonly data: Record<string, string>; readonly alert: boolean },
+  ) {
+    for (let attempt = 0; ; attempt++) {
+      const result = yield* sendTo(device, input).pipe(Effect.result);
+      if (result._tag === "Success") return result.success;
+      const error = result.failure;
+      const delay = SEND_RETRY_DELAYS[attempt];
+      const retryable = error.status === null || error.status === 429 || error.status >= 500;
+      if (!retryable || delay === undefined) return yield* error;
+      yield* Effect.sleep(delay);
+      const current = (yield* Ref.get(stateRef)).devices.find(
+        (candidate) => candidate.deviceId === device.deviceId,
+      );
+      if (current?.token !== device.token) return yield* error;
+    }
+  });
+
   // Mirrors FcmDeliveries.process in infra/relay, with every environment allowed to alert.
   const deliver = Effect.fn("PushHost.deliver")(function* (delivery: Delivery) {
     const state = yield* Ref.get(stateRef);
@@ -192,7 +215,7 @@ const make = Effect.gen(function* () {
     // Hash the full stable group identity to stay within the payload budget.
     if (alert) data.alert_id = yield* sha256Hex(alert.alert_id);
     const sentAt = DateTime.formatIso(now);
-    const result = yield* sendTo(device, { data, alert: alert !== null }).pipe(
+    const result = yield* sendWithRetries(device, { data, alert: alert !== null }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("Push host could not send to a device", {
           deviceId: device.deviceId,

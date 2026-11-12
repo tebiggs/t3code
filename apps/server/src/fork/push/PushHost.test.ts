@@ -4,7 +4,9 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import { FcmClientError, type FcmSend, PushHostFcm } from "./fcm.ts";
 import * as PushHost from "./PushHost.ts";
@@ -227,6 +229,52 @@ describe("PushHost", () => {
         );
       }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
     });
+  });
+
+  it.effect("retries a send FCM could not take, then gives up after a bounded number", () => {
+    const sent: Sent[] = [];
+    let failures = 0;
+    const send: FcmSend = (input) =>
+      failures > 0
+        ? Effect.sync(() => void failures--).pipe(
+            Effect.andThen(Effect.fail(new FcmClientError({ operation: "send", status: 503 }))),
+          )
+        : Effect.sync(() => {
+            sent.push(input);
+            return { unregistered: false };
+          });
+    const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+    return Effect.gen(function* () {
+      const host = yield* PushHost.PushHost;
+      yield* host.registerDevice(registration);
+      yield* host.drain;
+      failures = 2;
+      yield* host.ingest({
+        environmentId: waiting.environmentId,
+        threadId: waiting.threadId,
+        state: waiting,
+      });
+      const drained = yield* Effect.forkChild(host.drain);
+      yield* TestClock.adjust("1 minute");
+      yield* Fiber.join(drained);
+      assert.deepStrictEqual(
+        sent.map((message) => message.alert),
+        [false, true],
+      );
+      assert.isNull((yield* host.status).devices[0]?.lastError ?? null);
+
+      failures = 100;
+      yield* host.ingest({
+        environmentId: waiting.environmentId,
+        threadId: waiting.threadId,
+        state: null,
+      });
+      const gaveUp = yield* Effect.forkChild(host.drain);
+      yield* TestClock.adjust("10 minutes");
+      yield* Fiber.join(gaveUp);
+      assert.isTrue(failures > 90);
+      assert.strictEqual((yield* host.status).devices[0]?.lastError, "FCM send failed (503).");
+    }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
   });
 
   it.effect("is off without an FCM key", () =>
