@@ -46,6 +46,7 @@ import {
   startForkPushRegistration,
   stopForkPush,
   subscribeForkPushRegistrationState,
+  syncForkPushHosts,
 } from "./registrar";
 
 const HOST = EnvironmentId.make("env-host");
@@ -131,5 +132,28 @@ describe("fork push registrar", () => {
     await resumeForkPush();
     expect(registered).toEqual(["token-3"]);
     stop();
+  });
+
+  it("registers with one push host, the same one each time, and fails over when it leaves", async () => {
+    mocks.token = () => Promise.resolve({ type: "android", data: "token-1" });
+    const first = EnvironmentId.make("env-a");
+    const second = EnvironmentId.make("env-b");
+    const calls: string[] = [];
+    let onRegister = () => {};
+    const nextRegistration = () => new Promise<void>((resolve) => (onRegister = resolve));
+    const register = (environmentId: EnvironmentId, input: { readonly userId: string }) => {
+      calls.push(`${environmentId} ${input.userId}`);
+      onRegister();
+      return Promise.resolve({ ok: true as const });
+    };
+    let registered = nextRegistration();
+    syncForkPushHosts([second, first], register);
+    await registered;
+    registered = nextRegistration();
+    syncForkPushHosts([second], register);
+    await registered;
+    expect(calls).toEqual(["env-a t3-fork:env-a", "env-b t3-fork:env-b"]);
+    syncForkPushHosts([], register);
+    expect(getForkPushRegistrationState().kind).toBe("idle");
   });
 });

@@ -175,6 +175,38 @@ export function startForkPushRegistration(
   };
 }
 
+let selection: { readonly hostEnvironmentId: EnvironmentId; readonly stop: () => void } | null =
+  null;
+
+/**
+ * Registers with one of the connected push hosts: the same one while it stays, so a second host
+ * never competes with it, and the next one when it leaves.
+ */
+export function syncForkPushHosts(
+  hostEnvironmentIds: ReadonlyArray<EnvironmentId>,
+  register: (
+    hostEnvironmentId: EnvironmentId,
+    input: ForkPushDeviceRegistration,
+  ) => ReturnType<Register>,
+): void {
+  const current = selection?.hostEnvironmentId;
+  const chosen =
+    current !== undefined && hostEnvironmentIds.includes(current)
+      ? current
+      : ([...hostEnvironmentIds].sort()[0] ?? null);
+  if (chosen === (current ?? null)) return;
+  selection?.stop();
+  selection = null;
+  if (chosen === null) {
+    setState({ kind: "idle" });
+    return;
+  }
+  selection = {
+    hostEnvironmentId: chosen,
+    stop: startForkPushRegistration(chosen, (input) => register(chosen, input)),
+  };
+}
+
 /** Registers again now, after the user turned notifications back on or granted permission. */
 export async function resumeForkPush(): Promise<void> {
   await saveStopped(false);
