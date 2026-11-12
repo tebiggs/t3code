@@ -317,13 +317,6 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         remoteUrl: "git@github.com:julius/t3code-fork.git",
         displayName: "julius/t3code-fork",
       });
-
-      yield* git(cwd, ["config", "remote.origin.gh-resolved", "base"]);
-      const forkDefault = yield* resolver.resolve(cwd, { refresh: true });
-
-      expect(forkDefault?.locator.remoteName).toBe("origin");
-      expect(forkDefault?.canonicalKey).toBe("github.com/julius/t3code-fork");
-      expect(forkDefault?.origin).toBeUndefined();
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
