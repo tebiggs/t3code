@@ -41,13 +41,13 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import {
-  isAgentActivityPublishingEnabledValue,
   PUBLISH_AGENT_ACTIVITY_SECRET,
   RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
   RELAY_ISSUER_SECRET,
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import { EnvironmentSigningKey } from "../cloud/environmentKeys.ts";
+import * as ForkPush from "../fork/push/ForkPushTarget.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -413,6 +413,7 @@ export const make = Effect.gen(function* () {
   // its first alert time through parent renames, relinks and the parent's own requests.
   const childAlertByThread = new Map<ThreadId, SubagentAlert>();
   const subagentRequests = new Map<ThreadId, SubagentRequest>();
+  const forkPush = yield* ForkPush.ForkPushTarget;
 
   const readSecretString = (name: string) =>
     secrets
@@ -424,6 +425,8 @@ export const make = Effect.gen(function* () {
       );
 
   const readRelayConfig = Effect.gen(function* () {
+    const forkRoute = yield* forkPush.resolve;
+    if (forkRoute !== null) return forkRoute;
     const [url, issuer, environmentCredential] = yield* Effect.all([
       readSecretString(RELAY_URL_SECRET),
       readSecretString(RELAY_ISSUER_SECRET),
@@ -434,9 +437,10 @@ export const make = Effect.gen(function* () {
       : null;
   });
 
-  const readPublishAgentActivityEnabled = readSecretString(PUBLISH_AGENT_ACTIVITY_SECRET).pipe(
-    Effect.map(isAgentActivityPublishingEnabledValue),
-  );
+  const readPublishAgentActivityEnabled = Effect.all([
+    readSecretString(PUBLISH_AGENT_ACTIVITY_SECRET),
+    forkPush.resolve,
+  ]).pipe(Effect.map(([toggle, forkRoute]) => ForkPush.publishEnabled(toggle, forkRoute)));
 
   const makeRelayClient = (relayConfig: {
     readonly url: string;
@@ -511,6 +515,9 @@ export const make = Effect.gen(function* () {
       readonly state: RelayAgentActivityState | null;
       readonly reason: string;
     }) {
+      if ("deliver" in relayConfig && relayConfig.deliver !== undefined) {
+        return yield* relayConfig.deliver({ environmentId, threadId, state: input.state });
+      }
       if (cachedRelayClient === undefined) {
         cachedRelayClient = yield* makeRelayClient(relayConfig);
       }
@@ -822,9 +829,9 @@ export const make = Effect.gen(function* () {
   });
 
   const publishActiveThreadsUnsafe = Effect.gen(function* () {
-    const relayUrl = yield* readSecretString(RELAY_URL_SECRET).pipe(
-      Effect.orElseSucceed(() => null),
-    );
+    const relayUrl =
+      (yield* forkPush.resolve)?.url ??
+      (yield* readSecretString(RELAY_URL_SECRET).pipe(Effect.orElseSucceed(() => null)));
     if (!relayUrl) {
       yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
       return "unlinked" as const;
