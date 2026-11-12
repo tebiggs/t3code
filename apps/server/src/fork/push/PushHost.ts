@@ -179,6 +179,9 @@ const make = Effect.gen(function* () {
       nowMs,
     });
     const previousAggregate = device.lastAggregate;
+    // A deletion repaints the card but keeps the baseline, or it would swallow another thread's
+    // pending transition that it happened to read.
+    const acknowledge = jobState !== null || delivery.kind === "replay" || aggregate === null;
     let alert: ReturnType<typeof androidAlertForState | typeof androidAlertForAggregate> = null;
     if (jobState && preferences.notificationsEnabled) {
       const row = state.rows.find(
@@ -244,7 +247,11 @@ const make = Effect.gen(function* () {
     });
     yield* updateRegistration(device, (current) => ({
       ...current,
-      lastAggregate: preferences.liveActivitiesEnabled ? aggregate : null,
+      lastAggregate: !acknowledge
+        ? current.lastAggregate
+        : preferences.liveActivitiesEnabled
+          ? aggregate
+          : null,
       lastSentAt: sentAt,
       lastError: null,
     }));

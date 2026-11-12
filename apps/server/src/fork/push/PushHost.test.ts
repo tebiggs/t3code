@@ -277,6 +277,55 @@ describe("PushHost", () => {
     }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
   });
 
+  it.effect.each(["completed", "waiting_for_approval", "waiting_for_input", "failed"] as const)(
+    "deleting one thread preserves another thread's %s alert",
+    (phase) => {
+      const { sent, fcm } = harness();
+      const second: RelayAgentActivityState = {
+        ...running,
+        threadId: ThreadId.make("thread-2"),
+        threadTitle: "Second",
+        deepLink: "/threads/env-desktop/thread-2",
+      };
+      const changed = { ...running, phase, updatedAt: "1970-01-01T00:00:02.000Z" };
+      return Effect.gen(function* () {
+        const host = yield* PushHost.PushHost;
+        yield* host.registerDevice(registration);
+        yield* host.ingest({
+          environmentId: running.environmentId,
+          threadId: running.threadId,
+          state: running,
+        });
+        yield* host.ingest({
+          environmentId: second.environmentId,
+          threadId: second.threadId,
+          state: second,
+        });
+        yield* host.drain;
+        // The deletion is queued first but already reads the other thread's change.
+        yield* host.ingest({
+          environmentId: second.environmentId,
+          threadId: second.threadId,
+          state: null,
+        });
+        yield* host.ingest({
+          environmentId: changed.environmentId,
+          threadId: changed.threadId,
+          state: changed,
+        });
+        yield* host.drain;
+        assert.strictEqual(sent.filter((message) => message.alert).length, 1);
+        yield* host.ingest({
+          environmentId: changed.environmentId,
+          threadId: changed.threadId,
+          state: changed,
+        });
+        yield* host.drain;
+        assert.strictEqual(sent.filter((message) => message.alert).length, 1);
+      }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+    },
+  );
+
   it.effect("is off without an FCM key", () =>
     Effect.gen(function* () {
       const host = yield* PushHost.PushHost;
