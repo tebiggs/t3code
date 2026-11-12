@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -191,6 +192,41 @@ describe("PushHost", () => {
         ["false", "true", "false"],
       );
     }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+  });
+
+  it.effect("keeps a token registered while the previous token's send is refused", () => {
+    const sent: Sent[] = [];
+    return Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const send: FcmSend = (input) =>
+        input.token === "token-a"
+          ? Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as({ unregistered: true }),
+            )
+          : Effect.sync(() => {
+              sent.push(input);
+              return { unregistered: false };
+            });
+      const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+      yield* Effect.gen(function* () {
+        const host = yield* PushHost.PushHost;
+        yield* host.registerDevice({ ...registration, token: "token-a" });
+        yield* Deferred.await(started);
+        yield* host.registerDevice({ ...registration, token: "token-b" });
+        yield* Deferred.succeed(release, undefined);
+        yield* host.drain;
+        assert.deepStrictEqual(
+          (yield* host.status).devices.map((device) => device.deviceId),
+          ["device-1"],
+        );
+        assert.deepStrictEqual(
+          sent.map((message) => message.token),
+          ["token-b"],
+        );
+      }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+    });
   });
 
   it.effect("is off without an FCM key", () =>

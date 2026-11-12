@@ -119,6 +119,15 @@ const make = Effect.gen(function* () {
       }),
     }));
 
+  // A send answers for the token it went to; a registration replaced meanwhile keeps its own state.
+  const updateRegistration = (
+    sentTo: PushHostStore.PushDevice,
+    f: (device: PushHostStore.PushDevice) => PushHostStore.PushDevice | null,
+  ) =>
+    updateDevice(sentTo.deviceId, (current) =>
+      current.token === sentTo.token ? f(current) : current,
+    );
+
   const sendTo = Effect.fn("PushHost.sendTo")(function* (
     device: PushHostStore.PushDevice,
     input: { readonly data: Record<string, string>; readonly alert: boolean },
@@ -191,10 +200,7 @@ const make = Effect.gen(function* () {
           error: error.message,
         }).pipe(
           Effect.andThen(
-            updateDevice(device.deviceId, (current) => ({
-              ...current,
-              lastError: error.message,
-            })),
+            updateRegistration(device, (current) => ({ ...current, lastError: error.message })),
           ),
           Effect.as(null),
         ),
@@ -205,7 +211,7 @@ const make = Effect.gen(function* () {
       yield* Effect.logInfo("Push host dropped a device FCM no longer knows", {
         deviceId: device.deviceId,
       });
-      yield* updateDevice(device.deviceId, () => null);
+      yield* updateRegistration(device, () => null);
       return yield* persist;
     }
     yield* Effect.logInfo("Push host sent agent activity", {
@@ -213,7 +219,7 @@ const make = Effect.gen(function* () {
       alert: alert !== null,
       activeCount: displayed?.activeCount ?? 0,
     });
-    yield* updateDevice(device.deviceId, (current) => ({
+    yield* updateRegistration(device, (current) => ({
       ...current,
       lastAggregate: preferences.liveActivitiesEnabled ? aggregate : null,
       lastSentAt: sentAt,
@@ -316,7 +322,7 @@ const make = Effect.gen(function* () {
         },
       }).pipe(Effect.mapError(describeError));
       if (result.unregistered) {
-        yield* updateDevice(deviceId, () => null);
+        yield* updateRegistration(device, () => null);
         yield* persist;
         return yield* Effect.fail("FCM no longer knows this device. Register it again.");
       }
