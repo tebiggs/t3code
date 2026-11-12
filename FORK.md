@@ -71,3 +71,11 @@ adds the feature, and remove it in the PR that drops the feature.
 - #30 A checkout's pull requests and repository come from the remote `gh repo set-default`
   chose, ahead of `upstream`, so a fork lists its own PRs:
   `apps/server/src/project/RepositoryIdentityResolver.ts` (`parseGhDefaultRemote`).
+- (PR pending) A server started with an FCM service account key is the push host: it sends the
+  fork's Android app its notifications and ongoing activity card, for itself and for environments
+  linked to it, with upstream's relay payloads; the app registers there and shows its status in
+  Settings → Notifications: `apps/server/src/fork/push/`,
+  `apps/server/src/relay/AgentAwarenessRelay.ts` (`ForkPushTarget`),
+  `packages/contracts/src/forkPush.ts`, `apps/mobile/src/features/fork-push/`,
+  `apps/mobile/src/features/agent-awareness/androidNotifications.ts`
+  (`forkOwnsAndroidAgentNotifications`), `docs/user/push-host.md`.
