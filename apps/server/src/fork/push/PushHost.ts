@@ -198,17 +198,25 @@ const make = Effect.gen(function* () {
     // pending transition that it happened to read.
     const acknowledge = jobState !== null || delivery.kind === "replay" || aggregate === null;
     let alert: ReturnType<typeof androidAlertForState | typeof androidAlertForAggregate> = null;
-    if (jobState && preferences.notificationsEnabled) {
-      const row = state.rows.find(
-        (candidate) =>
-          candidate.environmentId === jobState.environmentId &&
-          candidate.threadId === jobState.threadId,
-      );
+    // A replay moves the baseline too, so it alerts on what it acknowledges: it may run before a
+    // thread's pending delivery and would otherwise swallow that thread's transition.
+    if ((jobState !== null || delivery.kind === "replay") && preferences.notificationsEnabled) {
+      const row =
+        jobState === null
+          ? undefined
+          : state.rows.find(
+              (candidate) =>
+                candidate.environmentId === jobState.environmentId &&
+                candidate.threadId === jobState.threadId,
+            );
       const current =
-        row !== undefined && row.phase === jobState.phase && row.updatedAt === jobState.updatedAt
+        jobState !== null &&
+        row !== undefined &&
+        row.phase === jobState.phase &&
+        row.updatedAt === jobState.updatedAt
           ? row
           : null;
-      if (!previousAggregate && current === null) return;
+      if (jobState !== null && !previousAggregate && current === null) return;
       if (preferences.liveActivitiesEnabled && previousAggregate && aggregate) {
         alert = androidAlertForAggregate({
           previousAggregate,

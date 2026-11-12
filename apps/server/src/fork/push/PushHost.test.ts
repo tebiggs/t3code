@@ -496,6 +496,51 @@ describe("PushHost", () => {
     });
   });
 
+  it.effect("a replay that runs before a thread's pending delivery still alerts", () => {
+    const sent: Sent[] = [];
+    return Effect.gen(function* () {
+      const busy = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let blocked = false;
+      const send: FcmSend = (input) =>
+        Effect.gen(function* () {
+          if (blocked) {
+            blocked = false;
+            yield* Deferred.succeed(busy, undefined);
+            yield* Deferred.await(release);
+          }
+          sent.push(input);
+          return { unregistered: false };
+        });
+      const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+      yield* Effect.gen(function* () {
+        const host = yield* PushHost.PushHost;
+        yield* host.registerDevice(registration);
+        yield* host.ingest({
+          environmentId: running.environmentId,
+          threadId: running.threadId,
+          state: running,
+        });
+        yield* host.drain;
+        blocked = true;
+        yield* host.registerDevice(registration);
+        yield* Deferred.await(busy);
+        yield* host.ingest({
+          environmentId: waiting.environmentId,
+          threadId: waiting.threadId,
+          state: waiting,
+        });
+        yield* host.registerDevice(registration);
+        yield* Deferred.succeed(release, undefined);
+        yield* host.drain;
+        assert.deepStrictEqual(
+          sent.filter((message) => message.alert).map((message) => message.data.alert_path),
+          ["/threads/env-desktop/thread-1"],
+        );
+      }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+    });
+  });
+
   it.effect("forgets peers not heard from in 30 days", () => {
     const { fcm } = harness();
     return Effect.gen(function* () {
