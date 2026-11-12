@@ -74,7 +74,7 @@ adds the feature, and remove it in the PR that drops the feature.
 - #32 The Android APK is the fork's own app: an ember icon, plus the package name, app name, release
   keystore and Firebase config from repository variables and secrets when they are set:
   `apps/mobile/app.config.ts` (`T3CODE_ANDROID_PACKAGE`), `.github/workflows/fork-release.yml`.
-- (PR pending) A server started with an FCM service account key is the push host: it sends the
+- #45 A server started with an FCM service account key is the push host: it sends the
   fork's Android app its notifications and ongoing activity card, for itself and for environments
   linked to it, with upstream's relay payloads; the app registers there and shows its status in
   Settings → Notifications: `apps/server/src/fork/push/`,
