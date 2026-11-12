@@ -477,15 +477,17 @@ jobs:
             '{iss: $iss, scope: "https://www.googleapis.com/auth/firebase.messaging", aud: $aud, iat: $now, exp: ($now + 600)}')"
           unsigned="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url).$(printf '%s' "$claims" | b64url)"
           signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign <(field private_key) | b64url)"
-          access_token="$(curl -fsS --max-time 20 \
-            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer' \
-            --data-urlencode "assertion=${unsigned}.${signature}" \
-            "$token_uri" | jq -er .access_token)"
+          # The assertion and the token go to curl through pipes, never as
+          # arguments, where another process could read them. printf is a
+          # shell builtin, so it has no argument list of its own. Both values
+          # are base64url, so the form body needs no further encoding.
+          access_token="$(printf 'grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Ajwt-bearer&assertion=%s.%s' "$unsigned" "$signature" \
+            | curl -fsS --max-time 20 --data-binary @- "$token_uri" | jq -er .access_token)"
           echo "::add-mask::${access_token}"
           message="$(jq -nc --arg source "github:${GH_REPO}" \
             '{message: {topic: "builds", data: {source: $source}, android: {priority: "high"}}}')"
           curl -fsS --max-time 20 -o /dev/null \
-            -H "Authorization: Bearer ${access_token}" \
+            -H @<(printf 'Authorization: Bearer %s\n' "$access_token") \
             -H 'Content-Type: application/json' \
             -d "$message" \
             "https://fcm.googleapis.com/v1/projects/${project_id}/messages:send"
