@@ -36,7 +36,10 @@ const listeners = new Set<() => void>();
 let active: {
   readonly hostEnvironmentId: EnvironmentId;
   readonly run: () => Promise<void>;
+  readonly settled: () => Promise<void>;
 } | null = null;
+/** Bumped by Stop; an attempt started before it gives up at its next step. */
+let stopGeneration = 0;
 
 function setState(next: ForkPushRegistrationState) {
   state = next;
@@ -84,6 +87,8 @@ export function startForkPushRegistration(
   let registered: { readonly key: string; readonly at: number } | null = null;
 
   const attempt = async (observedToken: string | null) => {
+    const generation = stopGeneration;
+    const superseded = () => disposed || generation !== stopGeneration;
     if (await loadStopped()) {
       registered = null;
       setState({ kind: "stopped", hostEnvironmentId });
@@ -106,6 +111,7 @@ export function startForkPushRegistration(
     const userId = forkPushUserId(hostEnvironmentId);
     const key = JSON.stringify([token, deviceId, ongoing]);
     if (registered?.key === key && Date.now() - registered.at < REFRESH_AFTER_MS) return;
+    if (superseded()) return;
     claimAndroidAgentNotifications(deviceId, userId, ongoing);
     setState({ kind: "registering", hostEnvironmentId });
     const result = await register({
@@ -123,7 +129,7 @@ export function startForkPushRegistration(
         notifyOnFailure: true,
       },
     });
-    if (disposed) return;
+    if (superseded()) return;
     if (result.ok) {
       registered = { key, at: Date.now() };
       setState({ kind: "registered", hostEnvironmentId, deviceId });
@@ -158,7 +164,7 @@ export function startForkPushRegistration(
   const appStateSubscription = AppState.addEventListener("change", (next) => {
     if (next === "active") void run();
   });
-  active = { hostEnvironmentId, run: () => run() };
+  active = { hostEnvironmentId, run: () => run(), settled: () => inFlight ?? Promise.resolve() };
   void run();
 
   return () => {
@@ -178,7 +184,10 @@ export async function resumeForkPush(): Promise<void> {
 /** Stops push-host notifications on this phone until the user turns them back on. */
 export async function stopForkPush(unregister: (deviceId: string) => Promise<void>) {
   const hostEnvironmentId = active?.hostEnvironmentId ?? null;
+  stopGeneration++;
   await saveStopped(true);
+  // A registration already sent finishes first, so the unregistration below comes after it.
+  await active?.settled();
   const deviceId = await loadOrCreateAgentAwarenessDeviceId();
   releaseAndroidAgentNotifications();
   await unregister(deviceId);

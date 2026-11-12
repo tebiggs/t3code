@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   secureStore: new Map<string, string>(),
   tokenListeners: [] as Array<(token: { type: string; data: string }) => void>,
   native: { configure: vi.fn(), clear: vi.fn() },
+  token: () => Promise.resolve({ type: "android", data: "token-1" }),
 }));
 
 vi.mock("expo-constants", () => ({
@@ -25,7 +26,7 @@ vi.mock("expo-secure-store", () => ({
 }));
 vi.mock("expo-notifications", () => ({
   getPermissionsAsync: () => Promise.resolve({ granted: true }),
-  getDevicePushTokenAsync: () => Promise.resolve({ type: "android", data: "token-1" }),
+  getDevicePushTokenAsync: () => mocks.token(),
   addPushTokenListener: (listener: (token: { type: string; data: string }) => void) => {
     mocks.tokenListeners.push(listener);
     return { remove: () => {} };
@@ -101,6 +102,34 @@ describe("fork push registrar", () => {
     await resumeForkPush();
     expect(getForkPushRegistrationState().kind).toBe("registered");
     expect(registered).toHaveLength(3);
+    stop();
+  });
+
+  it("lets a stop pressed during a pending registration win", async () => {
+    mocks.native.configure.mockClear();
+    let tokenRequested = () => {};
+    const requested = new Promise<void>((resolve) => (tokenRequested = resolve));
+    let releaseToken = (_token: { type: string; data: string }) => {};
+    mocks.token = () => {
+      tokenRequested();
+      return new Promise((resolve) => (releaseToken = resolve));
+    };
+    const registered: string[] = [];
+    const stop = startForkPushRegistration(HOST, (input) => {
+      registered.push(input.token);
+      return Promise.resolve({ ok: true });
+    });
+    await requested;
+    const stopping = stopForkPush(() => Promise.resolve());
+    releaseToken({ type: "android", data: "token-3" });
+    await stopping;
+    expect(registered).toEqual([]);
+    expect(mocks.native.configure).not.toHaveBeenCalled();
+    expect(forkOwnsAndroidAgentNotifications()).toBe(false);
+    expect(getForkPushRegistrationState().kind).toBe("stopped");
+    mocks.token = () => Promise.resolve({ type: "android", data: "token-3" });
+    await resumeForkPush();
+    expect(registered).toEqual(["token-3"]);
     stop();
   });
 });
