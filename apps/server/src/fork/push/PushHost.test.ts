@@ -326,6 +326,24 @@ describe("PushHost", () => {
     },
   );
 
+  it.effect("forgets peers not heard from in 30 days", () => {
+    const { fcm } = harness();
+    return Effect.gen(function* () {
+      const host = yield* PushHost.PushHost;
+      yield* host.ingest({ environmentId: "env-gone", threadId: "thread", state: null });
+      yield* TestClock.adjust("31 days");
+      yield* host.ingest({
+        environmentId: running.environmentId,
+        threadId: running.threadId,
+        state: null,
+      });
+      assert.deepStrictEqual(
+        (yield* host.status).peers.map((peer) => peer.environmentId),
+        ["env-desktop"],
+      );
+    }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+  });
+
   it.effect("is off without an FCM key", () =>
     Effect.gen(function* () {
       const host = yield* PushHost.PushHost;

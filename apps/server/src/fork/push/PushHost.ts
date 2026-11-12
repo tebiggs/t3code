@@ -79,6 +79,8 @@ type Delivery =
     }
   | { readonly kind: "replay"; readonly deviceId: string };
 
+/** A peer silent this long is most likely gone, so it leaves the status. */
+const PEER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SEND_RETRY_DELAYS = ["1 second", "4 seconds", "16 seconds"] as const;
 
 const rowKey = (environmentId: string, threadId: string) =>
@@ -273,7 +275,11 @@ const make = Effect.gen(function* () {
         ...(input.state === null ? [] : [input.state]),
       ],
       peers: [
-        ...current.peers.filter((peer) => peer.environmentId !== input.environmentId),
+        ...current.peers.filter(
+          (peer) =>
+            peer.environmentId !== input.environmentId &&
+            now.epochMilliseconds - Date.parse(peer.lastHeardAt) <= PEER_RETENTION_MS,
+        ),
         { environmentId: input.environmentId, lastHeardAt: DateTime.formatIso(now) },
       ],
     }));
