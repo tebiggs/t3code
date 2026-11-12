@@ -25,6 +25,7 @@ import {
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2LinkedSender,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
@@ -55,12 +56,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
+import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
@@ -143,6 +146,7 @@ export interface ThreadManagementSendInput {
   readonly messageId: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
+  readonly linkedSender?: OrchestrationV2LinkedSender;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
@@ -485,6 +489,7 @@ export interface ThreadManagementServiceShape {
     ThreadManagementBackgroundWaitError
   >;
   readonly stopDelegatedTasks: (input: {
+    readonly remoteDispatch?: Orchestrator.OrchestratorV2["Service"]["dispatch"];
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
@@ -494,6 +499,7 @@ export interface ThreadManagementServiceShape {
   >;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
+  readonly cancelDelegatedTask: Orchestrator.OrchestratorV2["Service"]["cancelDelegatedTask"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
   readonly streamStoredEvents: Orchestrator.OrchestratorV2["Service"]["streamStoredEvents"];
   readonly streamStoredEventsFrom: Orchestrator.OrchestratorV2["Service"]["streamStoredEventsFrom"];
@@ -678,6 +684,8 @@ const make = Effect.gen(function* () {
     ensureProjectionTranscript(threadId).pipe(
       Effect.andThen(orchestrator.getThreadSnapshot(threadId)),
     );
+  // Full-thread exports can otherwise hold every SQLite reader and stall ordinary thread opens.
+  const transcriptExportPermits = yield* Semaphore.make(2);
   const getThreadTranscript = Effect.fn("orchestrationV2.threadManagement.getThreadTranscript")(
     function* (threadId: ThreadId) {
       const { projection } = yield* getThreadSnapshot(threadId);
@@ -703,6 +711,7 @@ const make = Effect.gen(function* () {
       }
       return transcript;
     },
+    transcriptExportPermits.withPermits(1),
   );
   const getThreadSnapshotWindow: ThreadManagementServiceShape["getThreadSnapshotWindow"] = (
     threadId,
@@ -861,6 +870,7 @@ const make = Effect.gen(function* () {
       messageId: input.messageId,
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+      ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
       text: input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
@@ -1058,12 +1068,22 @@ const make = Effect.gen(function* () {
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
     "orchestrationV2.threadManagement.settleAfterRun",
   )(function* (input) {
+    const requestedAt = yield* DateTime.now;
     const { run } = yield* waitForThread({ ...input, timeoutMs: SETTLE_AFTER_RUN_WAIT_MS });
     if (run?.status !== "completed") return;
     const afterSequence = yield* orchestrator.getThreadEventSequence(input.threadId);
     const trySettle = Effect.gen(function* () {
       const sequence = yield* orchestrator.getThreadEventSequence(input.threadId);
       const records = yield* getProjectThreadRecords(input, ["runs", "providerThreads"]);
+      // Settling ends every watch; one the agent started after asking to settle must outlive it.
+      if (
+        threadPullRequestsOf(records.thread).some(
+          (link) =>
+            link.watch !== undefined &&
+            !DateTime.isLessThan(DateTime.makeUnsafe(link.watch.startedAt), requestedAt),
+        )
+      )
+        return true;
       const following = records.runs.filter((candidate) => candidate.ordinal > run.ordinal);
       if (following.length > 0) {
         const { messages } = yield* getProjectThreadRecords(input, ["messages"], {
@@ -1509,7 +1529,7 @@ const make = Effect.gen(function* () {
         // One with its result keeps it, but its thread there may run follow-up work.
         if (task.remoteChild === undefined) continue;
         const commandId = CommandId.make(`${input.commandId}:stop:${task.id}`);
-        yield* dispatch(
+        yield* (input.remoteDispatch ?? dispatch)(
           task.result === null
             ? {
                 type: "delegated_task.remote.complete",
@@ -1550,7 +1570,9 @@ const make = Effect.gen(function* () {
         stopDelegatedTasks: false,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       }).pipe(
-        Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
+        Effect.andThen(
+          stopDelegatedTasks({ threadId, commandId: input.commandId, reason: input.reason }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Unable to stop a delegated task", {
             parentThreadId: input.threadId,
@@ -1655,6 +1677,7 @@ const make = Effect.gen(function* () {
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
+    cancelDelegatedTask: orchestrator.cancelDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
     streamStoredEvents: orchestrator.streamStoredEvents,
     streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,

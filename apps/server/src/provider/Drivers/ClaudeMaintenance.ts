@@ -36,14 +36,17 @@ const update = makePackageManagedProviderMaintenanceResolver({
   mise: { tool: "claude" },
   nativeUpdate: {
     args: ["update"],
+    // On Unix the native launcher links into ${XDG_DATA_HOME:-~/.local/share}/claude/versions; a
+    // plain file at ~/.local/bin/claude is a wrapper whose owner `claude update` cannot see.
     isCommandPath: (commandPath) => {
       const normalized = normalizeCommandPath(commandPath);
       return (
-        normalized.endsWith("/.local/bin/claude") ||
         normalized.endsWith("/.local/bin/claude.exe") ||
-        normalized.includes("/.local/share/claude/")
+        normalized.includes("/.local/share/claude/") ||
+        normalized.includes("/claude/versions/")
       );
     },
+    requiresCommandPath: true,
   },
 });
 
@@ -104,8 +107,16 @@ const readAptInstall = Effect.fn("ClaudeMaintenance.readAptInstall")(function* (
 const resolveClaudeMaintenance = Effect.fn("ClaudeMaintenance.resolve")(function* (
   capabilities: ProviderMaintenanceCapabilities,
 ) {
-  if (capabilities.update?.lockKey !== "claudeAgent-native") return capabilities;
-  const apt = yield* readAptInstall(capabilities.update.executable);
+  const native = capabilities.update?.lockKey === "claudeAgent-native";
+  // Apt's /usr/bin/claude is outside the native updater's paths, so it arrives manual-only.
+  const executable = native
+    ? capabilities.update?.executable
+    : capabilities.update === null
+      ? capabilities.installPath
+      : undefined;
+  if (executable === undefined) return capabilities;
+  const apt = yield* readAptInstall(executable);
+  if (apt === null && !native) return capabilities;
   const channel = apt?.channel ?? (yield* readUpdateChannel());
   const client = yield* HttpClient.HttpClient;
   const url = `${NATIVE_RELEASES}/${channel}`;

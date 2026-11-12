@@ -358,23 +358,53 @@ jobs:
       # upstream's preview bundles. The release version replaces upstream's
       # store version so Obtainium can match the APK to its release tag. It
       # goes in .env because the Gradle bundling step reads app.config.ts again.
+      # The fork ships its own app: the ember icon always, and the package name,
+      # app name and Firebase config from repository settings when they are set.
+      # Without Firebase config the app builds without push notifications.
       - name: Configure the build
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          ANDROID_PACKAGE: ${{ vars.T3CODE_ANDROID_PACKAGE }}
+          APP_NAME: ${{ vars.T3CODE_APP_NAME }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
         run: |
           cp .env.example .env
-          echo "T3CODE_MOBILE_UPDATES_ENABLED=0" >> .env
-          echo "T3CODE_MOBILE_VERSION=$VERSION" >> .env
+          {
+            echo "T3CODE_MOBILE_UPDATES_ENABLED=0"
+            echo "T3CODE_MOBILE_VERSION=$VERSION"
+            echo "T3CODE_ANDROID_ICON_BACKGROUND=./assets/android-icon-background-ember.png"
+            echo "T3CODE_ANDROID_PACKAGE=$ANDROID_PACKAGE"
+            echo "T3CODE_APP_NAME=$APP_NAME"
+          } >> .env
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > "$RUNNER_TEMP/google-services.json"
+            echo "T3CODE_ANDROID_GOOGLE_SERVICES_FILE=$RUNNER_TEMP/google-services.json" >> .env
+          fi
 
       - name: Generate the native project
         working-directory: apps/mobile
         run: ./node_modules/.bin/expo prebuild --platform android --clean --no-install
 
-      # Release builds sign with the React Native template's debug keystore,
-      # the same key as the APK already installed from earlier fork builds.
+      # Signs with the repository's release keystore when one is set, and
+      # otherwise with the React Native template's public debug keystore.
       - name: Build release APK
         working-directory: apps/mobile/android
-        run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -x lintVitalAnalyzeRelease --no-daemon
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          signing=()
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            signing=(
+              "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/release.keystore"
+              "-Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD"
+              "-Pandroid.injected.signing.key.alias=$KEY_ALIAS"
+              "-Pandroid.injected.signing.key.password=$KEYSTORE_PASSWORD"
+            )
+          fi
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -x lintVitalAnalyzeRelease --no-daemon "${signing[@]}"
 
       - name: Collect APK
         env:
@@ -450,6 +480,48 @@ jobs:
             --prerelease \
             --title "T3 Code v${VERSION} (fork)" \
             --notes "$notes"
+
+      # Tells Sail, the app manager on the phone, that a build has landed, so it
+      # checks now and not at its next periodic check. The message names this
+      # repo and carries no build data. The release is already out by this
+      # point, so a failed push must not fail the run.
+      - name: Notify Sail
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        env:
+          SAIL_FCM_KEY: ${{ secrets.SAIL_FCM_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SAIL_FCM_KEY:-}" ]; then
+            echo "No SAIL_FCM_KEY secret, so no push."
+            exit 0
+          fi
+          field() { printf '%s' "$SAIL_FCM_KEY" | jq -er ".$1"; }
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          token_uri="$(field token_uri)"
+          project_id="$(field project_id)"
+          client_email="$(field client_email)"
+          now="$(date +%s)"
+          claims="$(jq -nc --arg iss "$client_email" --arg aud "$token_uri" --argjson now "$now" \
+            '{iss: $iss, scope: "https://www.googleapis.com/auth/firebase.messaging", aud: $aud, iat: $now, exp: ($now + 600)}')"
+          unsigned="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url).$(printf '%s' "$claims" | b64url)"
+          signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign <(field private_key) | b64url)"
+          # The assertion and the token go to curl through pipes, never as
+          # arguments, where another process could read them. printf is a
+          # shell builtin, so it has no argument list of its own. Both values
+          # are base64url, so the form body needs no further encoding.
+          access_token="$(printf 'grant_type=urn%%3Aietf%%3Aparams%%3Aoauth%%3Agrant-type%%3Ajwt-bearer&assertion=%s.%s' "$unsigned" "$signature" \
+            | curl -fsS --max-time 20 --data-binary @- "$token_uri" | jq -er .access_token)"
+          echo "::add-mask::${access_token}"
+          message="$(jq -nc --arg source "github:${GH_REPO}" \
+            '{message: {topic: "builds", data: {source: $source}, android: {priority: "high"}}}')"
+          curl -fsS --max-time 20 -o /dev/null \
+            -H @<(printf 'Authorization: Bearer %s\n' "$access_token") \
+            -H 'Content-Type: application/json' \
+            -d "$message" \
+            "https://fcm.googleapis.com/v1/projects/${project_id}/messages:send"
+          echo "Told Sail about github:${GH_REPO}."
 
       # Keeps the newest few so a client mid-update still finds its files.
       - name: Prune old releases
