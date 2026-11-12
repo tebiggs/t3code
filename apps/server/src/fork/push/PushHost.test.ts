@@ -3,6 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -367,6 +368,133 @@ describe("PushHost", () => {
       }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
     },
   );
+
+  it.effect("a device FCM keeps refusing does not delay another device", () => {
+    const sent: Sent[] = [];
+    let stuck = false;
+    const send: FcmSend = (input) =>
+      stuck && input.token === "token-stuck"
+        ? Effect.fail(new FcmClientError({ operation: "send", status: 429 }))
+        : Effect.sync(() => {
+            sent.push(input);
+            return { unregistered: false };
+          });
+    const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+    return Effect.gen(function* () {
+      const host = yield* PushHost.PushHost;
+      yield* host.registerDevice({ ...registration, deviceId: "stuck", token: "token-stuck" });
+      yield* host.registerDevice(registration);
+      yield* host.drain;
+      stuck = true;
+      yield* host.ingest({
+        environmentId: waiting.environmentId,
+        threadId: waiting.threadId,
+        state: waiting,
+      });
+      yield* TestClock.adjust("2 seconds");
+      assert.deepStrictEqual(
+        sent.filter((message) => message.token === "fcm-token").map((message) => message.alert),
+        [false, true],
+      );
+      const drained = yield* Effect.forkChild(host.drain);
+      yield* TestClock.adjust("10 minutes");
+      yield* Fiber.join(drained);
+    }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+  });
+
+  it.effect("keeps one pending delivery per thread while a device's sends fail", () => {
+    let attempts = 0;
+    let failing = true;
+    const send: FcmSend = () =>
+      Effect.sync(() => void attempts++).pipe(
+        Effect.andThen(
+          failing
+            ? Effect.fail(new FcmClientError({ operation: "send", status: 503 }))
+            : Effect.succeed({ unregistered: false }),
+        ),
+      );
+    const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+    const threads = ["thread-1", "thread-2", "thread-3"].map((threadId) => ThreadId.make(threadId));
+    return Effect.gen(function* () {
+      const host = yield* PushHost.PushHost;
+      yield* host.registerDevice(registration);
+      for (let update = 0; update < 100; update++) {
+        const threadId = threads[update % threads.length]!;
+        yield* host.ingest({
+          environmentId: running.environmentId,
+          threadId,
+          state: {
+            ...running,
+            threadId,
+            updatedAt: DateTime.formatIso(DateTime.makeUnsafe(update * 1000)),
+          },
+        });
+      }
+      failing = false;
+      const drained = yield* Effect.forkChild(host.drain);
+      yield* TestClock.adjust("2 hours");
+      yield* Fiber.join(drained);
+      // The replay in flight retries, then each thread is delivered once.
+      assert.isAtMost(attempts, 4 + threads.length);
+    }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+  });
+
+  it.effect("loses no thread's alert while a device's deliveries wait", () => {
+    const sent: Sent[] = [];
+    return Effect.gen(function* () {
+      const busy = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let blocked = true;
+      const send: FcmSend = (input) =>
+        Effect.gen(function* () {
+          if (blocked) {
+            blocked = false;
+            yield* Deferred.succeed(busy, undefined);
+            yield* Deferred.await(release);
+          }
+          sent.push(input);
+          return { unregistered: false };
+        });
+      const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+      const second: RelayAgentActivityState = {
+        ...waiting,
+        threadId: ThreadId.make("thread-2"),
+        threadTitle: "Second",
+        deepLink: "/threads/env-desktop/thread-2",
+      };
+      // Without ongoing activity there is no card baseline, so each thread alerts on its own.
+      const alertsOnly = {
+        ...registration,
+        preferences: { ...registration.preferences, liveActivitiesEnabled: false },
+      };
+      yield* Effect.gen(function* () {
+        const host = yield* PushHost.PushHost;
+        yield* host.registerDevice(alertsOnly);
+        yield* Deferred.await(busy);
+        yield* host.ingest({
+          environmentId: waiting.environmentId,
+          threadId: waiting.threadId,
+          state: waiting,
+        });
+        yield* host.ingest({
+          environmentId: second.environmentId,
+          threadId: second.threadId,
+          state: second,
+        });
+        yield* host.ingest({
+          environmentId: second.environmentId,
+          threadId: second.threadId,
+          state: second,
+        });
+        yield* Deferred.succeed(release, undefined);
+        yield* host.drain;
+        assert.deepStrictEqual(
+          sent.filter((message) => message.alert).map((message) => message.data.alert_path),
+          ["/threads/env-desktop/thread-1", "/threads/env-desktop/thread-2"],
+        );
+      }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+    });
+  });
 
   it.effect("forgets peers not heard from in 30 days", () => {
     const { fcm } = harness();

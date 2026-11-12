@@ -2,12 +2,12 @@ import type {
   RelayAgentActivityState,
   RelayAgentAwarenessPreferences,
 } from "@t3tools/contracts/relay";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -273,7 +273,79 @@ const make = Effect.gen(function* () {
     yield* persist;
   });
 
-  const worker = yield* makeDrainableWorker(deliver);
+  // Each device delivers on its own fiber, so one FCM keeps refusing cannot hold up another.
+  // While a device is busy its pending work keeps one entry per thread: delivery reads the rows
+  // and compares them with the device's baseline when it runs, as upstream's relay does when its
+  // queue lags, so a later update to the same thread decides the same alerts as the earlier ones.
+  const scope = yield* Effect.scope;
+  const pending = new Map<
+    string,
+    { replay: boolean; readonly threads: Map<string, RelayAgentActivityState | null> }
+  >();
+  const running = new Map<string, Fiber.Fiber<void>>();
+
+  const takeNext = (deviceId: string): Delivery | null => {
+    const queue = pending.get(deviceId);
+    if (queue === undefined) {
+      running.delete(deviceId);
+      return null;
+    }
+    if (queue.replay) {
+      queue.replay = false;
+      return { kind: "replay", deviceId };
+    }
+    const next = queue.threads.entries().next();
+    if (next.done === true) {
+      // In the same step as the check, so work enqueued from here on starts a new fiber.
+      pending.delete(deviceId);
+      running.delete(deviceId);
+      return null;
+    }
+    queue.threads.delete(next.value[0]);
+    return { kind: "state", deviceId, state: next.value[1] };
+  };
+
+  const deliverPending = Effect.fn("PushHost.deliverPending")(function* (deviceId: string) {
+    while (true) {
+      const delivery = takeNext(deviceId);
+      if (delivery === null) return;
+      yield* deliver(delivery).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Push host delivery failed", { deviceId, cause }),
+        ),
+      );
+    }
+  });
+
+  const enqueue = (
+    deviceId: string,
+    work:
+      | { readonly replay: true }
+      | { readonly key: string; readonly state: RelayAgentActivityState | null },
+  ) =>
+    Effect.suspend(() => {
+      const queue = pending.get(deviceId) ?? { replay: false, threads: new Map() };
+      pending.set(deviceId, queue);
+      if ("replay" in work) {
+        queue.replay = true;
+      } else {
+        // Re-inserting moves the thread behind work that arrived before this update.
+        queue.threads.delete(work.key);
+        queue.threads.set(work.key, work.state);
+      }
+      if (running.has(deviceId)) return Effect.void;
+      return deliverPending(deviceId).pipe(
+        Effect.forkIn(scope),
+        Effect.map((fiber) => {
+          if (pending.has(deviceId)) running.set(deviceId, fiber);
+        }),
+      );
+    });
+
+  const drain: Effect.Effect<void> = Effect.suspend(() => {
+    const fibers = [...running.values()];
+    return fibers.length === 0 ? Effect.void : Fiber.awaitAll(fibers).pipe(Effect.andThen(drain));
+  });
 
   const ingest: PushHost["Service"]["ingest"] = Effect.fn("PushHost.ingest")(function* (input) {
     const now = yield* DateTime.now;
@@ -299,7 +371,7 @@ const make = Effect.gen(function* () {
     yield* persist;
     yield* Effect.forEach(
       state.devices,
-      (device) => worker.enqueue({ kind: "state", deviceId: device.deviceId, state: input.state }),
+      (device) => enqueue(device.deviceId, { key, state: input.state }),
       { discard: true },
     );
     return state.devices.map((device) => device.deviceId);
@@ -335,7 +407,7 @@ const make = Effect.gen(function* () {
       };
     });
     yield* persist;
-    yield* worker.enqueue({ kind: "replay", deviceId: input.deviceId });
+    yield* enqueue(input.deviceId, { replay: true });
   });
 
   const unregisterDevice: PushHost["Service"]["unregisterDevice"] = Effect.fn(
@@ -399,7 +471,7 @@ const make = Effect.gen(function* () {
     unregisterDevice,
     sendTest,
     status,
-    drain: worker.drain,
+    drain,
   });
 });
 
