@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -274,6 +275,47 @@ describe("PushHost", () => {
       yield* Fiber.join(gaveUp);
       assert.isTrue(failures > 90);
       assert.strictEqual((yield* host.status).devices[0]?.lastError, "FCM send failed (503).");
+    }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
+  });
+
+  it.effect("retries when FCM's token answer stalls after its headers", () => {
+    const sent: Sent[] = [];
+    let stalls = 0;
+    const send: FcmSend = (input) =>
+      stalls > 0
+        ? Effect.sync(() => void stalls--).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new FcmClientError({
+                  operation: "authorize",
+                  status: 200,
+                  cause: new Cause.TimeoutError(),
+                }),
+              ),
+            ),
+          )
+        : Effect.sync(() => {
+            sent.push(input);
+            return { unregistered: false };
+          });
+    const fcm = Layer.succeed(PushHostFcm, PushHostFcm.of({ send, projectId: "project" }));
+    return Effect.gen(function* () {
+      const host = yield* PushHost.PushHost;
+      yield* host.registerDevice(registration);
+      yield* host.drain;
+      stalls = 1;
+      yield* host.ingest({
+        environmentId: waiting.environmentId,
+        threadId: waiting.threadId,
+        state: waiting,
+      });
+      const drained = yield* Effect.forkChild(host.drain);
+      yield* TestClock.adjust("1 minute");
+      yield* Fiber.join(drained);
+      assert.deepStrictEqual(
+        sent.map((message) => message.alert),
+        [false, true],
+      );
     }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));
   });
 

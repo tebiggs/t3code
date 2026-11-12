@@ -3,6 +3,7 @@ import type {
   RelayAgentAwarenessPreferences,
 } from "@t3tools/contracts/relay";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
@@ -11,6 +12,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
+import * as HttpClientError from "effect/http/HttpClientError";
 
 import {
   makeAggregateState,
@@ -25,7 +27,7 @@ import {
   fitFcmData,
 } from "../../../../../infra/relay/src/agentActivity/fcmPayloads.ts";
 import { androidAlertForAggregate, androidAlertForState } from "./androidAlerts.ts";
-import { PushHostFcm } from "./fcm.ts";
+import { type FcmClientError, PushHostFcm } from "./fcm.ts";
 import * as PushHostStore from "./PushHostStore.ts";
 
 export interface PushDeviceRegistration {
@@ -82,6 +84,17 @@ type Delivery =
 /** A peer silent this long is most likely gone, so it leaves the status. */
 const PEER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SEND_RETRY_DELAYS = ["1 second", "4 seconds", "16 seconds"] as const;
+
+/**
+ * FcmClient keeps the response status when reading the body times out or breaks, so a stalled
+ * 200 counts as transient by its cause, as do transport failures, rate limits and server errors.
+ */
+const isTransientFcmError = (error: FcmClientError) =>
+  Cause.isTimeoutError(error.cause) ||
+  HttpClientError.isHttpClientError(error.cause) ||
+  error.status === null ||
+  error.status === 429 ||
+  error.status >= 500;
 
 const rowKey = (environmentId: string, threadId: string) =>
   JSON.stringify([environmentId, threadId]);
@@ -156,7 +169,7 @@ const make = Effect.gen(function* () {
       if (result._tag === "Success") return result.success;
       const error = result.failure;
       const delay = SEND_RETRY_DELAYS[attempt];
-      const retryable = error.status === null || error.status === 429 || error.status >= 500;
+      const retryable = isTransientFcmError(error);
       if (!retryable || delay === undefined) return yield* error;
       yield* Effect.sleep(delay);
       const current = (yield* Ref.get(stateRef)).devices.find(
