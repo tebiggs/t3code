@@ -71,3 +71,6 @@ adds the feature, and remove it in the PR that drops the feature.
 - #30 A checkout's pull requests and repository come from the remote `gh repo set-default`
   chose, ahead of `upstream`, so a fork lists its own PRs:
   `apps/server/src/project/RepositoryIdentityResolver.ts` (`parseGhDefaultRemote`).
+- #32 The Android APK is the fork's own app: an ember icon, plus the package name, app name, release
+  keystore and Firebase config from repository variables and secrets when they are set:
+  `apps/mobile/app.config.ts` (`T3CODE_ANDROID_PACKAGE`), `.github/workflows/fork-release.yml`.

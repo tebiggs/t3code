@@ -358,23 +358,53 @@ jobs:
       # upstream's preview bundles. The release version replaces upstream's
       # store version so Obtainium can match the APK to its release tag. It
       # goes in .env because the Gradle bundling step reads app.config.ts again.
+      # The fork ships its own app: the ember icon always, and the package name,
+      # app name and Firebase config from repository settings when they are set.
+      # Without Firebase config the app builds without push notifications.
       - name: Configure the build
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          ANDROID_PACKAGE: ${{ vars.T3CODE_ANDROID_PACKAGE }}
+          APP_NAME: ${{ vars.T3CODE_APP_NAME }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
         run: |
           cp .env.example .env
-          echo "T3CODE_MOBILE_UPDATES_ENABLED=0" >> .env
-          echo "T3CODE_MOBILE_VERSION=$VERSION" >> .env
+          {
+            echo "T3CODE_MOBILE_UPDATES_ENABLED=0"
+            echo "T3CODE_MOBILE_VERSION=$VERSION"
+            echo "T3CODE_ANDROID_ICON_BACKGROUND=./assets/android-icon-background-ember.png"
+            echo "T3CODE_ANDROID_PACKAGE=$ANDROID_PACKAGE"
+            echo "T3CODE_APP_NAME=$APP_NAME"
+          } >> .env
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > "$RUNNER_TEMP/google-services.json"
+            echo "T3CODE_ANDROID_GOOGLE_SERVICES_FILE=$RUNNER_TEMP/google-services.json" >> .env
+          fi
 
       - name: Generate the native project
         working-directory: apps/mobile
         run: ./node_modules/.bin/expo prebuild --platform android --clean --no-install
 
-      # Release builds sign with the React Native template's debug keystore,
-      # the same key as the APK already installed from earlier fork builds.
+      # Signs with the repository's release keystore when one is set, and
+      # otherwise with the React Native template's public debug keystore.
       - name: Build release APK
         working-directory: apps/mobile/android
-        run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -x lintVitalAnalyzeRelease --no-daemon
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          signing=()
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            signing=(
+              "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/release.keystore"
+              "-Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD"
+              "-Pandroid.injected.signing.key.alias=$KEY_ALIAS"
+              "-Pandroid.injected.signing.key.password=$KEYSTORE_PASSWORD"
+            )
+          fi
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -x lintVitalAnalyzeRelease --no-daemon "${signing[@]}"
 
       - name: Collect APK
         env:
