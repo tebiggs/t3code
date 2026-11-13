@@ -68,9 +68,6 @@ adds the feature, and remove it in the PR that drops the feature.
 - #21 Open in VS Code and other SSH editor links use the host the client reached directly when
   sshd is listening, instead of the server's first advertised host: `apps/web/src/remoteOpen.ts`,
   `apps/server/src/environment/RemoteOpenTargets.ts` (`sshd`).
-- #30 A checkout's pull requests and repository come from the remote `gh repo set-default`
-  chose, ahead of `upstream`, so a fork lists its own PRs:
-  `apps/server/src/project/RepositoryIdentityResolver.ts` (`parseGhDefaultRemote`).
 - #32 The Android APK is the fork's own app: an ember icon, plus the package name, app name, release
   keystore and Firebase config from repository variables and secrets when they are set:
   `apps/mobile/app.config.ts` (`T3CODE_ANDROID_PACKAGE`), `.github/workflows/fork-release.yml`.
