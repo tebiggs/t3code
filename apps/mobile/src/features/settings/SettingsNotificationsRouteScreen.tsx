@@ -49,6 +49,7 @@ import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
+import { ForkPushSettingsSection } from "../fork-push/ForkPushSettingsSection";
 import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
 
 /**
@@ -120,6 +121,7 @@ export function SettingsNotificationsRouteScreen() {
           <Text className="text-base text-foreground-muted">
             Notifications require T3 Connect in this app build.
           </Text>
+          <ForkPushSettingsSection />
         </ScrollView>
       </SettingsScreen>
     );
@@ -488,6 +490,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
             />
           ) : null}
         </SettingsSection>
+        <ForkPushSettingsSection />
       </ScrollView>
     </SettingsScreen>
   );

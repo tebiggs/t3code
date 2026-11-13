@@ -38,6 +38,7 @@ import {
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ForkPushTarget from "../fork/push/ForkPushTarget.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -676,6 +677,40 @@ describe("AgentAwarenessRelay", () => {
       yield* relay.publishThread(THREAD_ID);
       assert.equal(publications.length, 3);
       assert.isTrue(publications[2]?.url.startsWith("https://new-relay.example.test/") ?? false);
+    }),
+  );
+
+  it.effect("publishes to the fork's push host instead of the relay, unless explicitly off", () =>
+    Effect.gen(function* () {
+      const delivered: Array<RelayAgentActivityState | null> = [];
+      const route = yield* Ref.make<ForkPushTarget.ForkPushRoute>({
+        url: "https://push-host.example.test/api/fork/push",
+        issuer: "https://push-host.example.test",
+        environmentCredential: "link-token",
+      });
+      const { relay, secrets, currentShell, publications } = yield* makeTestRelay({
+        linked: false,
+      }).pipe(Effect.provideService(ForkPushTarget.ForkPushTarget, { resolve: Ref.get(route) }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 1);
+      assert.isTrue(
+        publications[0]?.url.startsWith("https://push-host.example.test/api/fork/push/v1/") ??
+          false,
+      );
+      assert.equal(publications[0]?.authorization, "Bearer link-token");
+      yield* Ref.set(route, {
+        url: "fork-push:local",
+        issuer: "fork-push:local",
+        environmentCredential: "fork-push:local",
+        deliver: (input) => Effect.sync(() => void delivered.push(input.state)),
+      });
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 1);
+      assert.equal(delivered[0]?.threadId, THREAD_ID);
+      yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("false"));
+      yield* Ref.set(currentShell, shell({ title: "Renamed thread" }));
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(delivered.length, 1);
     }),
   );
 

@@ -2,6 +2,8 @@ import Constants from "expo-constants";
 import { requireOptionalNativeModule } from "expo";
 import { Linking, Platform } from "react-native";
 
+import { forkOwnsAndroidAgentNotifications } from "../fork-push/nativeOwnership";
+
 interface AndroidAgentNotifications {
   configure(deviceId: string, userId: string, scheme: string, ongoingEnabled: boolean): void;
   clear(): void;
@@ -29,6 +31,7 @@ export function configureAndroidAgentNotifications(
   userId: string,
   ongoingEnabled: boolean,
 ): void {
+  if (forkOwnsAndroidAgentNotifications()) return;
   native?.configure?.(deviceId, userId, appScheme(), ongoingEnabled);
 }
 
@@ -39,6 +42,7 @@ export function showAndroidShowcaseAgentActivity(data: Record<string, string>): 
 }
 
 export function clearAndroidAgentNotifications(): void {
+  if (forkOwnsAndroidAgentNotifications()) return;
   native?.clear?.();
 }
 
