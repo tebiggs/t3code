@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 
 import { environmentShell, environmentShellSummaryAtom } from "./shell";
-import { projectWorkspaceState } from "./workspaceModel";
+import { isEnvironmentShellPending, projectWorkspaceState } from "./workspaceModel";
 import { environmentCatalog } from "../connection/catalog";
 import { powerManagedEnvironmentIdsAtom } from "./environment-power-settings";
 import { environmentPresentations } from "./presentation";
@@ -21,7 +21,7 @@ const hasSyncingConnectedEnvironmentAtom = Atom.make((get) =>
     (environment) =>
       environment.isEnabled &&
       environment.connectionState === "connected" &&
-      get(environmentShell.stateValueAtom(environment.environmentId)).status === "synchronizing",
+      isEnvironmentShellPending(get(environmentShell.stateValueAtom(environment.environmentId))),
   ),
 ).pipe(Atom.withLabel("mobile:has-syncing-connected-environment"));
 
