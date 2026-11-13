@@ -99,6 +99,10 @@ export default mergeConfig(
       clean: true,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.
       ...(packExecutable ? { outputOptions: { codeSplitting: false } } : {}),
+      // Fork: the push host bundles infra/relay sources, whose packages release installs skip.
+      inputOptions: {
+        resolve: { modules: ["node_modules", NodePath.join(import.meta.dirname, "node_modules")] },
+      },
       ...(packMode === "1"
         ? {
             exe: {
