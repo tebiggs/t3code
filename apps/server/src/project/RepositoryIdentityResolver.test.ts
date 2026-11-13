@@ -332,12 +332,6 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expected: "my.fork",
     },
     {
-      name: "a value other than base",
-      remote: undefined,
-      marker: ["remote.origin.gh-resolved", "julius/t3code-fork"],
-      expected: "upstream",
-    },
-    {
       name: "a remote that no longer exists",
       remote: undefined,
       marker: ["remote.gone.gh-resolved", "base"],

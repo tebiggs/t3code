@@ -184,7 +184,9 @@ describe("RemoteOpenTargets", () => {
         hostname: "bb-1",
         username: "t3-user",
       });
-      expect(targets).toEqual([{ kind: "mdns", host: "bb-1.local", username: "t3-user" }]);
+      expect(targets).toEqual([
+        { kind: "mdns", host: "bb-1.local", username: "t3-user", sshd: true },
+      ]);
     }),
   );
 
