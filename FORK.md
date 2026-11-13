@@ -81,4 +81,5 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/server/src/relay/AgentAwarenessRelay.ts` (`ForkPushTarget`),
   `packages/contracts/src/forkPush.ts`, `apps/mobile/src/features/fork-push/`,
   `apps/mobile/src/features/agent-awareness/androidNotifications.ts`
-  (`forkOwnsAndroidAgentNotifications`), `docs/user/push-host.md`.
+  (`forkOwnsAndroidAgentNotifications`), `apps/server/vite.config.ts` (`resolve.modules`),
+  `docs/user/push-host.md`.
