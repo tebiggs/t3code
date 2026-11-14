@@ -33,6 +33,11 @@
     <intent>
       <action android:name="android.intent.action.TTS_SERVICE" />
     </intent>
+    <!-- am and pm: apps with a launcher icon, without QUERY_ALL_PACKAGES. -->
+    <intent>
+      <action android:name="android.intent.action.MAIN" />
+      <category android:name="android.intent.category.LAUNCHER" />
+    </intent>
   </queries>
 
   <application>
