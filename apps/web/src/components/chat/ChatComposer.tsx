@@ -236,7 +236,7 @@ import { observeResize } from "~/lib/observeResize";
 
 const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidError);
 import { toastManager } from "../ui/toast";
-import { BuildingIcon, PlayIcon, ReplyIcon } from "lucide-react";
+import { BuildingIcon, EyeIcon, PlayIcon, ReplyIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 import { assistantCitationNavigation } from "../../lib/assistantCitationNavigation";
@@ -2506,11 +2506,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         },
       ]
     : [];
+  // Read scope also proves the session has loaded, so this doesn't flash while connecting.
+  const viewOnly =
+    useEnvironmentScope(environmentId, AuthOrchestrationReadScope) && !canOperateThread;
+  const viewOnlyBannerItems: readonly ComposerBannerStackItem[] = viewOnly
+    ? [
+        {
+          id: "view-only",
+          variant: "warning",
+          group: "environment",
+          icon: <EyeIcon />,
+          title: "View only",
+          description: "This connection can't send messages or answer requests.",
+        },
+      ]
+    : [];
   const bannerItems: readonly ComposerBannerStackItem[] =
     runtimeModeCeilingDenial === undefined || activePendingProgress
-      ? [...props.bannerItems, ...replyBannerItems]
+      ? [...props.bannerItems, ...viewOnlyBannerItems, ...replyBannerItems]
       : [
           ...props.bannerItems,
+          ...viewOnlyBannerItems,
           ...replyBannerItems,
           {
             id: "managed-runtime-mode",
@@ -2550,6 +2566,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ): boolean => {
     if (
       text.length === 0 ||
+      viewOnly ||
       activePendingIsResponding ||
       (pendingUserInputs.length > 0 && !activePendingProgress?.activeQuestion) ||
       projectSelectionRequired ||
@@ -3282,10 +3299,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       focusComposer={focusComposer}
     />
   ) : null;
-  // Read scope also proves the session has loaded, so this doesn't flash while connecting.
-  const viewOnly =
-    useEnvironmentScope(environmentId, AuthOrchestrationReadScope) && !canOperateThread;
-
   return (
     <form
       ref={composerFormRef}
@@ -3609,6 +3622,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       ) : undefined
                     }
                     disabled={
+                      viewOnly ||
                       projectSelectionRequired ||
                       isChoiceOnlyPendingQuestion ||
                       activePendingIsResponding ||
@@ -3797,11 +3811,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
-      {viewOnly ? (
-        <p className="px-1 pt-1.5 text-xs text-muted-foreground">
-          This connection can only view threads. You can't send messages or answer requests here.
-        </p>
-      ) : null}
     </form>
   );
 });
