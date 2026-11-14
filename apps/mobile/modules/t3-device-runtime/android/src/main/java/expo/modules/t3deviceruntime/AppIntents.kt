@@ -96,7 +96,7 @@ internal fun launchablePackages(context: Context, body: JSONObject): List<String
 private fun putExtra(intent: Intent, extra: JSONObject) {
   val key = extra.getString("key")
   val value = extra.getString("value")
-  fun invalid(): Nothing = throw BridgeError("The extra $key takes a ${extra.getString("type")}, not $value")
+  fun invalid(): Nothing = throw BridgeError("The extra $key isn't a valid ${extra.getString("type")}: $value")
   when (extra.getString("type")) {
     "string" -> intent.putExtra(key, value)
     "boolean" -> intent.putExtra(key, value.toBooleanStrictOrNull() ?: invalid())
