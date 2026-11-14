@@ -41,6 +41,7 @@ import {
   RELAY_URL_SECRET,
 } from "./config.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 const encode = (value: string) => new TextEncoder().encode(value);
 const decode = (value: Uint8Array | undefined) => new TextDecoder().decode(value);
@@ -94,6 +95,9 @@ const withService = <A, E>(
     readonly link: CloudLink.CloudLink["Service"];
     readonly stored: Map<string, Uint8Array>;
     readonly relayCalls: Array<boolean>;
+    readonly connectCredentialRequests: Array<
+      Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["issueConnectCredential"]>[0]
+    >;
   }) => Effect.Effect<A, E, never>,
 ) =>
   Effect.gen(function* () {
@@ -109,6 +113,9 @@ const withService = <A, E>(
       ),
     ]);
     const relayCalls: Array<boolean> = [];
+    const connectCredentialRequests: Array<
+      Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["issueConnectCredential"]>[0]
+    > = [];
     const fetch: typeof globalThis.fetch = Object.assign(
       (_input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const payload = JSON.parse(String(init?.body)) as { holdWebhooksWhileOffline: boolean };
@@ -124,6 +131,7 @@ const withService = <A, E>(
       { preconnect: () => {} },
     );
     const layerDependencies = Layer.mergeAll(
+      ServerSettings.ServerSettingsService.layerTest(),
       Layer.mock(ServerSecretStore.ServerSecretStore)({
         get: (name) =>
           (options.failActivityRead && name === PUBLISH_AGENT_ACTIVITY_SECRET) ||
@@ -160,6 +168,11 @@ const withService = <A, E>(
       }),
       Layer.mock(EnvironmentAuth.EnvironmentAuth)({
         isSessionActive: () => Effect.succeed(true),
+        issueConnectCredential: (input) =>
+          Effect.sync(() => {
+            connectCredentialRequests.push(input);
+            return { credential: "pairing-credential", expiresAt: DateTime.makeUnsafe(120_000) };
+          }),
         ...options.auth,
       }),
       Layer.mock(CliTokenManager.CloudCliTokenManager)({}),
@@ -181,6 +194,7 @@ const withService = <A, E>(
         link,
         stored,
         relayCalls,
+        connectCredentialRequests,
       });
     }).pipe(
       Effect.provide(
@@ -325,14 +339,6 @@ it.effect("an update the client walks away from still finishes", () => {
   );
 });
 
-const issuedLink = {
-  id: "link",
-  credential: "credential",
-  scopes: [],
-  subject: "cloud-connect",
-  expiresAt: DateTime.makeUnsafe(120_000),
-} as unknown as EnvironmentAuth.IssuedPairingLink;
-
 it.effect.each([
   { name: "no stored mode", initial: [], scopes: AuthStandardClientScopes },
   {
@@ -350,46 +356,26 @@ it.effect.each([
     initial: [[CLOUD_SHARING_MODE, "guest"]] as const,
     scopes: AuthViewOnlyClientScopes,
   },
-])("a device minting under $name gets the matching scopes", ({ initial, scopes }) => {
-  const minted: Array<ReadonlyArray<string>> = [];
-  return withService(
-    {
-      initialSecrets: initial,
-      auth: {
-        createPairingLink: (input) => {
-          minted.push(input?.scopes ?? []);
-          return Effect.succeed(issuedLink);
-        },
-      },
-    },
-    ({ link }) =>
-      Effect.gen(function* () {
-        yield* link.mintCredential(yield* mintRequest);
-        assert.deepEqual(minted, [scopes]);
-      }),
-  );
-});
+])("a device minting under $name gets the matching scopes", ({ initial, scopes }) =>
+  withService({ initialSecrets: initial }, ({ link, connectCredentialRequests }) =>
+    Effect.gen(function* () {
+      yield* link.mintCredential(yield* mintRequest);
+      assert.deepEqual(connectCredentialRequests, [
+        { proofKeyThumbprint: "thumbprint", requireApproval: false, scopes },
+      ]);
+    }),
+  ),
+);
 
-it.effect("an unreadable mode refuses the mint instead of granting full access", () => {
-  const minted: Array<unknown> = [];
-  return withService(
-    {
-      failSecretRead: CLOUD_SHARING_MODE,
-      auth: {
-        createPairingLink: (input) => {
-          minted.push(input);
-          return Effect.succeed(issuedLink);
-        },
-      },
-    },
-    ({ link }) =>
-      Effect.gen(function* () {
-        const failure = yield* link.mintCredential(yield* mintRequest).pipe(Effect.flip);
-        assert.equal(failure._tag, "CloudLinkInternalError");
-        assert.deepEqual(minted, []);
-      }),
-  );
-});
+it.effect("an unreadable mode refuses the mint instead of granting full access", () =>
+  withService({ failSecretRead: CLOUD_SHARING_MODE }, ({ link, connectCredentialRequests }) =>
+    Effect.gen(function* () {
+      const failure = yield* link.mintCredential(yield* mintRequest).pipe(Effect.flip);
+      assert.equal(failure._tag, "CloudLinkInternalError");
+      assert.deepEqual(connectCredentialRequests, []);
+    }),
+  ),
+);
 
 it.effect("a mode change stores the mode before signing anyone out", () => {
   const seenAtRevoke: Array<string> = [];
@@ -521,14 +507,14 @@ it.effect("a mint in progress finishes before a mode change can sign anyone out"
   return withService(
     {
       auth: {
-        createPairingLink: (input) =>
+        issueConnectCredential: (input) =>
           Effect.promise(() => {
             started();
             return released;
           }).pipe(
             Effect.map(() => {
-              events.push(`minted:${String(input?.scopes?.length)}`);
-              return issuedLink;
+              events.push(`minted:${String(input.scopes?.length)}`);
+              return { credential: "credential", expiresAt: DateTime.makeUnsafe(120_000) };
             }),
           ),
         revokeOtherAccess: () => Effect.sync(() => void events.push("revoked")),
@@ -552,7 +538,6 @@ it.effect("a mint in progress finishes before a mode change can sign anyone out"
 });
 
 it.effect("a mint during a mode change waits and gets the new scopes", () => {
-  const minted: Array<ReadonlyArray<string>> = [];
   let release!: () => void;
   let started!: () => void;
   const released = new Promise<void>((resolve) => {
@@ -564,11 +549,6 @@ it.effect("a mint during a mode change waits and gets the new scopes", () => {
   return withService(
     {
       auth: {
-        createPairingLink: (input) =>
-          Effect.sync(() => {
-            minted.push(input?.scopes ?? []);
-            return issuedLink;
-          }),
         revokeOtherAccess: () =>
           Effect.promise(() => {
             started();
@@ -576,7 +556,7 @@ it.effect("a mint during a mode change waits and gets the new scopes", () => {
           }),
       },
     },
-    ({ link }) =>
+    ({ link, connectCredentialRequests }) =>
       Effect.gen(function* () {
         const request = yield* mintRequest;
         const change = yield* link
@@ -585,11 +565,14 @@ it.effect("a mint during a mode change waits and gets the new scopes", () => {
         yield* Effect.promise(() => atRevoke);
         const mint = yield* link.mintCredential(request).pipe(Effect.forkChild);
         yield* Effect.yieldNow;
-        assert.deepEqual(minted, []);
+        assert.deepEqual(connectCredentialRequests, []);
         release();
         yield* Fiber.join(change);
         yield* Fiber.join(mint);
-        assert.deepEqual(minted, [AuthViewOnlyClientScopes]);
+        assert.deepEqual(
+          connectCredentialRequests.map((request) => request.scopes),
+          [AuthViewOnlyClientScopes],
+        );
       }),
   );
 });
@@ -602,6 +585,7 @@ it.effect("unlinks on startup and refuses to link when the policy turns Connect 
     ]);
     const appliedConfigs: Array<unknown> = [];
     const layerDependencies = Layer.mergeAll(
+      ServerSettings.ServerSettingsService.layerTest(),
       Layer.mock(ServerSecretStore.ServerSecretStore)({
         get: (name) => Effect.succeed(Option.fromNullishOr(stored.get(name))),
         set: (name, value) => Effect.sync(() => void stored.set(name, value)),
