@@ -4,7 +4,8 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export PATH="$HOME/.local/bin:$PATH"
 NODE_CHANNEL=https://nodejs.org/dist/latest-v24.x
-CLAUDE_LIST=/etc/apt/sources.list.d/claude-code.list
+CLAUDE_LIST=${CLAUDE_LIST:-/etc/apt/sources.list.d/claude-code.list}
+CLAUDE_MANAGED=${CLAUDE_MANAGED:-/etc/claude-code}
 # The fork whose releases carry a Linux arm64 server (FORK.md).
 RELEASE_REPO=tebiggs/t3code
 T3_LINK="$HOME/.local/bin/t3"
@@ -55,18 +56,39 @@ step_node() {
   done
 }
 
-# Anthropic's stable channel. The app checks the signing key's fingerprint and writes it
-# first. One copy of the binary, updated only through apt.
+# Anthropic's apt repository for the channel Claude Code's settings pick. The app checks the
+# signing key's fingerprint and writes it first. One copy of the binary, updated only through apt.
 step_claude_code() {
   [ -s /etc/apt/keyrings/claude-code.asc ] || { echo "Claude Code's signing key is missing." >&2; exit 1; }
-  echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" > "$CLAUDE_LIST"
+  write_claude_list
   update_claude_repo
   apt_install claude-code
 }
 
+# Moving to stable keeps a newer build until stable passes it.
 step_upgrade_claude_code() {
+  write_claude_list
   update_claude_repo
   apt-get install -y --only-upgrade claude-code
+}
+
+write_claude_list() {
+  channel=$(claude_channel)
+  echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/$channel $channel main" > "$CLAUDE_LIST"
+  echo "Claude Code channel: $channel"
+}
+
+# autoUpdatesChannel, latest by default as in Claude Code. Later files win, as in the server's
+# ClaudeMaintenance.readUpdateChannel.
+claude_channel() {
+  channel=latest
+  for file in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "$CLAUDE_MANAGED/managed-settings.json" \
+    "$CLAUDE_MANAGED"/managed-settings.d/*.json; do
+    [ -f "$file" ] || continue
+    value=$(sed -n 's/.*"autoUpdatesChannel"[[:space:]]*:[[:space:]]*"\(latest\|stable\)".*/\1/p' "$file" | tail -n 1)
+    if [ -n "$value" ]; then channel=$value; fi
+  done
+  echo "$channel"
 }
 
 update_claude_repo() {

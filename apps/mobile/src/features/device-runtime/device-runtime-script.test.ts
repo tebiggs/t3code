@@ -30,6 +30,7 @@ ln -sfn "$HOME/.t3/runtime/versions/$T3CODE_VERSION/t3" "$HOME/.local/bin/t3"
 `;
 
 interface Guest {
+  readonly root: string;
   readonly home: string;
   readonly log: string;
   run(step: string): string;
@@ -64,6 +65,7 @@ esac
 `,
   );
   writeExecutable(NodePath.join(bin, "node"), "#!/bin/sh\necho v24.22.1\n");
+  writeExecutable(NodePath.join(bin, "apt-get"), `#!/bin/sh\necho "apt-get $*" >> "$STUB_LOG"\n`);
   writeExecutable(
     NodePath.join(bin, "claude"),
     `#!/bin/sh
@@ -75,13 +77,21 @@ esac
   );
   const versions = NodePath.join(home, ".t3/runtime/versions");
   return {
+    root,
     home,
     log,
     run(step) {
       return NodeChildProcess.execFileSync("bash", ["-s", "--", step], {
         input: SCRIPT,
         encoding: "utf8",
-        env: { NODE_ENV: "test", HOME: home, PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log },
+        env: {
+          NODE_ENV: "test",
+          HOME: home,
+          PATH: `${bin}:/usr/bin:/bin`,
+          STUB_LOG: log,
+          CLAUDE_LIST: NodePath.join(root, "claude-code.list"),
+          CLAUDE_MANAGED: NodePath.join(root, "claude-code"),
+        },
       });
     },
     version(name) {
@@ -130,6 +140,36 @@ describe("device-runtime-setup.sh", () => {
     guest.link("0.1.3");
     expect(guest.run("t3")).toContain("T3 Code 0.1.3 is already installed.");
     expect(NodeFS.readFileSync(guest.log, "utf8")).toBe("");
+  });
+
+  it.each([
+    { settings: {}, channel: "latest" },
+    {
+      settings: { ".claude/settings.json": '{ "autoUpdatesChannel": "stable" }' },
+      channel: "stable",
+    },
+    {
+      settings: {
+        ".claude/settings.json": '{"autoUpdatesChannel":"stable"}',
+        "claude-code/managed-settings.json": "{}",
+        "claude-code/managed-settings.d/10-channel.json": '{\n  "autoUpdatesChannel": "latest"\n}',
+      },
+      channel: "latest",
+    },
+  ])("upgrades Claude Code from the $channel apt repository its settings pick", (row) => {
+    using guest = makeGuest();
+    for (const [file, text] of Object.entries(row.settings)) {
+      const path = NodePath.join(file.startsWith(".claude") ? guest.home : guest.root, file);
+      NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+      NodeFS.writeFileSync(path, text);
+    }
+    guest.run("upgrade-claude-code");
+    expect(NodeFS.readFileSync(NodePath.join(guest.root, "claude-code.list"), "utf8")).toBe(
+      `deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/${row.channel} ${row.channel} main\n`,
+    );
+    expect(NodeFS.readFileSync(guest.log, "utf8")).toContain(
+      "apt-get install -y --only-upgrade claude-code",
+    );
   });
 
   it("reports versions and the Claude sign-in for the app", () => {
