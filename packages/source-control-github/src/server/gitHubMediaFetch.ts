@@ -14,7 +14,7 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 
-import { GITHUB_CREDENTIALED_MEDIA_HOSTS } from "../shared/gitHubMedia.ts";
+import { GITHUB_CREDENTIALED_MEDIA_HOSTS, gitHubLfsMediaUrl } from "../shared/gitHubMedia.ts";
 
 import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubRest from "./GitHubRest.ts";
@@ -192,6 +192,20 @@ export const make = Effect.gen(function* () {
         request.headers,
         signedIn?.token ?? null,
       );
+      const lfsUrl = gitHubLfsMediaUrl(request.url);
+      if (lfsUrl !== null && response !== null && contentTypeOf(response) === "text/plain") {
+        const lfs = yield* fetchFollowingRedirects(
+          lfsUrl,
+          request.headers,
+          signedIn?.token ?? null,
+        );
+        if (
+          (lfs?.status === 200 || lfs?.status === 206) &&
+          MEDIA_CONTENT_TYPE_PATTERN.test(contentTypeOf(lfs))
+        ) {
+          return lfs;
+        }
+      }
       if (response === null) return response;
       if (contentTypeOf(response) !== "text/html") {
         // A private repository's upload is a plain 404 to any token.

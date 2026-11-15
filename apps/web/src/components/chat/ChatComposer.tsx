@@ -1,6 +1,7 @@
 import { VoiceInputSetup } from "./VoiceInputSetup";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
+import type { ComposerAttachmentInsertion } from "../composerAttachmentInsertion";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { BackgroundThreadContext } from "./backgroundThread";
 import {
@@ -53,7 +54,7 @@ import * as Schema from "effect/Schema";
 import { formatComposerModelMention } from "@t3tools/client-runtime/composer-model-mentions";
 import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { parseSideChatCommand, serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { type FolderDropTarget, folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { splitTransferredFiles } from "./workspaceFileDrop";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
@@ -914,13 +915,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ? providerInstanceEntries.find((entry) => hasProviderSetup(entry.snapshot))?.instanceId
         : undefined))
     : undefined;
+  // Called before the derivation below: a hook between it and its uses stops React Compiler
+  // from caching the mode options, and the footer then re-renders on every keystroke.
+  const managedPolicy = useManagedPolicy(environmentId);
   const { modes: compatibleRuntimeModes, mode: compatibleRuntimeMode } =
     resolveCompatibleRuntimeMode(
       runtimeMode,
       selectedProviderEntry?.snapshot.supportedRuntimeModes,
     );
   // Modes above an administrator's ceiling stay listed, disabled with the reason.
-  const managedPolicy = useManagedPolicy(environmentId);
   const compatibleRuntimeModeOptions = resolveRuntimeModeOptions(
     compatibleRuntimeModes,
     managedPolicy,
@@ -1106,7 +1109,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     imageCount: composerImages.length + composerFiles.length,
     existingAttachmentCount: editingQueuedAttachments?.length ?? 0,
     terminalContexts: composerTerminalContexts,
-    elementContextCount: composerPreviewAnnotations.length + composerReviewComments.length,
+    elementContextCount:
+      composerPreviewAnnotations.length +
+      composerReviewComments.length +
+      composerThreadContexts.length +
+      composerEnvironmentContexts.length,
   });
   const composerTriggerKind = composerTrigger?.kind ?? null;
   const compactSlashCommandAvailable =
@@ -2347,6 +2354,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerMenuItemsRef,
       activeComposerMenuItemRef,
       setComposerDraftPrompt,
+      setComposerDraftThreadContexts,
+      setComposerDraftEnvironmentContexts,
       setComposerCursor,
       setComposerTrigger,
       setComposerHighlightedItemId,
@@ -2615,6 +2624,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const insertAttachmentReferences = (
     references: ReadonlyArray<ComposerContextReference>,
     selection?: { start: number; end: number },
+    pendingInsertion?: ComposerAttachmentInsertion,
   ): boolean => {
     if (references.length === 0) return false;
     // Question answers carry attachments beside the answer, never as chips. Falling back to
@@ -2625,6 +2635,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       liveAttachmentTargetKey: attachmentTargetKeyRef.current,
       references,
       insertReferences: () => {
+        if (pendingInsertion?.insert(references)) return true;
         if (selection) {
           const edit = inlineContextReferenceReplacement(promptRef.current, selection, references);
           return applyPromptReplacementStable(edit.start, edit.end, edit.text);
@@ -3748,7 +3759,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     compact={isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}
                     pendingAction={pendingPrimaryAction}
-                    isRunning={phase === "running" || phase === "connecting"}
+                    // A side-chat command starts a side chat; it never queues or steers the turn.
+                    isRunning={
+                      (phase === "running" || phase === "connecting") &&
+                      !(props.sideChatAvailable === true && parseSideChatCommand(prompt) !== null)
+                    }
                     canInterrupt={canInterrupt}
                     runId={activeThread?.runtime?.activeRunId ?? null}
                     followUpBehavior={followUpBehavior}

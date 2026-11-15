@@ -60,6 +60,16 @@ describe("backgroundWorkNotification", () => {
       outcome: "cancelled",
       summary: 'Subagent "Agent B" and command "Sleep 60 seconds" were stopped',
     });
+    assert.deepInclude(
+      backgroundWorkNotification([
+        { kind: "command", label: "npm test", outcome: "completed", exitCode: 0 },
+        { kind: "command", label: "npm run lint", outcome: "failed", exitCode: 1 },
+      ]),
+      {
+        outcome: "failed",
+        summary: 'Command "npm test" finished (exit 0) and command "npm run lint" failed (exit 1)',
+      },
+    );
   });
 
   it("reports a failed job even when the waiter watching it exits cleanly", () => {
@@ -70,7 +80,8 @@ describe("backgroundWorkNotification", () => {
     assert.deepEqual(notification, {
       source: { kind: "command" },
       outcome: "failed",
-      summary: 'Command "Wait for deploy" (exit 0) and command "Deploy site" (exit 1) failed',
+      summary:
+        'Command "Wait for deploy" finished (exit 0) and command "Deploy site" failed (exit 1)',
     });
   });
 
@@ -85,6 +96,18 @@ describe("backgroundWorkNotification", () => {
       outcome: "completed",
       summary: "4 subagents finished",
     });
+    assert.deepEqual(
+      backgroundWorkNotification(
+        reports.map((report, index) =>
+          index === 0 ? { ...report, outcome: "failed" as const } : report,
+        ),
+      ),
+      {
+        source: { kind: "subagent" },
+        outcome: "failed",
+        summary: "1 subagent failed and 3 finished",
+      },
+    );
   });
 });
 
