@@ -80,7 +80,8 @@ describe("backgroundWorkNotification", () => {
     assert.deepEqual(notification, {
       source: { kind: "command" },
       outcome: "failed",
-      summary: 'Command "Wait for deploy" (exit 0) and command "Deploy site" (exit 1) failed',
+      summary:
+        'Command "Wait for deploy" finished (exit 0) and command "Deploy site" failed (exit 1)',
     });
   });
 
