@@ -120,11 +120,15 @@ describe("android-bridge.mjs", () => {
     await using bridge = await startBridge((path) => {
       if (path === "/clipboard-get") return { ok: true, result: "copied" };
       if (path === "/battery-status") return { ok: true, result: { percentage: 80 } };
+      if (path === "/pm") return { ok: true, result: ["com.tailscale.ipn", "org.mozilla.firefox"] };
       return { ok: true, result: { notified: true, message: "Tap the notification." } };
     });
     expect((await bridge.run("termux-clipboard-get", [])).stdout).toBe("copied");
     expect((await bridge.run("termux-battery-status", [])).stdout).toBe(
       '{\n  "percentage": 80\n}\n',
+    );
+    expect((await bridge.run("pm", ["list", "packages"])).stdout).toBe(
+      "package:com.tailscale.ipn\npackage:org.mozilla.firefox\n",
     );
     expect(await bridge.run("xdg-open", ["https://example.com"])).toEqual({
       code: 0,
@@ -219,15 +223,57 @@ describe("android-bridge.mjs", () => {
       await bridge.run("termux-volume", ["music", "loud"]),
       await bridge.run("termux-location", ["-p", "wifi"]),
       await bridge.run("termux-torch", ["bright"]),
+      await bridge.run("am", ["start", "-W", "com.example"]),
+      await bridge.run("am", ["broadcast", "--ez", "enabled"]),
+      await bridge.run("am", ["startservice", "-p", "com.example"]),
+      await bridge.run("pm", ["uninstall", "com.example"]),
     ];
     expect(recording.stdout).toBe("Recording started\n");
-    expect(refused.map(({ code }) => code)).toEqual([1, 1, 1, 1]);
+    expect(refused.map(({ code }) => code)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
     expect(sent(bridge)).toEqual([
       {
         path: "/microphone-record",
         body: { action: "record", file: output, limit: 30_000, bitrate: 128_000 },
       },
       { path: "/sms-send", body: { recipients: ["555 0100", "555 0199"], text: "on my way" } },
+    ]);
+  });
+
+  it("reads am's intent flags, and a last argument as a URI, component or package", async () => {
+    await using bridge = await startBridge(succeed);
+    await bridge.run("am", [
+      "broadcast",
+      "-a",
+      "com.tailscale.ipn.CONNECT_VPN",
+      "--ez",
+      "quiet",
+      "true",
+      "-c",
+      "a",
+      "-c",
+      "b",
+      "com.tailscale.ipn/.IPNReceiver",
+    ]);
+    await bridge.run("termux-am", ["start", "-a", "android.intent.action.VIEW", "geo:0,0?q=cafe"]);
+    await bridge.run("am", ["start", "com.tailscale.ipn"]);
+    await bridge.run("pm", ["list", "packages", "-3", "tail"]);
+    expect(sent(bridge)).toEqual([
+      {
+        path: "/am",
+        body: {
+          mode: "broadcast",
+          action: "com.tailscale.ipn.CONNECT_VPN",
+          component: "com.tailscale.ipn/.IPNReceiver",
+          categories: ["a", "b"],
+          extras: [{ type: "boolean", key: "quiet", value: "true" }],
+        },
+      },
+      {
+        path: "/am",
+        body: { mode: "start", action: "android.intent.action.VIEW", data: "geo:0,0?q=cafe" },
+      },
+      { path: "/am", body: { mode: "start", package: "com.tailscale.ipn" } },
+      { path: "/pm", body: { thirdParty: true, filter: "tail" } },
     ]);
   });
 

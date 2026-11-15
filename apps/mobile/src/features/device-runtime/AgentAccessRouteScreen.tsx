@@ -23,6 +23,7 @@ const CATEGORIES: Readonly<Record<string, { readonly label: string; readonly com
       commands: "termux-telephony-call, termux-telephony-deviceinfo",
     },
     notifications: { label: "Notifications", commands: "termux-notification-list" },
+    apps: { label: "Other apps", commands: "am (also termux-am), pm" },
   };
 
 const POLICIES: ReadonlyArray<{

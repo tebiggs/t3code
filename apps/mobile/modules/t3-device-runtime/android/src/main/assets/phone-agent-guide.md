@@ -23,11 +23,16 @@ There is no Termux, Termux:API app or `pkg`: install packages with `apt-get` (ru
     always allow or never): `termux-location`, `termux-telephony-cellinfo`,
     `termux-camera-photo`, `termux-microphone-record`, `termux-contact-list`,
     `termux-sms-list`, `termux-sms-send`, `termux-call-log`, `termux-telephony-call`,
-    `termux-telephony-deviceinfo`, `termux-notification-list`. With Ask each time, each run
-    waits up to a minute for the user to answer on the phone, and fails if nobody does. The
-    first use also shows Android's own permission prompt. If one fails because it's set to
-    Never, wasn't approved or Android wasn't allowed, pass on the place the error names
-    instead of working around it.
+    `termux-telephony-deviceinfo`, `termux-notification-list`, and `am` and `pm` (below).
+    With Ask each time, each run waits up to a minute for the user to answer on the phone,
+    and fails if nobody does. The first use also shows Android's own permission prompt. If
+    one fails because it's set to Never, wasn't approved or Android wasn't allowed, pass on
+    the place the error names instead of working around it.
+- `am start` and `am broadcast` (also `termux-am`) send intents with Android's flags `-a`,
+  `-d`, `-t`, `-c`, `-n`, `-p`, `--es`, `--ez`, `--ei`, `--el` and `--ef`, and a last
+  argument that's a URI, package/class or package. `am start <package>` opens that app.
+  Broadcasts need `-p` or `-n`. `pm list packages [-3 | -s] [filter]` lists apps that have
+  a launcher icon; others are hidden from T3 Code. Calls go through `termux-telephony-call`.
 - While T3 Code isn't on screen, the clipboard can't be read, the camera, microphone and
-  location fail, and links, files, shares and calls arrive as a notification for the user
+  location fail, and links, files, apps, shares and calls arrive as a notification for the user
   to tap.

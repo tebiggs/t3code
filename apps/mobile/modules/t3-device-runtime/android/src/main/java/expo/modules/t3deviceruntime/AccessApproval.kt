@@ -100,7 +100,7 @@ internal object AccessApproval {
 
   private fun waitingFor(category: AccessCategory, command: String, details: String): WaitingApproval {
     val message = buildString {
-      append("termux-$command")
+      append(AgentAccess.commandName(command))
       if (details.isNotEmpty()) append("\n\n$details")
       append("\n\nAn agent or another device using this phone's server asked for this.")
     }

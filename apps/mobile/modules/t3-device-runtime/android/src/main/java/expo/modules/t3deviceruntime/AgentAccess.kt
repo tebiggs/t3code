@@ -64,7 +64,17 @@ object AgentAccess {
     ),
     // Notification access is a special permission, granted in system settings.
     AccessCategory(NOTIFICATIONS, "Notifications", listOf("notification-list"), emptyList()),
+    AccessCategory("apps", "Other apps", listOf("am", "pm"), emptyList()),
   )
+
+  /** The guest commands that reach a bridge command: termux-<command>, but am and pm keep Android's names. */
+  fun guestCommands(command: String): List<String> = when (command) {
+    "am" -> listOf("am", "termux-am")
+    "pm" -> listOf("pm")
+    else -> listOf("termux-$command")
+  }
+
+  fun commandName(command: String) = guestCommands(command).first()
 
   fun category(id: String): AccessCategory? = categories.firstOrNull { it.id == id }
 
@@ -153,7 +163,7 @@ object AgentAccess {
   }
 
   private fun rules(category: AccessCategory) =
-    category.commands.flatMap { listOf("Bash(termux-$it)", "Bash(termux-$it *)") }
+    category.commands.flatMap(::guestCommands).flatMap { listOf("Bash($it)", "Bash($it *)") }
 
   private fun preferences(context: Context) = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 }

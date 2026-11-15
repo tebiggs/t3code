@@ -155,6 +155,79 @@ const open = {
   },
 };
 
+const AM_VALUES = {
+  "-a": "action",
+  "-d": "data",
+  "-t": "type",
+  "-n": "component",
+  "-p": "package",
+};
+const AM_EXTRAS = {
+  "-e": "string",
+  "--es": "string",
+  "--ez": "boolean",
+  "--ei": "int",
+  "--el": "long",
+  "--ef": "float",
+};
+
+/** Android's am flags. As there, a last argument is a URI, a package/class or a package. */
+const am = {
+  usage:
+    "start|broadcast [-a action] [-d uri] [-t type] [-c category]... [-n package/class] " +
+    "[-p package] [--es|--ez|--ei|--el|--ef key value]... [uri | package/class | package]",
+  request: ([mode, ...args]) => {
+    if (mode !== "start" && mode !== "broadcast")
+      throw new UsageError("expected start or broadcast");
+    const body = { mode };
+    const categories = [];
+    const extras = [];
+    let index = 0;
+    const value = (offset) => {
+      const found = args[index + offset];
+      if (found === undefined) throw new UsageError(`${args[index]} needs a value`);
+      return found;
+    };
+    while (index < args.length) {
+      const arg = args[index];
+      if (AM_VALUES[arg]) {
+        body[AM_VALUES[arg]] = value(1);
+        index += 2;
+      } else if (arg === "-c") {
+        categories.push(value(1));
+        index += 2;
+      } else if (AM_EXTRAS[arg]) {
+        extras.push({ type: AM_EXTRAS[arg], key: value(1), value: value(2) });
+        index += 3;
+      } else if (arg.startsWith("-")) {
+        throw new UsageError(`unknown option ${arg}`);
+      } else if (index === args.length - 1) {
+        const field = URL_SCHEME.test(arg) ? "data" : arg.includes("/") ? "component" : "package";
+        body[field] = arg;
+        index += 1;
+      } else {
+        throw new UsageError(`unexpected argument ${arg}`);
+      }
+    }
+    if (categories.length > 0) body.categories = categories;
+    if (extras.length > 0) body.extras = extras;
+    return { path: "am", body };
+  },
+};
+
+const pm = {
+  usage: "list packages [-3 | -s] [filter]",
+  request: ([list, packages, ...args]) => {
+    if (list !== "list" || packages !== "packages") {
+      throw new UsageError("only pm list packages is supported");
+    }
+    const { options, rest } = parseOptions(args, {}, { "-3": "thirdParty", "-s": "system" });
+    if (rest.length > 1) throw new UsageError("expected at most one filter");
+    return { path: "pm", body: { ...options, ...(rest[0] ? { filter: rest[0] } : {}) } };
+  },
+  print: (names) => names.forEach((name) => printLine(`package:${name}`)),
+};
+
 const VOLUME_STREAMS = ["alarm", "music", "notification", "ring", "system", "call"];
 const SPEECH_STREAMS = ["ALARM", "MUSIC", "NOTIFICATION", "RING", "SYSTEM", "VOICE_CALL"];
 const SMS_TYPES = ["all", "inbox", "sent", "draft", "outbox", "failed", "queued"];
@@ -516,6 +589,9 @@ const COMMANDS = {
   },
   "termux-telephony-deviceinfo": jsonCommand("telephony-deviceinfo"),
   "termux-telephony-cellinfo": jsonCommand("telephony-cellinfo"),
+  am,
+  "termux-am": am,
+  pm,
 };
 
 async function call(path, body) {

@@ -134,6 +134,8 @@ const SETTINGS_SEARCH_TERMS = {
     "sms",
     "call log",
     "notifications",
+    "apps",
+    "intents",
   ],
 } satisfies Partial<Record<SettingsPageTarget | "account" | "AgentAccess", readonly string[]>>;
 const termsById: ReadonlyMap<string, readonly string[]> = new Map(

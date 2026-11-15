@@ -27,6 +27,7 @@ import android.webkit.URLUtil
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -85,6 +86,9 @@ private val GUEST_COMMANDS = listOf(
   "termux-telephony-call",
   "termux-telephony-deviceinfo",
   "termux-telephony-cellinfo",
+  "am",
+  "termux-am",
+  "pm",
 )
 
 // Commands that wait on hardware, an engine or a database, so they run on the request's thread.
@@ -104,6 +108,7 @@ private val WAITING_COMMANDS = setOf(
   "telephony-deviceinfo",
   "telephony-cellinfo",
   "notification-list",
+  "pm",
 )
 private const val NOTIFICATION_CHANNEL = "t3-agent-notifications"
 private const val REQUEST_CHANNEL = "t3-agent-requests"
@@ -305,8 +310,27 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     "telephony-deviceinfo" -> data.deviceInfo()
     "telephony-cellinfo" -> data.cellInfo()
     "notification-list" -> data.notifications()
+    "am" -> am(body)
+    "pm" -> JSONArray(launchablePackages(context, body))
     else -> throw BridgeError("Unknown command: $command", 404)
   }.takeUnless { it == Unit }
+
+  private fun am(body: JSONObject): Any? {
+    val intent = appIntent(context, body)
+    return when (val mode = body.getString("mode")) {
+      "start" -> launchIntent(context, intent).let { startOrNotify(it, "Open an app from an agent", describeIntent(it)) }
+      "broadcast" -> {
+        requireTarget(intent)
+        context.sendBroadcast(intent)
+        if (hasDeclaredReceiver(context, intent)) null
+        else JSONObject().put(
+          "message",
+          "Sent, but no app on this phone declares a receiver for it, so nothing may have received it.",
+        )
+      }
+      else -> throw BridgeError("am takes start or broadcast, not $mode")
+    }
+  }
 
   private fun openUrl(url: String): Any? =
     startOrNotify(Intent(Intent.ACTION_VIEW, webUri(url)), "Open a link from an agent", url)
@@ -424,13 +448,13 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
           context.startActivity(intent)
         } else {
           val tap = PendingIntent.getActivity(context, notificationId, intent, PendingIntent.FLAG_IMMUTABLE)
-          notify(REQUEST_CHANNEL, REQUEST_TAG, notificationId, "Allow $label?", "An agent wants to run termux-$command. Tap to answer.", tap)
+          notify(REQUEST_CHANNEL, REQUEST_TAG, notificationId, "Allow $label?", "An agent wants to run ${AgentAccess.commandName(command)}. Tap to answer.", tap)
         }
       },
       dismiss = { notificationManager().cancel(REQUEST_TAG, notificationId) },
     )
     if (!approved) {
-      throw BridgeError("The user didn't allow termux-$command on the phone. ${AgentAccess.where(category)} controls this.", 403)
+      throw BridgeError("The user didn't allow ${AgentAccess.commandName(command)} on the phone. ${AgentAccess.where(category)} controls this.", 403)
     }
   }
 

@@ -74,8 +74,10 @@ phone becomes an environment named after the device.
   `termux-share`, `termux-download`, `termux-tts-speak`, `termux-location` and
   `termux-camera-photo`. While T3 Code isn't on screen, links, files and calls arrive as a
   notification to tap, and the clipboard, camera, microphone and location can't be used.
-- Commands that reach your location, camera, microphone, contacts, SMS, call log, phone or
-  notifications ask you first, as an approval in the thread, even with full access. The
+- Agents can open other apps and send them intents with Android's `am start` and
+  `am broadcast`, and list apps with `pm list packages`.
+- Commands that reach your location, camera, microphone, contacts, SMS, call log, phone,
+  notifications or other apps ask you first on the phone, even with full access. The
   first time, Android also asks you to give T3 Code the permission. In **Settings > Agent
   access** you can set each to **Always allow** or **Never**. If you installed T3 Code from
   an APK file, Android may block notification access until you turn on **Allow restricted
