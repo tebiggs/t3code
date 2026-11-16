@@ -118,6 +118,8 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
+import * as ForkPushSender from "./fork/push/ForkPushSender.ts";
+import * as PushHost from "./fork/push/PushHost.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -945,6 +947,8 @@ it.live.each([
         Layer.mock(ExternalLauncher.ExternalLauncher)({}),
         Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
         Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ForkPushSender.ForkPushSender)({}),
+        Layer.mock(PushHost.PushHost)({ enabled: false }),
         Layer.mock(ServerEnvironment.ServerEnvironment)({}),
         Layer.mock(VcsProcess.VcsProcess)({
           run: (input) =>
