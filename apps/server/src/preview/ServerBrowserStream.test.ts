@@ -22,8 +22,8 @@ import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServer } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
-import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as SessionStore from "../auth/SessionStore.ts";
+import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { routeLayer } from "./ServerBrowserStream.ts";
 
@@ -32,28 +32,33 @@ const platformLayer = NodeHttpPlatform.layer.pipe(Layer.provideMerge(NodeService
 const makeAuth = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   error?: EnvironmentAuth.ServerAuthCredentialError,
-  sessionEnded: Effect.Effect<void> = Effect.never,
+  awaitInvalidation: SessionStore.SessionStore["Service"]["awaitInvalidation"] = () => Effect.never,
 ) => {
   const requests: string[] = [];
-  const layer = Layer.merge(
-    Layer.mock(EnvironmentAuth.EnvironmentAuth, {
-      authenticateWebSocketUpgrade: (request) => {
-        requests.push(request.url);
-        return error
-          ? Effect.fail(error)
-          : Effect.succeed({
-              sessionId: AuthSessionId.make("stream-test"),
-              subject: "stream-test",
-              method: "bearer-access-token",
-              scopes,
-            });
-      },
-    }),
-    Layer.succeed(SessionStore.SessionStore, {
-      awaitInvalidation: () => sessionEnded,
-    } as unknown as SessionStore.SessionStore["Service"]),
-  );
-  return { layer, requests };
+  const layer = Layer.mock(EnvironmentAuth.EnvironmentAuth, {
+    authenticateWebSocketUpgrade: (request) => {
+      requests.push(request.url);
+      return error
+        ? Effect.fail(error)
+        : Effect.succeed({
+            sessionId: AuthSessionId.make("stream-test"),
+            subject: "stream-test",
+            method: "bearer-access-token",
+            scopes,
+          });
+    },
+  });
+  return {
+    layer: Layer.merge(
+      layer,
+      Layer.mock(SessionStore.SessionStore, {
+        cookieName: "test",
+        legacyCookieName: undefined,
+        awaitInvalidation,
+      }),
+    ),
+    requests,
+  };
 };
 
 const mutations = [
@@ -165,6 +170,7 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
   Effect.gen(function* () {
     const output = yield* Queue.make<ServerBrowser.ServerBrowserViewerOutput>();
     const released: number[] = [];
+    const invalidated = yield* Deferred.make<void>();
     const frame = (id: number): ServerBrowser.ServerBrowserViewerOutput => ({
       _tag: "frame",
       data: new Uint8Array([id]),
@@ -186,7 +192,10 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
         { disableListenLog: true },
       ).pipe(
         Layer.provideMerge(NodeHttpServer.layerTest),
-        Layer.provide(makeAuth([AuthOrchestrationReadScope]).layer),
+        Layer.provide(
+          makeAuth([AuthOrchestrationReadScope], undefined, () => Deferred.await(invalidated))
+            .layer,
+        ),
       ),
     );
     const server = Context.get(services, HttpServer.HttpServer);
@@ -230,6 +239,12 @@ it.effect("sends replies ahead of stale frames and only the newest frame after a
     yield* Effect.promise(() => next.promise);
     expect(received).toEqual([1, "probe", 4]);
     expect(released).toEqual([2, 3, 1]);
+
+    const closed = new Promise<void>((resolve) =>
+      socket.addEventListener("close", () => resolve(), { once: true }),
+    );
+    yield* Deferred.succeed(invalidated, undefined);
+    yield* Effect.promise(() => closed);
   }),
 );
 
@@ -274,57 +289,6 @@ it.effect.each([
     expect(response.status).toBe(testCase.status);
     expect(attachments).toBe(0);
   }),
-);
-
-it.effect("closes a viewer's socket when its session is revoked", () =>
-  Effect.gen(function* () {
-    const ended = yield* Deferred.make<void>();
-    const input: unknown[] = [];
-    const output = yield* Queue.make<ServerBrowser.ServerBrowserViewerOutput>();
-    const browser = ServerBrowser.ServerBrowser.of({
-      clearProfile: () => Effect.void,
-      profileReporter: Effect.succeed(() => Effect.void),
-      openDownload: () => Effect.succeedNone,
-      answerFileChooser: () => Effect.succeed(false),
-      attachViewer: () =>
-        Effect.succeed({
-          output,
-          input: (message) => Effect.sync(() => void input.push(message)),
-        }),
-    });
-    const services = yield* Layer.build(
-      HttpRouter.serve(
-        routeLayer.pipe(
-          Layer.provide(Layer.succeed(ServerBrowser.ServerBrowser, browser)),
-          Layer.provide(platformLayer),
-        ),
-        { disableListenLog: true },
-      ).pipe(
-        Layer.provideMerge(NodeHttpServer.layerTest),
-        Layer.provide(
-          makeAuth(
-            [AuthOrchestrationReadScope, AuthPreviewOperateScope],
-            undefined,
-            Deferred.await(ended),
-          ).layer,
-        ),
-      ),
-    );
-    const server = Context.get(services, HttpServer.HttpServer);
-    const origin = HttpServer.formatAddress(server.address).replace(/^http/, "ws");
-    const socket = new WebSocket(
-      `${origin}/api/preview-stream/ws?threadId=thread&tabId=tab&wsTicket=one-use-ticket`,
-    );
-    const opened = Promise.withResolvers<void>();
-    const closed = Promise.withResolvers<number>();
-    socket.addEventListener("open", () => opened.resolve());
-    socket.addEventListener("close", (event) => closed.resolve(event.code));
-    yield* Effect.promise(() => opened.promise);
-
-    yield* Deferred.succeed(ended, undefined);
-    expect(yield* Effect.promise(() => closed.promise)).toBe(1008);
-    expect(input).toEqual([]);
-  }).pipe(Effect.scoped),
 );
 
 it.effect("serves a tab's download only to an authorized session", () =>

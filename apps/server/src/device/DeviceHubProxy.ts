@@ -5,6 +5,7 @@ import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3to
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import {
   HttpClient,
   HttpClientRequest,
@@ -14,10 +15,11 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import * as Socket from "effect/socket/Socket";
+import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 
+import { authenticateMediaRequest, failEnvironmentInternal } from "../auth/http.ts";
 import * as SessionStore from "../auth/SessionStore.ts";
-import { authenticateMediaRequest } from "../auth/http.ts";
 import * as DeviceService from "./DeviceService.ts";
 import { repeatStillFrame } from "./mjpegStillFrame.ts";
 
@@ -96,6 +98,35 @@ export const upstreamWebSocketConstructor = Layer.effect(
   }),
 ).pipe(Layer.provide(NodeSocket.layerWebSocketConstructor));
 
+const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
+  request: HttpServerRequest.HttpServerRequest,
+  upstreamUrl: string,
+  protocols: ReadonlyArray<string> = [],
+  headers: Readonly<Record<string, string>> = {},
+) {
+  const transport = NodeHttpServerRequest.toIncomingMessage(request).socket;
+  const client = yield* request.upgrade;
+  const upstream = yield* Socket.makeWebSocket(upstreamUrl, {
+    openTimeout: "10 seconds",
+    ...(protocols.length > 0 ? { protocols: [...protocols] } : {}),
+    ...(Object.keys(headers).length > 0 ? { headers: { ...headers } } : {}),
+  }).pipe(Effect.provide(upstreamWebSocketConstructor));
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const writeToClient = yield* client.writer;
+      const writeToUpstream = yield* upstream.writer;
+      return yield* Effect.raceFirst(
+        pumpFrames(upstream, writeToClient),
+        pumpFrames(client, writeToUpstream),
+      );
+    }),
+  ).pipe(
+    Effect.onInterrupt(() => Effect.sync(() => transport.destroy())),
+    Effect.ignoreCause,
+  );
+  return HttpServerResponse.empty();
+});
+
 const pumpFrames =
   /* Frame pumping runs continuously; a span per frame stream adds no diagnostic value. */
   Effect.fnUntraced(function* (source: Socket.Socket, sink: Socket.Writer) {
@@ -105,45 +136,10 @@ const pumpFrames =
     }
   });
 
-/** Device input was authorized at connect, so a bridge mustn't outlive its session. */
-const bridgeWebSocket = (
-  client: Socket.Socket,
-  upstream: Socket.Socket,
-  sessionEnded: Effect.Effect<void, SessionStore.SessionCredentialVerificationError>,
-) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const writeToClient = yield* client.writer;
-      const writeToUpstream = yield* upstream.writer;
-      return yield* Effect.raceFirst(
-        Effect.raceFirst(pumpFrames(upstream, writeToClient), pumpFrames(client, writeToUpstream)),
-        sessionEnded.pipe(
-          Effect.andThen(writeToClient.write(new Socket.CloseEvent(1008, "session ended"))),
-        ),
-      );
-    }),
-  ).pipe(Effect.ignoreCause);
-
-const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
-  request: HttpServerRequest.HttpServerRequest,
-  upstreamUrl: string,
-  sessionEnded: Effect.Effect<void, SessionStore.SessionCredentialVerificationError>,
-  protocols: ReadonlyArray<string> = [],
-  headers: Readonly<Record<string, string>> = {},
-) {
-  const client = yield* request.upgrade;
-  const upstream = yield* Socket.makeWebSocket(upstreamUrl, {
-    openTimeout: "10 seconds",
-    ...(protocols.length > 0 ? { protocols: [...protocols] } : {}),
-    ...(Object.keys(headers).length > 0 ? { headers: { ...headers } } : {}),
-  }).pipe(Effect.provide(upstreamWebSocketConstructor));
-  yield* bridgeWebSocket(client, upstream, sessionEnded);
-  return HttpServerResponse.empty();
-});
-
 const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   request: HttpServerRequest.HttpServerRequest,
   upstreamUrl: string,
+  invalidated: Effect.Effect<void>,
   extraHeaders: Readonly<Record<string, string>> = {},
 ) {
   const httpClient = HttpClient.withScope(yield* HttpClient.HttpClient);
@@ -183,7 +179,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   const body = headers["content-type"]?.startsWith("multipart/x-mixed-replace")
     ? repeatStillFrame(response.stream)
     : response.stream;
-  return HttpServerResponse.stream(body, {
+  return HttpServerResponse.stream(body.pipe(Stream.interruptWhen(invalidated)), {
     status: response.status,
     headers,
     ...(headers["content-type"] ? { contentType: headers["content-type"] } : {}),
@@ -215,6 +211,15 @@ const handler = Effect.gen(function* () {
   const session = yield* authenticateMediaRequest(
     controlsDevice ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope,
   );
+  const sessions = yield* SessionStore.SessionStore;
+  const invalidated = sessions
+    .awaitInvalidation(session.sessionId, session.proofKeyThumbprint)
+    .pipe(
+      Effect.catchTags({
+        SessionCredentialVerificationError: (error) =>
+          failEnvironmentInternal("internal_error", error).pipe(Effect.ignore),
+      }),
+    );
   const devices = yield* DeviceService.DeviceService;
   const ready = yield* devices.currentReadiness(url.value.searchParams.get("hostId") ?? undefined);
   if (!ready) {
@@ -243,16 +248,17 @@ const handler = Effect.gen(function* () {
   }
   const upstreamUrl = routed?.url ?? `${ready.hub.origin}${hubPath}${search}`;
   if (upgrade) {
-    const sessions = yield* SessionStore.SessionStore;
-    return yield* proxyWebSocket(
-      request,
-      upstreamUrl.replace(/^http/, "ws"),
-      sessions.awaitInvalidation(session.sessionId, session.proofKeyThumbprint),
-      routed?.protocols,
-      routed?.headers,
+    return yield* Effect.raceFirst(
+      proxyWebSocket(
+        request,
+        upstreamUrl.replace(/^http/, "ws"),
+        routed?.protocols,
+        routed?.headers,
+      ),
+      invalidated.pipe(Effect.as(HttpServerResponse.empty())),
     );
   }
-  return yield* proxyHttp(request, upstreamUrl, routed?.headers);
+  return yield* proxyHttp(request, upstreamUrl, invalidated, routed?.headers);
 });
 
 export const layer = HttpRouter.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, handler);
