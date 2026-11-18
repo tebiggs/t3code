@@ -1,3 +1,4 @@
+import { msg, T, useGT, useMessages } from "gt-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, Linking, PermissionsAndroid } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -12,18 +13,18 @@ import { deviceRuntime, type AgentAccessCategory, type AgentAccessPolicy } from 
 
 const CATEGORIES: Readonly<Record<string, { readonly label: string; readonly commands: string }>> =
   {
-    location: { label: "Location", commands: "termux-location, termux-telephony-cellinfo" },
-    camera: { label: "Camera", commands: "termux-camera-photo" },
-    microphone: { label: "Microphone", commands: "termux-microphone-record" },
-    contacts: { label: "Contacts", commands: "termux-contact-list" },
-    sms: { label: "Text messages", commands: "termux-sms-list, termux-sms-send" },
-    "call-log": { label: "Call log", commands: "termux-call-log" },
+    location: { label: msg("Location"), commands: "termux-location, termux-telephony-cellinfo" },
+    camera: { label: msg("Camera"), commands: "termux-camera-photo" },
+    microphone: { label: msg("Microphone"), commands: "termux-microphone-record" },
+    contacts: { label: msg("Contacts"), commands: "termux-contact-list" },
+    sms: { label: msg("Text messages"), commands: "termux-sms-list, termux-sms-send" },
+    "call-log": { label: msg("Call log"), commands: "termux-call-log" },
     phone: {
-      label: "Phone calls and device info",
+      label: msg("Phone calls and device info"),
       commands: "termux-telephony-call, termux-telephony-deviceinfo",
     },
-    notifications: { label: "Notifications", commands: "termux-notification-list" },
-    apps: { label: "Other apps", commands: "am (also termux-am), pm" },
+    notifications: { label: msg("Notifications"), commands: "termux-notification-list" },
+    apps: { label: msg("Other apps"), commands: "am (also termux-am), pm" },
   };
 
 const POLICIES: ReadonlyArray<{
@@ -33,11 +34,19 @@ const POLICIES: ReadonlyArray<{
 }> = [
   {
     policy: "ask",
-    label: "Ask each time",
-    description: "This phone asks you before each command runs.",
+    label: msg("Ask each time"),
+    description: msg("This phone asks you before each command runs."),
   },
-  { policy: "allow", label: "Always allow", description: "Agents use it without asking." },
-  { policy: "deny", label: "Never", description: "These commands are refused." },
+  {
+    policy: "allow",
+    label: msg("Always allow"),
+    description: msg("Agents use it without asking."),
+  },
+  {
+    policy: "deny",
+    label: msg("Never", { $context: "agent access policy" }),
+    description: msg("These commands are refused."),
+  },
 ];
 
 /** Asks Android for what a category needs; notification access is a system settings page. */
@@ -60,6 +69,8 @@ function requestAndroidAccess(category: AgentAccessCategory): Promise<unknown> {
 /** Settings → Agent access: what agents on this phone may reach through Android. */
 export function AgentAccessRouteScreen() {
   const insets = useSafeAreaInsets();
+  const gt = useGT();
+  const m = useMessages();
   const read = useCallback(() => deviceRuntime?.getAgentAccess() ?? [], []);
   const [categories, setCategories] = useState(read);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- re-reads grants made in Android's settings
@@ -79,7 +90,7 @@ export function AgentAccessRouteScreen() {
   };
 
   return (
-    <SettingsScreen title="Agent access">
+    <SettingsScreen title={gt("Agent access")}>
       <ScreenScrollView
         contentInsetAdjustmentBehavior="automatic"
         className="flex-1"
@@ -87,10 +98,12 @@ export function AgentAccessRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <Text className="px-2 text-sm leading-normal text-foreground-muted">
-          Agents on this phone reach Android through termux-* commands. These need your say: with
-          Ask each time, this phone asks you before each one runs, even when another device started
-          it. Nobody answering within a minute counts as no. This covers those commands. It isn't a
-          hard barrier against someone using a terminal on this phone's server.
+          <T>
+            Agents on this phone reach Android through termux-* commands. These need your say: with
+            Ask each time, this phone asks you before each one runs, even when another device
+            started it. Nobody answering within a minute counts as no. This covers those commands.
+            It isn't a hard barrier against someone using a terminal on this phone's server.
+          </T>
         </Text>
         {categories.map((category) => {
           const meta = CATEGORIES[category.id];
@@ -98,20 +111,22 @@ export function AgentAccessRouteScreen() {
           return (
             <SettingsSection
               key={category.id}
-              title={meta.label}
+              title={m(meta.label)}
               footer={
                 category.policy === "deny"
                   ? meta.commands
                   : category.granted
-                    ? `${meta.commands}. Android allows it.`
-                    : `${meta.commands}. Android hasn't allowed T3 Code yet.`
+                    ? gt("{commands}. Android allows it.", { commands: meta.commands })
+                    : gt("{commands}. Android hasn't allowed T3 Code yet.", {
+                        commands: meta.commands,
+                      })
               }
             >
               {POLICIES.map((choice, index) => (
                 <ListChoiceRow
                   key={choice.policy}
-                  label={choice.label}
-                  description={choice.description}
+                  label={m(choice.label)}
+                  description={m(choice.description)}
                   selected={category.policy === choice.policy}
                   separated={index > 0}
                   onPress={() => choose(category, choice.policy)}
@@ -120,7 +135,7 @@ export function AgentAccessRouteScreen() {
               {category.policy !== "deny" && !category.granted ? (
                 <ListRow
                   icon="exclamationmark.circle"
-                  label="Allow in Android"
+                  label={gt("Allow in Android")}
                   onPress={() =>
                     void requestAndroidAccess(category).then(() => setCategories(read()))
                   }

@@ -1,4 +1,5 @@
 import { useNavigation } from "@react-navigation/native";
+import { useGT } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -15,6 +16,7 @@ import { startAndReconnectPhoneServer, usePhoneServerRuntime } from "./phone-ser
  */
 export function PhoneServerChip(props: { readonly className?: string }) {
   const navigation = useNavigation();
+  const gt = useGT();
   const settings = usePhoneServerSettings();
   const runtime = usePhoneServerRuntime();
   const phone = useWorkspaceEnvironments().find(
@@ -22,14 +24,21 @@ export function PhoneServerChip(props: { readonly className?: string }) {
   );
   if (settings === null || !phone?.isEnabled) return null;
   if (phone.connectionState === "connected" || phone.connectionState === "connecting") return null;
-  const label = runtime.starting ? "Starting…" : runtime.error ? "Can't start" : "Stopped";
+  const label = runtime.starting
+    ? gt("Starting…")
+    : runtime.error
+      ? gt("Can't start")
+      : gt("Stopped", { $context: "server state" });
 
   return (
     <View className={cn("flex-row px-5 pb-2.5", props.className)}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${phone.environmentLabel}, ${label}`}
-        accessibilityHint={runtime.error ? "Opens phone setup" : "Starts the server"}
+        accessibilityLabel={gt("{environment}, {state}", {
+          environment: phone.environmentLabel,
+          state: label,
+        })}
+        accessibilityHint={runtime.error ? gt("Opens phone setup") : gt("Starts the server")}
         disabled={runtime.starting}
         onPress={() => {
           if (runtime.error) navigation.navigate("PhoneSetup");

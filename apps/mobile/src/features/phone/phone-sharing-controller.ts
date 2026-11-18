@@ -1,11 +1,17 @@
 import type { EnvironmentId, EnvironmentSharingMode } from "@t3tools/contracts";
+import { msg } from "gt-react-native";
 
+import { m } from "../../i18n/messages";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import type { PhoneSharingRecord } from "../../persistence/mobile-preferences";
 import { PHONE_STILL_LISTED, type PhoneSharing, VIEW_ONLY_NEEDS_UPDATE } from "./phone-sharing";
 
-const STOP_UNFINISHED =
-  "Sharing hasn't finished stopping: other devices may still have access. T3 Code tries again when this phone's server answers.";
+const stopUnfinished = () =>
+  m(
+    msg(
+      "Sharing hasn't finished stopping: other devices may still have access. T3 Code tries again when this phone's server answers.",
+    ),
+  );
 
 export interface PhoneSharingEffects {
   /** Resolves once saved preferences are loaded, and rejects if they can't be. */
@@ -51,7 +57,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         await effects.hydrated();
         return await task();
       } catch (error) {
-        return error instanceof Error ? error.message : "Couldn't update phone sharing.";
+        return error instanceof Error ? error.message : m(msg("Couldn't update phone sharing."));
       }
     });
     queue = run;
@@ -81,7 +87,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
     }
     if (record.phase === "stopping") {
       const connection = effects.connectionFor(record.environmentId);
-      if (connection === null) return STOP_UNFINISHED;
+      if (connection === null) return stopUnfinished();
       const failure = await effects.stopOnServer(connection);
       if (failure !== null) return failure;
       record = { ...record, phase: "listed" };
@@ -137,10 +143,10 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
       enqueue(async () => {
         await honourOwedStop();
         const unfinished = await settle();
-        if (effects.loadRecord()?.phase === "stopping") return unfinished ?? STOP_UNFINISHED;
+        if (effects.loadRecord()?.phase === "stopping") return unfinished ?? stopUnfinished();
         const sharing = await effects.readSharing(connection);
-        if (sharing === null) return "Couldn't check whether this phone is already shared.";
-        if (sharing.shared) return "This phone is already shared.";
+        if (sharing === null) return m(msg("Couldn't check whether this phone is already shared."));
+        if (sharing.shared) return m(msg("This phone is already shared."));
         if (sharing.modesUnsupported && mode === "view-only") return VIEW_ONLY_NEEDS_UPDATE;
         const notReady = await effects.ensureRelayClient(connection);
         if (notReady !== null) return notReady;
@@ -156,17 +162,17 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         if (failure === null && effects.signedInAccount() === accountId) return null;
         await effects.saveRecord({ environmentId, accountId, phase: "stopping" });
         await settle();
-        return failure ?? "You signed out of T3 Connect, so this phone wasn't shared.";
+        return failure ?? m(msg("You signed out of T3 Connect, so this phone wasn't shared."));
       }),
 
     /** Between View only and Full control on a share that's already on. */
     changeMode: (connection: SavedRemoteConnection, mode: EnvironmentSharingMode) =>
       enqueue(async () => {
         await honourOwedStop();
-        if (effects.loadRecord()?.phase === "stopping") return STOP_UNFINISHED;
+        if (effects.loadRecord()?.phase === "stopping") return stopUnfinished();
         const sharing = await effects.readSharing(connection);
-        if (sharing === null) return "Couldn't check whether this phone is shared.";
-        if (!sharing.shared) return "This phone isn't shared anymore.";
+        if (sharing === null) return m(msg("Couldn't check whether this phone is shared."));
+        if (!sharing.shared) return m(msg("This phone isn't shared anymore."));
         if (sharing.modesUnsupported) return VIEW_ONLY_NEEDS_UPDATE;
         return effects.setSharingMode(connection, mode);
       }),
@@ -222,7 +228,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
       enqueue(async () => {
         await markStopping();
         const failure = await settle();
-        return effects.loadRecord()?.phase === "stopping" ? (failure ?? STOP_UNFINISHED) : null;
+        return effects.loadRecord()?.phase === "stopping" ? (failure ?? stopUnfinished()) : null;
       }),
   };
 }

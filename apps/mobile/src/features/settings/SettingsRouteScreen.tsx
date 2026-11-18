@@ -280,7 +280,7 @@ function useSettingsIndexSections(): SettingsListSection[] {
               {
                 id: "AgentAccess",
                 icon: "exclamationmark.shield",
-                label: "Agent access",
+                label: gt("Agent access"),
                 onPress: () => navigation.navigate("AgentAccess"),
               } satisfies SettingsListRow,
             ]

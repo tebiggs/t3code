@@ -14,8 +14,10 @@ import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { msg } from "gt-react-native";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
+import { m } from "../../i18n/messages";
 import {
   lastOutputLine,
   LIVE_PROBE_TIMEOUT_MS,
@@ -45,10 +47,10 @@ const SLEEP_TERMINAL_THREAD_ID = "t3-mobile-power-sleep";
 const OUTPUT_TAIL_LENGTH = 4_096;
 
 function failureMessage(cause: unknown): string {
-  if (Cause.isTimeoutError(cause)) return "The command didn't finish within a minute.";
+  if (Cause.isTimeoutError(cause)) return m(msg("The command didn't finish within a minute."));
   return cause instanceof Error && cause.message.length > 0
     ? cause.message
-    : "The command could not be run.";
+    : m(msg("The command could not be run."));
 }
 
 /** The shell's exit, from a live event or from the snapshot a reattach returns after it ended. */
@@ -62,7 +64,10 @@ function terminalOutcome(
     case "error":
       return { exitCode: null, message: event.message };
     case "closed":
-      return { exitCode: null, message: "The terminal closed before the command finished." };
+      return {
+        exitCode: null,
+        message: m(msg("The terminal closed before the command finished.")),
+      };
     case "snapshot":
       return written && (event.snapshot.status === "exited" || event.snapshot.status === "error")
         ? { exitCode: event.snapshot.exitCode, message: null }

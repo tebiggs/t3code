@@ -1,5 +1,6 @@
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useGT, useMessages } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -38,17 +39,22 @@ function EnvironmentPowerChip(props: {
   readonly environment: WorkspaceEnvironment;
   readonly onPress: (environmentId: EnvironmentId) => void;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const runtime = useEnvironmentPowerRuntime(props.environment.environmentId);
   const status = powerStatus(runtime, {
     phase: props.environment.connectionState,
     error: props.environment.connectionError,
   });
-  const label = POWER_STATUS_LABELS[status];
+  const label = m(POWER_STATUS_LABELS[status]);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${props.environment.environmentLabel}, ${label}`}
-      accessibilityHint="Opens sleep and wake controls"
+      accessibilityLabel={gt("{environment}, {state}", {
+        environment: props.environment.environmentLabel,
+        state: label,
+      })}
+      accessibilityHint={gt("Opens sleep and wake controls")}
       onPress={() => props.onPress(props.environment.environmentId)}
       className="h-8 flex-row items-center gap-1.5 rounded-lg border border-border bg-subtle pl-2.5 pr-2 active:opacity-70"
     >

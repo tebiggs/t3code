@@ -1,4 +1,5 @@
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { msg, T, useGT, useMessages } from "gt-react-native";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Linking, PermissionsAndroid, Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -35,9 +36,9 @@ type StepId = "install" | "signIn" | "connect";
 const STEPS: ReadonlyArray<StepId> = ["install", "signIn", "connect"];
 
 const STEP_TITLES: Record<StepId, string> = {
-  install: "Install Ubuntu, Claude Code and T3 Code",
-  signIn: "Sign in to Claude",
-  connect: "Connect this phone",
+  install: msg("Install Ubuntu, Claude Code and T3 Code"),
+  signIn: msg("Sign in to Claude"),
+  connect: msg("Connect this phone"),
 };
 
 /** Progress shows in a notification while T3 Code is in the background; Android 13+ asks first. */
@@ -71,6 +72,8 @@ function errorText(error: unknown, fallback: string): string {
 export function DeviceRuntimeSetupScreen() {
   const native = requireDeviceRuntime();
   const navigation = useNavigation();
+  const gt = useGT();
+  const m = useMessages();
   const insets = useSafeAreaInsets();
   const { status, refresh } = useDeviceRuntimeStatus();
   const [inspection, setInspection] = useState<DeviceRuntimeInspection | null>(null);
@@ -91,8 +94,10 @@ export function DeviceRuntimeSetupScreen() {
     }
     inspectDeviceRuntime()
       .then(setInspection)
-      .catch((cause: unknown) => setError(errorText(cause, "Couldn't check the installation.")));
-  }, [native]);
+      .catch((cause: unknown) =>
+        setError(errorText(cause, gt("Couldn't check the installation."))),
+      );
+  }, [native, gt]);
 
   useFocusEffect(
     useCallback(() => {
@@ -134,7 +139,7 @@ export function DeviceRuntimeSetupScreen() {
     setBusy(label);
     setError(null);
     return action()
-      .catch((cause: unknown) => setError(errorText(cause, "That didn't finish.")))
+      .catch((cause: unknown) => setError(errorText(cause, gt("That didn't finish."))))
       .then(() => {
         setBusy(null);
         refresh();
@@ -153,12 +158,14 @@ export function DeviceRuntimeSetupScreen() {
   };
   const reinstall = () =>
     Dialog.alert(
-      "Reinstall?",
-      "Deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone, then installs it again.",
+      gt("Reinstall?"),
+      gt(
+        "Deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone, then installs it again.",
+      ),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: gt("Cancel"), style: "cancel" },
         {
-          text: "Reinstall",
+          text: gt("Reinstall"),
           style: "destructive",
           onPress: () =>
             void run("install", async () => {
@@ -175,12 +182,14 @@ export function DeviceRuntimeSetupScreen() {
     );
   const remove = () =>
     Dialog.alert(
-      "Remove from this phone?",
-      "Stops the server and deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone.",
+      gt("Remove from this phone?"),
+      gt(
+        "Stops the server and deletes Ubuntu with everything in it, including the threads and Claude sign-in on this phone.",
+      ),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: gt("Cancel"), style: "cancel" },
         {
-          text: "Remove",
+          text: gt("Remove"),
           style: "destructive",
           onPress: () =>
             void run("remove", async () => {
@@ -189,7 +198,7 @@ export function DeviceRuntimeSetupScreen() {
               await stopPhoneServerWhenSettled();
               await native.remove();
               await forgetDeviceServer();
-              if (stillListed) Dialog.alert("Removed from this phone", stillListed);
+              if (stillListed) Dialog.alert(gt("Removed from this phone"), stillListed);
               navigation.goBack();
             }),
         },
@@ -203,10 +212,12 @@ export function DeviceRuntimeSetupScreen() {
         : undefined,
     signIn: inspection?.claudeSignedIn
       ? inspection.claudePlan
-        ? `Signed in · ${inspection.claudePlan}`
-        : "Signed in"
+        ? gt("Signed in · {plan}", { plan: inspection.claudePlan })
+        : gt("Signed in")
       : undefined,
-    connect: environment ? `Connected as ${environment.environmentLabel}` : undefined,
+    connect: environment
+      ? gt("Connected as {environment}", { environment: environment.environmentLabel })
+      : undefined,
   };
   const body: Record<StepId, ReactNode> = {
     install: (
@@ -225,9 +236,11 @@ export function DeviceRuntimeSetupScreen() {
     ),
     connect: (
       <>
-        <StepText>Starts T3 Code's server on this phone and adds it to your environments.</StepText>
+        <StepText>
+          <T>Starts T3 Code's server on this phone and adds it to your environments.</T>
+        </StepText>
         <Button
-          label="Connect"
+          label={gt("Connect")}
           tone="primary"
           loading={busy === "connect"}
           onPress={() =>
@@ -241,7 +254,7 @@ export function DeviceRuntimeSetupScreen() {
   };
 
   return (
-    <SettingsScreen title="Run on this phone">
+    <SettingsScreen title={gt("Run on this phone")}>
       <ScreenScrollView
         contentInsetAdjustmentBehavior="automatic"
         className="flex-1"
@@ -249,21 +262,31 @@ export function DeviceRuntimeSetupScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <Text className="px-2 text-sm leading-normal text-foreground-muted">
-          Claude Code and a T3 Code server run in an Ubuntu system inside T3 Code, so agents can
-          work with your phone's files. Setup downloads about 400 MB and uses about 1.1 GB of
-          storage. Use Wi-Fi.
+          <T>
+            Claude Code and a T3 Code server run in an Ubuntu system inside T3 Code, so agents can
+            work with your phone's files. Setup downloads about 400 MB and uses about 1.1 GB of
+            storage. Use Wi-Fi.
+          </T>
         </Text>
 
         {current === "ready" && environment ? (
-          <SettingsSection title="Ready">
+          <SettingsSection title={gt("Ready")}>
             <View className="gap-3 p-4">
-              <Text className="text-base font-t3-medium text-foreground">This phone is ready</Text>
+              <Text className="text-base font-t3-medium text-foreground">
+                <T>This phone is ready</T>
+              </Text>
               <Text className="text-sm text-foreground-muted">
-                Connected as {environment.environmentLabel}
-                {inspection?.claudeVersion ? ` · Claude Code ${inspection.claudeVersion}` : ""}
+                {inspection?.claudeVersion
+                  ? gt("Connected as {environment} · Claude Code {version}", {
+                      environment: environment.environmentLabel,
+                      version: inspection.claudeVersion,
+                    })
+                  : gt("Connected as {environment}", {
+                      environment: environment.environmentLabel,
+                    })}
               </Text>
               <Button
-                label="Start a thread"
+                label={gt("Start a thread")}
                 tone="primary"
                 onPress={() => navigation.navigate("NewTaskProject")}
               />
@@ -271,18 +294,18 @@ export function DeviceRuntimeSetupScreen() {
           </SettingsSection>
         ) : null}
 
-        <SettingsSection title="Setup">
+        <SettingsSection title={gt("Setup")}>
           {STEPS.map((step, index) => (
             <StepRow
               key={step}
               number={index + 1}
-              title={STEP_TITLES[step]}
+              title={m(STEP_TITLES[step])}
               state={stepState(step)}
               summary={summary[step]}
               action={
                 step === "signIn" && inspection?.claudeSignedIn ? (
                   <Button
-                    label="Sign out"
+                    label={gt("Sign out")}
                     tone="text"
                     loading={busy === "logout"}
                     onPress={() =>
@@ -312,29 +335,35 @@ export function DeviceRuntimeSetupScreen() {
 
         {status.installed ? (
           <SettingsSection
-            title="Keep it running"
-            footer="While the server runs, T3 Code shows a notification and keeps the phone awake. Android may stop agents when many processes run; the child process setting lifts that limit."
+            title={gt("Keep it running")}
+            footer={gt(
+              "While the server runs, T3 Code shows a notification and keeps the phone awake. Android may stop agents when many processes run; the child process setting lifts that limit.",
+            )}
           >
             <ListRow
               icon="internaldrive"
-              label="Phone storage"
+              label={gt("Phone storage")}
               description={
                 status.storageAccess
-                  ? "Allowed. Agents can reach /sdcard."
-                  : "Not allowed. Agents can't reach your files."
+                  ? gt("Allowed. Agents can reach {path}.", { path: "/sdcard" })
+                  : gt("Not allowed. Agents can't reach your files.")
               }
               onPress={() => void requestStorageAccess()}
             />
             <ListRow
               icon="bolt.circle"
-              label="Battery use"
-              description="Set T3 Code to Unrestricted if the server stops with the screen off."
+              label={gt("Battery use")}
+              description={gt(
+                "Set T3 Code to Unrestricted if the server stops with the screen off.",
+              )}
               onPress={() => void Linking.openSettings()}
             />
             <ListRow
               icon="terminal"
-              label="Child process limit"
-              description='In Developer options, turn on "Disable child process restrictions".'
+              label={gt("Child process limit")}
+              description={gt(
+                'In Developer options, turn on "Disable child process restrictions".',
+              )}
               onPress={() => native.openDeveloperSettings()}
             />
           </SettingsSection>
@@ -344,35 +373,37 @@ export function DeviceRuntimeSetupScreen() {
           <SettingsSection>
             <ListRow
               icon="exclamationmark.shield"
-              label="Agent access"
-              description="Location, contacts, messages and more: ask, allow or never"
+              label={gt("Agent access")}
+              description={gt("Location, contacts, messages and more: ask, allow or never")}
               onPress={() => navigation.navigate("AgentAccess")}
             />
           </SettingsSection>
         ) : null}
 
         {status.installed || status.job !== null ? (
-          <SettingsSection title="Manage">
+          <SettingsSection title={gt("Manage")}>
             <ListRow
               icon="terminal"
-              label={showLog ? "Hide log" : "Show log"}
-              description={installing ? "Setup output" : "Setup output and the server's log"}
+              label={showLog ? gt("Hide log") : gt("Show log")}
+              description={
+                installing ? gt("Setup output") : gt("Setup output and the server's log")
+              }
               onPress={() => setShowLog((value) => !value)}
             />
             {showLog ? <LogView installing={installing} /> : null}
             {status.installed ? (
               <ListRow
                 icon="arrow.clockwise"
-                label="Reinstall"
-                description="Deletes everything on this phone's server and installs it again."
+                label={gt("Reinstall")}
+                description={gt("Deletes everything on this phone's server and installs it again.")}
                 disabled={busy !== null || installing}
                 onPress={reinstall}
               />
             ) : null}
             <ListRow
               icon="trash"
-              label="Remove from this phone"
-              description="Stops the server and deletes Ubuntu and everything in it."
+              label={gt("Remove from this phone")}
+              description={gt("Stops the server and deletes Ubuntu and everything in it.")}
               disabled={busy !== null || installing}
               onPress={remove}
             />
@@ -389,15 +420,18 @@ function InstallStepBody(props: {
   readonly onInstall: () => void;
   readonly onCancel: () => void;
 }) {
+  const gt = useGT();
   const job = props.status.job;
   if (job?.running) {
     return (
       <>
         <StepText>
-          Step {job.stepNumber} of {job.stepCount}: {job.stepTitle}. It takes a few minutes; you can
-          leave T3 Code, and a notification shows the progress.
+          {gt(
+            "Step {number} of {count}: {title}. It takes a few minutes; you can leave T3 Code, and a notification shows the progress.",
+            { number: job.stepNumber, count: job.stepCount, title: job.stepTitle },
+          )}
         </StepText>
-        <Button label="Cancel" tone="text" onPress={props.onCancel} />
+        <Button label={gt("Cancel")} tone="text" onPress={props.onCancel} />
       </>
     );
   }
@@ -409,10 +443,12 @@ function InstallStepBody(props: {
         </Text>
       ) : null}
       <StepText>
-        It runs in the background, with a notification. Running it again skips finished parts.
+        <T>
+          It runs in the background, with a notification. Running it again skips finished parts.
+        </T>
       </StepText>
       <Button
-        label={job?.error ? "Try again" : "Install"}
+        label={job?.error ? gt("Try again") : gt("Install")}
         tone="primary"
         loading={props.busy}
         onPress={props.onInstall}
@@ -426,29 +462,44 @@ function SignInStepBody(props: {
   readonly checking: boolean;
 }) {
   const native = requireDeviceRuntime();
+  const gt = useGT();
   const [code, setCode] = useState("");
   const login = props.status.login;
-  if (props.checking) return <StepText>Checking…</StepText>;
-  if (login?.state === "starting") return <StepText>Starting sign-in…</StepText>;
+  if (props.checking) {
+    return (
+      <StepText>
+        <T>Checking…</T>
+      </StepText>
+    );
+  }
+  if (login?.state === "starting") {
+    return (
+      <StepText>
+        <T>Starting sign-in…</T>
+      </StepText>
+    );
+  }
   if (login?.state === "browser") {
     const manualUrl = login.manualUrl ?? "";
     return (
       <>
         <StepText>
-          Sign in in your browser. If it shows a code instead of coming back here, copy it and paste
-          it below.
+          <T>
+            Sign in in your browser. If it shows a code instead of coming back here, copy it and
+            paste it below.
+          </T>
         </StepText>
         <AppTextInput
-          accessibilityLabel="Sign-in code"
+          accessibilityLabel={gt("Sign-in code")}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="Code"
+          placeholder={gt("Code", { $context: "sign-in code" })}
           value={code}
           onChangeText={setCode}
         />
         <View className="flex-row flex-wrap gap-2">
           <Button
-            label="Submit code"
+            label={gt("Submit code")}
             tone="primary"
             disabled={code.trim().length === 0}
             onPress={() => {
@@ -458,12 +509,12 @@ function SignInStepBody(props: {
           />
           {login.manualUrl ? (
             <Button
-              label="Open again"
+              label={gt("Open again")}
               tone="text"
               onPress={() => void Linking.openURL(manualUrl)}
             />
           ) : null}
-          <Button label="Cancel" tone="text" onPress={() => native.cancelLogin()} />
+          <Button label={gt("Cancel")} tone="text" onPress={() => native.cancelLogin()} />
         </View>
       </>
     );
@@ -476,10 +527,10 @@ function SignInStepBody(props: {
         </Text>
       ) : null}
       <StepText>
-        Use the Claude account that has Claude Code. Your browser opens to sign in.
+        <T>Use the Claude account that has Claude Code. Your browser opens to sign in.</T>
       </StepText>
       <Button
-        label="Sign in"
+        label={gt("Sign in")}
         tone="primary"
         onPress={() => void requestNotifications().then(() => native.startLogin())}
       />
@@ -503,7 +554,11 @@ function LogView(props: { readonly installing: boolean }) {
           {server}
         </Text>
       ) : null}
-      {!job && !server ? <StepText>Nothing logged yet.</StepText> : null}
+      {!job && !server ? (
+        <StepText>
+          <T>Nothing logged yet.</T>
+        </StepText>
+      ) : null}
     </View>
   );
 }

@@ -1,4 +1,7 @@
+import { msg } from "gt-react-native";
+
 import * as Dialog from "../../components/ui/Dialog";
+import { m } from "../../i18n/messages";
 import { replacedPhoneEnvironments } from "./phone-server";
 
 /**
@@ -13,11 +16,16 @@ export function confirmPhoneServerReplacement(port: number, connect: () => void)
   }
   const names = replaced.map((environment) => environment.environmentLabel).join(" and ");
   Dialog.alert(
-    "Replace this phone's other server?",
-    `Connecting removes ${names} from your environments. If Termux still runs that server, stop it there or uninstall Termux; its threads stay in Termux.`,
+    m(msg("Replace this phone's other server?")),
+    m(
+      msg(
+        "Connecting removes {names} from your environments. If Termux still runs that server, stop it there or uninstall Termux; its threads stay in Termux.",
+        { names },
+      ),
+    ),
     [
-      { text: "Cancel", style: "cancel" },
-      { text: "Replace", style: "destructive", onPress: connect },
+      { text: m(msg("Cancel")), style: "cancel" },
+      { text: m(msg("Replace")), style: "destructive", onPress: connect },
     ],
   );
 }

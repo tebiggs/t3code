@@ -1,5 +1,6 @@
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useGT } from "gt-react-native";
 import { useCallback, useState } from "react";
 
 import { ListRow } from "../../components/ui/ListRow";
@@ -37,6 +38,7 @@ function useClaudeSignIn() {
 /** Settings → Environments → <this phone>: the server phone setup runs inside this app. */
 export function PhoneServerSettingsSection(props: { readonly environmentId: EnvironmentId }) {
   const navigation = useNavigation();
+  const gt = useGT();
   const settings = usePhoneServerSettings();
   const runtime = usePhoneServerRuntime();
   const environment = useWorkspaceEnvironments().find(
@@ -51,20 +53,24 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
   return (
     <>
       <SettingsSection
-        title="Phone server"
+        title={gt("Phone server")}
         footer={
           actionError ??
           runtime.error ??
           (server.claude?.signedIn === false
-            ? "Claude Code is signed out on this phone, so Claude threads here will fail. Sign in from phone setup."
+            ? gt(
+                "Claude Code is signed out on this phone, so Claude threads here will fail. Sign in from phone setup.",
+              )
             : null) ??
-          "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification."
+          gt(
+            "T3 Code runs inside this app, with a notification while it runs. Stop it here or from the notification.",
+          )
         }
       >
         <ListRow
           icon="iphone"
-          label="Setup and checks"
-          description="Install, Claude sign-in, phone storage and removal"
+          label={gt("Setup and checks")}
+          description={gt("Install, Claude sign-in, phone storage and removal")}
           onPress={() => navigation.navigate("PhoneSetup")}
         />
         {server.claude ? (
@@ -74,31 +80,31 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
             description={
               server.claude.signedIn
                 ? server.claude.plan
-                  ? `Signed in · ${server.claude.plan}`
-                  : "Signed in"
-                : "Signed out. Sign in from phone setup."
+                  ? gt("Signed in · {plan}", { plan: server.claude.plan })
+                  : gt("Signed in")
+                : gt("Signed out. Sign in from phone setup.")
             }
             onPress={() => navigation.navigate("PhoneSetup")}
           />
         ) : null}
         <ListRow
           icon="exclamationmark.shield"
-          label="Agent access"
-          description="Location, contacts, messages and more: ask, allow or never"
+          label={gt("Agent access")}
+          description={gt("Location, contacts, messages and more: ask, allow or never")}
           onPress={() => navigation.navigate("AgentAccess")}
         />
         <SettingsSwitchRow
           icon="play"
-          label="Start when T3 Code opens"
-          subtitle="Starts the server on this phone if it isn't running."
+          label={gt("Start when T3 Code opens")}
+          subtitle={gt("Starts the server on this phone if it isn't running.")}
           value={settings.autoStart}
           onValueChange={(autoStart) => setPhoneServerSettings({ ...settings, autoStart })}
         />
         {connected ? (
           <ListRow
             icon="stop.fill"
-            label={busy === "stopping" ? "Stopping…" : "Stop server"}
-            description="Also turns off starting when T3 Code opens."
+            label={busy === "stopping" ? gt("Stopping…") : gt("Stop server")}
+            description={gt("Also turns off starting when T3 Code opens.")}
             disabled={busy !== null}
             onPress={() => {
               setBusy("stopping");
@@ -107,7 +113,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
               stopPhoneServerWhenSettled()
                 .catch((error: unknown) =>
                   setActionError(
-                    error instanceof Error ? error.message : "Couldn't stop the server.",
+                    error instanceof Error ? error.message : gt("Couldn't stop the server."),
                   ),
                 )
                 .finally(() => setBusy(null));
@@ -116,15 +122,17 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
         ) : (
           <ListRow
             icon="play"
-            label={runtime.starting ? "Starting…" : "Start server"}
+            label={runtime.starting ? gt("Starting…") : gt("Start server")}
             disabled={runtime.starting || busy !== null}
             onPress={() => void startAndReconnectPhoneServer(settings)}
           />
         )}
         <ListRow
           icon="arrow.down.circle"
-          label={busy === "updating" ? "Updating…" : "Update T3 Code and Claude Code"}
-          description="Installs the newest server build and Claude Code, then restarts the server."
+          label={busy === "updating" ? gt("Updating…") : gt("Update T3 Code and Claude Code")}
+          description={gt(
+            "Installs the newest server build and Claude Code, then restarts the server.",
+          )}
           disabled={busy !== null || runtime.starting}
           onPress={() => {
             setBusy("updating");
@@ -132,7 +140,7 @@ export function PhoneServerSettingsSection(props: { readonly environmentId: Envi
             updatePhoneServer(settings)
               .catch((error: unknown) =>
                 setActionError(
-                  error instanceof Error ? error.message : "The update didn't finish.",
+                  error instanceof Error ? error.message : gt("The update didn't finish."),
                 ),
               )
               .finally(() => {
