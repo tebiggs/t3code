@@ -17,6 +17,7 @@ import java.util.concurrent.Executors
 
 private const val LOG_LIMIT = 2000
 
+// DeviceRuntimeSetupScreen translates titles by id, so a new or renamed id needs a title there.
 private data class JobStep(val id: String, val title: String)
 
 private val INSTALL_STEPS = listOf(

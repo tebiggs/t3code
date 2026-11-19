@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ListRow } from "../../components/ui/ListRow";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { m as mNow } from "../../i18n/messages";
+import { m as mNow, type MessageResolver } from "../../i18n/messages";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { confirmPhoneServerReplacement } from "../phone/confirmPhoneServerReplacement";
@@ -29,6 +29,7 @@ import {
   requireDeviceRuntime,
   useDeviceRuntimeStatus,
   type DeviceRuntimeInspection,
+  type DeviceRuntimeJob,
   type DeviceRuntimeStatus,
 } from "./device-runtime";
 
@@ -41,6 +42,25 @@ const STEP_TITLES: Record<StepId, string> = {
   signIn: msg("Sign in to Claude"),
   connect: msg("Connect this phone"),
 };
+
+/** By the native job's step id; an id missing here shows the native English title. */
+const JOB_STEP_TITLES: Partial<Record<string, string>> = {
+  ubuntu: msg("Downloading Ubuntu"),
+  packages: msg("Installing Ubuntu packages"),
+  node: msg("Installing Node.js"),
+  "claude-code": msg("Installing Claude Code"),
+  t3: msg("Installing T3 Code"),
+  "upgrade-claude-code": msg("Updating Claude Code"),
+  cleanup: msg("Cleaning up"),
+};
+
+function jobStepTitle(job: DeviceRuntimeJob, resolve: MessageResolver): string {
+  const title =
+    job.kind === "update" && job.step === "t3"
+      ? msg("Updating T3 Code")
+      : JOB_STEP_TITLES[job.step ?? ""];
+  return title === undefined ? (job.stepTitle ?? "") : resolve(title);
+}
 
 /** Progress shows in a notification while T3 Code is in the background; Android 13+ asks first. */
 function requestNotifications(): Promise<unknown> {
@@ -423,6 +443,7 @@ function InstallStepBody(props: {
   readonly onCancel: () => void;
 }) {
   const gt = useGT();
+  const m = useMessages();
   const job = props.status.job;
   if (job?.running) {
     return (
@@ -430,7 +451,7 @@ function InstallStepBody(props: {
         <StepText>
           {gt(
             "Step {number} of {count}: {title}. It takes a few minutes; you can leave T3 Code, and a notification shows the progress.",
-            { number: job.stepNumber, count: job.stepCount, title: job.stepTitle },
+            { number: job.stepNumber, count: job.stepCount, title: jobStepTitle(job, m) },
           )}
         </StepText>
         <Button label={gt("Cancel")} tone="text" onPress={props.onCancel} />
