@@ -182,11 +182,14 @@ class T3DeviceRuntimeModule : Module() {
       if (log.isFile) log.readLines().takeLast(lines).joinToString("\n") else ""
     }
 
-    AsyncFunction("pair") { promise: Promise ->
+    AsyncFunction("pair") { scopes: List<String>, promise: Promise ->
       val context = requireContext()
       inBackground(promise) {
         val (_, output) = DeviceRuntime(context) {}
-          .capture(listOf("t3", "pair", "--label", "T3 Code app on this phone"))
+          .capture(
+            listOf("t3", "pair", "--label", "T3 Code app on this phone") +
+              scopes.flatMap { listOf("--scope", it) },
+          )
         output.lines().map { it.trim() }.firstOrNull { it.startsWith("Pairing URL: ") }
           ?.removePrefix("Pairing URL: ")
           ?: throw RuntimeJobFailed(output.trim().ifEmpty { localized("T3 Code didn't give a pairing link.") })

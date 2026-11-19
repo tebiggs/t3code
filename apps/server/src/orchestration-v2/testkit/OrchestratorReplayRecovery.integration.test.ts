@@ -139,7 +139,7 @@ const readClaudeCancelledSubagentResumeTranscript = Effect.fn(
               ...frame.message.message,
               content: [
                 "Note: this background work stopped before it reported back, because the T3 server restarted or the agent session ended. It will not report back on its own. It may have finished or changed state first, so check its output or what it changes before you start it again, and never rerun a deploy or other job with side effects until you know it did not complete. Then resume what you still need and wait for its result:",
-                "- subagent: Audit src/math.ts (id a44c0ed810da9e4f3)",
+                "- subagent: Audit src/math.ts (id a44c0ed810da9e4f3; resume it with SendMessage to 'a44c0ed810da9e4f3')",
                 "",
                 "User message:",
                 frame.message.message.content,
