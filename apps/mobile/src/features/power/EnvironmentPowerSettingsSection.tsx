@@ -1,4 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -20,6 +21,7 @@ import {
 
 /** Per-environment sleep/wake setup in Settings → Environments → <environment>. */
 export function EnvironmentPowerSettingsSection(props: { readonly environmentId: EnvironmentId }) {
+  const gt = useGT();
   const settings = useEnvironmentPowerSettings()[props.environmentId];
   const environments = useWorkspaceEnvironments();
   const candidates = environments.filter(
@@ -28,17 +30,22 @@ export function EnvironmentPowerSettingsSection(props: { readonly environmentId:
 
   return (
     <SettingsSection
-      title="Sleep and wake"
+      title={gt("Sleep and wake")}
       footer={
         settings
-          ? "Wake sends a Wake-on-LAN packet from the machine you choose, which must be on the same network and have python3 (or PowerShell on Windows). Sleep runs on this machine through its own connection. Custom commands replace either one and run on the chosen machine."
+          ? gt(
+              "Wake sends a Wake-on-LAN packet from the machine you choose, which must be on the same network and have {python} (or PowerShell on Windows). Sleep runs on this machine through its own connection. Custom commands replace either one and run on the chosen machine.",
+              { python: "python3" },
+            )
           : undefined
       }
     >
       <SettingsSwitchRow
         icon="moon"
-        label="Sleep and wake from home"
-        subtitle="Adds a status chip above your threads. While this machine is asleep, T3 Code stops reconnecting to it."
+        label={gt("Sleep and wake from home")}
+        subtitle={gt(
+          "Adds a status chip above your threads. While this machine is asleep, T3 Code stops reconnecting to it.",
+        )}
         value={settings !== undefined}
         onValueChange={(enabled) =>
           setEnvironmentPowerSettings(
@@ -73,6 +80,7 @@ function PowerSettingsFields(props: {
     readonly displayUrl: string;
   }>;
 }) {
+  const gt = useGT();
   const [macAddress, setMacAddress] = useState(props.settings.macAddress ?? "");
   const [localAddress, setLocalAddress] = useState(props.settings.localAddress ?? "");
   const [wakeCommand, setWakeCommand] = useState(props.settings.wakeCommand);
@@ -110,8 +118,8 @@ function PowerSettingsFields(props: {
       <Menu
         accessible
         accessibilityRole="button"
-        accessibilityLabel="Wake through"
-        title="Wake through"
+        accessibilityLabel={gt("Wake through")}
+        title={gt("Wake through")}
         actions={props.candidates.map((environment) => ({
           id: environment.environmentId,
           title: environment.environmentLabel,
@@ -130,8 +138,8 @@ function PowerSettingsFields(props: {
       >
         <ListRowLayout
           icon="server.rack"
-          label="Wake through"
-          description={relay?.environmentLabel ?? "Choose a machine on the same network"}
+          label={gt("Wake through")}
+          description={relay?.environmentLabel ?? gt("Choose a machine on the same network")}
           disabled={props.candidates.length === 0}
           accessory={
             <SymbolView name="chevron.down" size={14} tintColorClassName="accent-icon-muted" />
@@ -141,7 +149,7 @@ function PowerSettingsFields(props: {
       <View className="gap-3 px-4 pb-4">
         <View className="gap-1">
           <ConnectionFormField
-            label="MAC address"
+            label={gt("MAC address")}
             autoCapitalize="none"
             autoCorrect={false}
             placeholder="1a:2b:3c:4d:5e:6f"
@@ -151,41 +159,54 @@ function PowerSettingsFields(props: {
           />
           <Text textRole="label" className="px-1 text-foreground-muted">
             {macInvalid
-              ? "Enter 12 hex digits, for example 1a:2b:3c:4d:5e:6f."
-              : "The wired network adapter of this machine. On Windows, run getmac /v; on macOS or Linux, ip link or ifconfig."}
+              ? gt("Enter 12 hex digits, for example {example}.", { example: "1a:2b:3c:4d:5e:6f" })
+              : gt(
+                  "The wired network adapter of this machine. On Windows, run {windowsCommand}; on macOS or Linux, {linuxCommand} or {otherCommand}.",
+                  {
+                    windowsCommand: "getmac /v",
+                    linuxCommand: "ip link",
+                    otherCommand: "ifconfig",
+                  },
+                )}
           </Text>
         </View>
         <View className="gap-1">
           <ConnectionFormField
-            label="Local address (optional)"
+            label={gt("Local address (optional)")}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
-            placeholder="192.168.1.20 or 192.168.1.20:3773"
+            placeholder={gt("{address} or {addressWithPort}", {
+              address: "192.168.1.20",
+              addressWithPort: "192.168.1.20:3773",
+            })}
             value={localAddress}
             onChangeText={setLocalAddress}
             onEndEditing={saveLocalAddress}
           />
           <Text textRole="label" className="px-1 text-foreground-muted">
             {localAddressInvalid
-              ? "Enter a host name or IPv4 address, with an optional :port."
-              : "Lets the machine you wake through tell within seconds whether this one is asleep when the app starts. In T3 Code on this machine, turn on Network access, and let the port (3773 unless you add one) through its firewall."}
+              ? gt("Enter a host name or IPv4 address, with an optional {port}.", { port: ":port" })
+              : gt(
+                  "Lets the machine you wake through tell within seconds whether this one is asleep when the app starts. In T3 Code on this machine, turn on Network access, and let the port ({port} unless you add one) through its firewall.",
+                  { port: "3773" },
+                )}
           </Text>
         </View>
         <ConnectionFormField
-          label="Custom wake command (optional)"
+          label={gt("Custom wake command (optional)")}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="Built-in Wake-on-LAN"
+          placeholder={gt("Built-in Wake-on-LAN")}
           value={wakeCommand}
           onChangeText={setWakeCommand}
           onEndEditing={() => saveCommand("wakeCommand", wakeCommand)}
         />
         <ConnectionFormField
-          label="Custom sleep command (optional)"
+          label={gt("Custom sleep command (optional)")}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="Built-in sleep on this machine"
+          placeholder={gt("Built-in sleep on this machine")}
           value={sleepCommand}
           onChangeText={setSleepCommand}
           onEndEditing={() => saveCommand("sleepCommand", sleepCommand)}

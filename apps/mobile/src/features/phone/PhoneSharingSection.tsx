@@ -9,12 +9,14 @@ import {
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
+import { msg, T, useGT, useMessages } from "gt-react-native";
 import { useCallback, useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { m as mNow, type MessageResolver } from "../../i18n/messages";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { usePhoneSharingRecord } from "../../state/phone-server-settings";
 import { mobilePreferencesAtom } from "../../state/preferences";
@@ -36,49 +38,83 @@ import {
 type SharingChoice = "off" | EnvironmentSharingMode;
 
 const SHARING_CHOICES = [
-  { value: "off", label: "Off" },
-  { value: "view-only", label: "View only" },
-  { value: "full-control", label: "Full control" },
+  { value: "off", label: msg("Off", { $context: "sharing is turned off" }) },
+  { value: "view-only", label: msg("View only") },
+  { value: "full-control", label: msg("Full control") },
 ] as const;
 
-const MODE_LABEL = { "view-only": "View only", "full-control": "Full control" } as const;
+const MODE_LABEL = { "view-only": msg("View only"), "full-control": msg("Full control") } as const;
 
-const VIEW_ONLY_WARNING =
-  "Anyone signed in to your T3 Connect account can read this phone's threads, including any secrets in them, such as a token an agent printed. They can also see its projects, its pull requests and any open preview.\n\nThey can't send messages, answer approvals, or use the terminal or files. Only this phone can do that.";
+const VIEW_ONLY_WARNING = msg(
+  "Anyone signed in to your T3 Connect account can read this phone's threads, including any secrets in them, such as a token an agent printed. They can also see its projects, its pull requests and any open preview.\n\nThey can't send messages, answer approvals, or use the terminal or files. Only this phone can do that.",
+);
 
-const FULL_CONTROL_WARNING =
-  "Anyone signed in to your T3 Connect account gets full control of this phone's server: threads, agents, a terminal running as root in its Ubuntu, and your phone's files if you've allowed phone storage. They can also use commands such as the clipboard and notifications.\n\nAgent access covers what agents normally do on your phone, but it isn't a hard barrier against someone using that terminal. Share only with an account you fully trust.";
+const FULL_CONTROL_WARNING = msg(
+  "Anyone signed in to your T3 Connect account gets full control of this phone's server: threads, agents, a terminal running as root in its Ubuntu, and your phone's files if you've allowed phone storage. They can also use commands such as the clipboard and notifications.\n\nAgent access covers what agents normally do on your phone, but it isn't a hard barrier against someone using that terminal. Share only with an account you fully trust.",
+);
 
-const FIRST_SHARE_NOTE =
-  "The phone counts as one of your account's T3 Connect machines. The first time, T3 Code downloads Cloudflare's tunnel client (about 40 MB).";
+const FIRST_SHARE_NOTE = msg(
+  "The phone counts as one of your account's T3 Connect machines. The first time, T3 Code downloads Cloudflare's tunnel client (about 40 MB).",
+);
 
 function failureText(result: { readonly cause: Cause.Cause<unknown> }, fallback: string): string {
   const error = squashAtomCommandFailure(result);
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
-function sharingText(sharing: PhoneSharing, accountId: string | null | undefined): string {
-  if (!sharing.shared) return "Off. Only the app on this phone can open its threads.";
+function sharingText(
+  sharing: PhoneSharing,
+  accountId: string | null | undefined,
+  resolve: MessageResolver = mNow,
+): string {
+  if (!sharing.shared) return resolve(msg("Off. Only the app on this phone can open its threads."));
   if (sharing.revoked) {
-    return "T3 Connect no longer accepts this link, but its tunnel may still be set up here. Turn this off to clear it.";
+    return resolve(
+      msg(
+        "T3 Connect no longer accepts this link, but its tunnel may still be set up here. Turn this off to clear it.",
+      ),
+    );
   }
-  const mode = MODE_LABEL[sharing.mode];
+  const mode = resolve(MODE_LABEL[sharing.mode]);
   if (sharing.modeChangePending) {
-    return `${mode} is set, but devices signed in before the change may keep their old access. Tap ${mode} to try again.`;
+    return resolve(
+      msg(
+        "{mode} is set, but devices signed in before the change may keep their old access. Tap {mode} to try again.",
+        { mode },
+      ),
+    );
   }
   if (sharing.cloudUserId !== null && sharing.cloudUserId !== accountId) {
-    return "Shared with a different T3 Connect account. Turn this off to stop it.";
+    return resolve(msg("Shared with a different T3 Connect account. Turn this off to stop it."));
   }
   const reachability = sharing.reachability;
   if (reachability?.status === "unreachable") {
-    return `${mode}, but other devices can't connect yet: ${reachability.reason}`;
+    return resolve(
+      msg("{mode}, but other devices can't connect yet: {reason}", {
+        mode,
+        reason: reachability.reason,
+      }),
+    );
   }
   if (reachability?.status === "reachable") {
-    return `${mode}. ${formatConnectReachable(reachability)}.`;
+    return resolve(
+      msg("{mode}. {reachability}.", {
+        mode,
+        reachability: formatConnectReachable(reachability),
+      }),
+    );
   }
   return sharing.mode === "view-only"
-    ? "View only. Devices signed in to your T3 Connect account can read this phone's threads."
-    : "Full control. Devices signed in to your T3 Connect account can use this phone's server.";
+    ? resolve(
+        msg(
+          "View only. Devices signed in to your T3 Connect account can read this phone's threads.",
+        ),
+      )
+    : resolve(
+        msg(
+          "Full control. Devices signed in to your T3 Connect account can use this phone's server.",
+        ),
+      );
 }
 
 /** Phone setup and the phone's environment page: share the phone's server through T3 Connect. */
@@ -91,6 +127,8 @@ export function PhoneSharingSection(props: { readonly environmentId: Environment
 
 function ConfiguredPhoneSharingSection(props: { readonly environmentId: EnvironmentId }) {
   const navigation = useNavigation();
+  const gt = useGT();
+  const m = useMessages();
   const { getToken, isSignedIn, userId } = useAuth({ treatPendingAsSignedOut: false });
   const preferences = useAtomValue(mobilePreferencesAtom);
   const record = usePhoneSharingRecord();
@@ -122,7 +160,9 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
         setSharing(result.value);
         if (!result.value.shared) void reconcilePhoneSharing();
       } else {
-        setReadError(failureText(result, "Couldn't check whether this phone is shared."));
+        setReadError(
+          failureText(result, mNow(msg("Couldn't check whether this phone is shared."))),
+        );
       }
     });
   }, [connection, connected]);
@@ -153,7 +193,7 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
   const share = async (mode: EnvironmentSharingMode) => {
     const token = userId ? await getToken(resolveRelayClerkTokenOptions()).catch(() => null) : null;
     if (!token || !userId) {
-      setActionError("Couldn't get a T3 Connect sign-in. Sign in again under Settings.");
+      setActionError(gt("Couldn't get a T3 Connect sign-in. Sign in again under Settings."));
       finish();
       return;
     }
@@ -225,11 +265,17 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
     if (choice === "off") {
       if (selected === "off") return;
       Dialog.alert(
-        "Stop sharing this phone?",
-        "Stops the tunnel and signs out every other device, so they lose access to this phone's server. Your threads stay here, and so does anything another device changed or installed while it was shared.",
+        gt("Stop sharing this phone?"),
+        gt(
+          "Stops the tunnel and signs out every other device, so they lose access to this phone's server. Your threads stay here, and so does anything another device changed or installed while it was shared.",
+        ),
         [
-          { text: "Cancel", style: "cancel" },
-          { text: "Stop sharing", style: "destructive", onPress: () => run("stop", stopSharing) },
+          { text: gt("Cancel"), style: "cancel" },
+          {
+            text: gt("Stop sharing"),
+            style: "destructive",
+            onPress: () => run("stop", stopSharing),
+          },
         ],
       );
       return;
@@ -237,21 +283,26 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
     if (selected === "off") {
       if (!isSignedIn) {
         Dialog.alert(
-          "Sign in to T3 Connect",
-          "Sharing uses your T3 Connect account. Sign in, then turn sharing on.",
+          gt("Sign in to T3 Connect"),
+          gt("Sharing uses your T3 Connect account. Sign in, then turn sharing on."),
           [
-            { text: "Cancel", style: "cancel" },
-            { text: "Continue", onPress: () => navigation.navigate("SettingsAuth") },
+            { text: gt("Cancel"), style: "cancel" },
+            { text: gt("Continue"), onPress: () => navigation.navigate("SettingsAuth") },
           ],
         );
         return;
       }
       Dialog.alert(
-        choice === "view-only" ? "Share this phone View only?" : "Give full control of this phone?",
-        `${choice === "view-only" ? VIEW_ONLY_WARNING : FULL_CONTROL_WARNING}\n\n${FIRST_SHARE_NOTE}`,
+        choice === "view-only"
+          ? gt("Share this phone View only?")
+          : gt("Give full control of this phone?"),
         [
-          { text: "Cancel", style: "cancel" },
-          { text: "Share", onPress: () => run("share", () => share(choice)) },
+          m(choice === "view-only" ? VIEW_ONLY_WARNING : FULL_CONTROL_WARNING),
+          m(FIRST_SHARE_NOTE),
+        ].join("\n\n"),
+        [
+          { text: gt("Cancel"), style: "cancel" },
+          { text: gt("Share"), onPress: () => run("share", () => share(choice)) },
         ],
       );
       return;
@@ -262,14 +313,22 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
       return;
     }
     Dialog.alert(
-      choice === "view-only" ? "Switch to View only?" : "Give full control of this phone?",
-      choice === "view-only"
-        ? `Signs out every other device. When they reconnect they can only read.\n\n${VIEW_ONLY_WARNING}\n\nAnything another device changed or installed while it had full control stays.`
-        : `Signs out every other device. When they reconnect they have full control.\n\n${FULL_CONTROL_WARNING}`,
+      choice === "view-only" ? gt("Switch to View only?") : gt("Give full control of this phone?"),
+      (choice === "view-only"
+        ? [
+            gt("Signs out every other device. When they reconnect they can only read."),
+            m(VIEW_ONLY_WARNING),
+            gt("Anything another device changed or installed while it had full control stays."),
+          ]
+        : [
+            gt("Signs out every other device. When they reconnect they have full control."),
+            m(FULL_CONTROL_WARNING),
+          ]
+      ).join("\n\n"),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: gt("Cancel"), style: "cancel" },
         {
-          text: choice === "view-only" ? "Switch to View only" : "Give full control",
+          text: choice === "view-only" ? gt("Switch to View only") : gt("Give full control"),
           ...(choice === "view-only" ? {} : { style: "destructive" as const }),
           onPress: () => run("mode", () => changeMode(choice)),
         },
@@ -278,40 +337,46 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
   };
 
   const status = !connected
-    ? "Start the server on this phone first."
+    ? gt("Start the server on this phone first.")
     : busy === "share"
-      ? "Sharing…"
+      ? gt("Sharing…")
       : busy === "stop"
-        ? "Stopping…"
+        ? gt("Stopping…")
         : busy === "mode"
-          ? "Signing out other devices…"
+          ? gt("Signing out other devices…")
           : stopUnfinished
-            ? "Still stopping. Other devices may have access until this finishes. Tap Off to try again."
+            ? gt(
+                "Still stopping. Other devices may have access until this finishes. Tap Off to try again.",
+              )
             : verifying
-              ? "On. Checking that other devices can connect, for up to a minute."
+              ? gt("On. Checking that other devices can connect, for up to a minute.")
               : sharing === null
                 ? readError === null
-                  ? "Checking…"
-                  : "Couldn't check."
+                  ? gt("Checking…")
+                  : gt("Couldn't check.")
                 : !sharing.shared && record?.phase === "listed"
-                  ? `Off. ${PHONE_STILL_LISTED}`
-                  : sharingText(sharing, userId);
+                  ? gt("Off. {detail}", { detail: m(PHONE_STILL_LISTED) })
+                  : sharingText(sharing, userId, m);
 
   return (
     <SettingsSection
-      title="Other devices"
+      title={gt("Other devices")}
       footer={
         actionError ??
         readError ??
-        "The server listens only on this phone, so nothing on your network can connect to it directly. While it's shared, a tunnel gives it a public T3 Connect address, and connecting takes a sign-in to the account it's shared with."
+        gt(
+          "The server listens only on this phone, so nothing on your network can connect to it directly. While it's shared, a tunnel gives it a public T3 Connect address, and connecting takes a sign-in to the account it's shared with.",
+        )
       }
     >
       <View className="gap-3 p-4">
-        <Text textRole="body">Share with your other devices</Text>
+        <Text textRole="body">
+          <T>Share with your other devices</T>
+        </Text>
         <View className={locked ? "opacity-50" : undefined}>
           <SegmentedControl
             variant="card"
-            options={SHARING_CHOICES}
+            options={SHARING_CHOICES.map((choice) => ({ ...choice, label: m(choice.label) }))}
             selected={selected}
             onSelect={onSelect}
           />

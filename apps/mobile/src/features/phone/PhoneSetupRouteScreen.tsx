@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react-native";
 import { useState } from "react";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -12,10 +13,11 @@ export function PhoneSetupRouteScreen() {
 }
 
 function PhoneSetupUnavailable() {
+  const gt = useGT();
   return (
-    <SettingsScreen title="Run on this phone">
+    <SettingsScreen title={gt("Run on this phone")}>
       <Text className="px-7 pt-4 text-sm text-foreground-muted">
-        Running agents on the phone itself needs the Android app on a 64-bit phone.
+        <T>Running agents on the phone itself needs the Android app on a 64-bit phone.</T>
       </Text>
     </SettingsScreen>
   );

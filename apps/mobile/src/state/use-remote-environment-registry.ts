@@ -181,11 +181,16 @@ function confirmRemovePhone(environmentLabel: string, forget: () => void) {
       return;
     }
     Dialog.alert(
-      "Couldn't confirm sharing is off",
-      `${stillSharing}\n\nRemove it anyway to finish this later: if this phone is connected again, T3 Code stops any sharing and signs out other devices then.`,
+      m(msg("Couldn't confirm sharing is off")),
+      m(
+        msg(
+          "{reason}\n\nRemove it anyway to finish this later: if this phone is connected again, T3 Code stops any sharing and signs out other devices then.",
+          { reason: stillSharing },
+        ),
+      ),
       [
-        { text: "Keep", style: "cancel" },
-        { text: "Remove anyway", style: "destructive", onPress: forget },
+        { text: m(msg("Keep")), style: "cancel" },
+        { text: m(msg("Remove anyway")), style: "destructive", onPress: forget },
       ],
     );
   };
@@ -202,29 +207,42 @@ function confirmRemovePhone(environmentLabel: string, forget: () => void) {
       forget();
     } catch (error) {
       Dialog.alert(
-        "The server didn't stop",
-        `${error instanceof Error ? error.message : "It didn't stop."}\n\n${environmentLabel} is still saved. Remove it anyway, or stop the server from its notification first.`,
+        m(msg("The server didn't stop")),
+        m(
+          msg(
+            "{reason}\n\n{environment} is still saved. Remove it anyway, or stop the server from its notification first.",
+            {
+              reason: error instanceof Error ? error.message : m(msg("It didn't stop.")),
+              environment: environmentLabel,
+            },
+          ),
+        ),
         [
           {
-            text: "Keep",
+            text: m(msg("Keep")),
             style: "cancel",
             onPress: () => {
               if (previous) setPhoneServerSettings(previous);
             },
           },
-          { text: "Remove anyway", style: "destructive", onPress: forget },
+          { text: m(msg("Remove anyway")), style: "destructive", onPress: forget },
         ],
       );
     }
   };
   Dialog.alert(
-    "Remove this phone?",
-    `Forget ${environmentLabel} and its cached threads in the app. Ubuntu, Claude Code and your projects stay on the phone; phone setup can connect them again.`,
+    m(msg("Remove this phone?")),
+    m(
+      msg(
+        "Forget {environment} and its cached threads in the app. Ubuntu, Claude Code and your projects stay on the phone; phone setup can connect them again.",
+        { environment: environmentLabel },
+      ),
+    ),
     [
-      { text: "Cancel", style: "cancel" },
-      { text: "Remove only", onPress: () => void forgetPhone() },
+      { text: m(msg("Cancel")), style: "cancel" },
+      { text: m(msg("Remove only")), onPress: () => void forgetPhone() },
       {
-        text: "Remove and stop server",
+        text: m(msg("Remove and stop server")),
         style: "destructive",
         onPress: () => void stopThenForget(),
       },

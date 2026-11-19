@@ -1,5 +1,6 @@
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { T, useGT, useMessages } from "gt-react-native";
 import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -37,12 +38,14 @@ export function EnvironmentPowerSheet({
 }: StaticScreenProps<{ readonly environmentId: EnvironmentId }>) {
   const { environmentId } = route.params;
   const navigation = useNavigation();
+  const gt = useGT();
+  const m = useMessages();
   const insets = useSafeAreaInsets();
   const environments = useWorkspaceEnvironments();
   const settings = useEnvironmentPowerSettings()[environmentId];
   const runtime = useEnvironmentPowerRuntime(environmentId);
   const environment = environments.find((entry) => entry.environmentId === environmentId);
-  const label = environment?.environmentLabel ?? "Environment";
+  const label = environment?.environmentLabel ?? gt("Environment");
   const status: PowerStatus = environment
     ? powerStatus(runtime, {
         phase: environment.connectionState,
@@ -54,18 +57,19 @@ export function EnvironmentPowerSheet({
   const blocker = (target: PowerTarget): string | null => {
     if ("error" in target) return target.error;
     const runner = environments.find((entry) => entry.environmentId === target.environmentId);
-    return runner?.isEnabled === true && runner.connectionState === "connected"
-      ? null
-      : `${runner?.environmentLabel ?? "The machine that sends it"} isn't connected.`;
+    if (runner?.isEnabled === true && runner.connectionState === "connected") return null;
+    return runner === undefined
+      ? gt("The machine that sends it isn't connected.")
+      : gt("{machine} isn't connected.", { machine: runner.environmentLabel });
   };
   const busy = status === "waking" || status === "sleeping";
   const notice =
     settings === undefined
       ? null
       : status === "asleep"
-        ? blocker(wakeTarget(settings))
+        ? blocker(wakeTarget(settings, m))
         : status === "awake"
-          ? blocker(sleepTarget(environmentId, settings))
+          ? blocker(sleepTarget(environmentId, settings, m))
           : null;
   const canToggle =
     settings !== undefined &&
@@ -76,23 +80,23 @@ export function EnvironmentPowerSheet({
   const detail = (() => {
     switch (status) {
       case "awake":
-        return "Connected";
+        return gt("Connected");
       case "asleep":
         return runtime.asleepSince === null
-          ? "Not reachable"
-          : `Not reachable since ${formatTime(runtime.asleepSince)}`;
+          ? gt("Not reachable")
+          : gt("Not reachable since {time}", { time: formatTime(runtime.asleepSince) });
       case "waking":
-        return "Wake sent. Waiting for it to connect…";
+        return gt("Wake sent. Waiting for it to connect…");
       case "sleeping":
         return runtime.deadline === null
-          ? "Asking it to sleep…"
-          : "Sleep sent. Waiting for it to stop answering…";
+          ? gt("Asking it to sleep…")
+          : gt("Sleep sent. Waiting for it to stop answering…");
       case "checking":
-        return "Checking whether it's awake…";
+        return gt("Checking whether it's awake…");
       case "offline":
-        return "Your phone is offline.";
+        return gt("Your phone is offline.");
       case "blocked":
-        return environment?.connectionError ?? "Check this machine in Settings.";
+        return environment?.connectionError ?? gt("Check this machine in Settings.");
     }
   })();
 
@@ -106,12 +110,15 @@ export function EnvironmentPowerSheet({
       return;
     }
     Dialog.alert(
-      `Put ${label} to sleep?`,
-      `${active === 1 ? "1 thread is" : `${active} threads are`} still working on ${label}. Sleeping will interrupt ${active === 1 ? "it" : "them"}.`,
+      gt("Put {machine} to sleep?", { machine: label }),
+      gt(
+        "{count, plural, one {{count} thread is still working on {machine}. Sleeping will interrupt it.} other {{count} threads are still working on {machine}. Sleeping will interrupt them.}}",
+        { count: active, machine: label },
+      ),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: gt("Cancel"), style: "cancel" },
         {
-          text: "Sleep",
+          text: gt("Sleep", { $context: "verb, puts a machine to sleep" }),
           style: "destructive",
           onPress: () => void sleepEnvironment(environmentId),
         },
@@ -138,14 +145,14 @@ export function EnvironmentPowerSheet({
           </View>
           <View className="min-w-0 flex-1">
             <Text className="text-base font-t3-bold text-foreground">
-              {POWER_STATUS_LABELS[status]}
+              {m(POWER_STATUS_LABELS[status])}
             </Text>
             <Text textRole="label" className="text-foreground-muted">
               {detail}
             </Text>
           </View>
           <ThemedSwitch
-            accessibilityLabel={`${label} awake`}
+            accessibilityLabel={gt("{machine} awake", { machine: label })}
             disabled={!canToggle}
             value={status === "awake" || status === "waking"}
             onValueChange={(awake) => {
@@ -166,8 +173,10 @@ export function EnvironmentPowerSheet({
         ) : null}
         <Text textRole="label" className="px-1 text-foreground-muted">
           {status === "asleep"
-            ? "Turn on to wake it. It usually answers in about 10 seconds, or a minute or more after a full shutdown."
-            : "Turn off to put it to sleep. While it's asleep, T3 Code won't try to reconnect."}
+            ? gt(
+                "Turn on to wake it. It usually answers in about 10 seconds, or a minute or more after a full shutdown.",
+              )
+            : gt("Turn off to put it to sleep. While it's asleep, T3 Code won't try to reconnect.")}
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -175,7 +184,7 @@ export function EnvironmentPowerSheet({
           className="self-start px-1 py-2 active:opacity-70"
         >
           <Text textRole="footnote" className="font-t3-medium text-primary-text">
-            Power settings
+            <T>Power settings</T>
           </Text>
         </Pressable>
       </View>

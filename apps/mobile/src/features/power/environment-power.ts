@@ -8,7 +8,9 @@ import type {
   ExecutionEnvironmentPlatformOs,
   TerminalSessionSnapshot,
 } from "@t3tools/contracts";
+import { msg } from "gt-react-native";
 
+import { m, type MessageResolver } from "../../i18n/messages";
 import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferences";
 
 /** How long a woken machine has to reconnect before it counts as asleep again. */
@@ -61,9 +63,11 @@ export const CHECK_SILENT_EXIT_CODE = 3;
  * PowerShell.
  */
 export function shellInputFor(os: ExecutionEnvironmentPlatformOs): string {
-  return os === "windows"
-    ? `$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try { & ([scriptblock]::Create($env:${RELAY_COMMAND_ENV_KEY})) } catch { Write-Output $_; exit 1 }; exit [int]$LASTEXITCODE\r`
-    : `exec sh -c "$${RELAY_COMMAND_ENV_KEY}"\r`;
+  if (os === "windows") {
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- PowerShell input, not copy
+    return `$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try { & ([scriptblock]::Create($env:${RELAY_COMMAND_ENV_KEY})) } catch { Write-Output $_; exit 1 }; exit [int]$LASTEXITCODE\r`;
+  }
+  return `exec sh -c "$${RELAY_COMMAND_ENV_KEY}"\r`;
 }
 
 /**
@@ -154,9 +158,14 @@ export type PowerTarget =
   | { readonly error: string };
 
 /** Custom commands run on the relay. The built-in wake does too; the built-in sleep runs on the machine itself. */
-export function wakeTarget(settings: EnvironmentPowerSettings | undefined): PowerTarget {
+export function wakeTarget(
+  settings: EnvironmentPowerSettings | undefined,
+  resolve: MessageResolver = m,
+): PowerTarget {
   if (!settings?.relayEnvironmentId) {
-    return { error: "Choose a machine on the same network to send the wake through." };
+    return {
+      error: resolve(msg("Choose a machine on the same network to send the wake through.")),
+    };
   }
   const custom = settings.wakeCommand.trim();
   if (custom.length > 0) {
@@ -167,20 +176,23 @@ export function wakeTarget(settings: EnvironmentPowerSettings | undefined): Powe
   }
   const macAddress = normalizeMacAddress(settings.macAddress ?? "");
   return macAddress === null
-    ? { error: "Add this machine's MAC address in Power settings to wake it." }
+    ? { error: resolve(msg("Add this machine's MAC address in Power settings to wake it.")) }
     : { environmentId: settings.relayEnvironmentId, command: { kind: "wake", macAddress } };
 }
 
 export function sleepTarget(
   environmentId: EnvironmentId,
   settings: EnvironmentPowerSettings | undefined,
+  resolve: MessageResolver = m,
 ): PowerTarget {
-  if (settings === undefined) return { error: "Sleep and wake is turned off for this machine." };
+  if (settings === undefined) {
+    return { error: resolve(msg("Sleep and wake is turned off for this machine.")) };
+  }
   const custom = settings.sleepCommand.trim();
   if (custom.length === 0) return { environmentId, command: { kind: "sleep" } };
   return settings.relayEnvironmentId
     ? { environmentId: settings.relayEnvironmentId, command: { kind: "custom", command: custom } }
-    : { error: "Choose a machine to send the custom sleep command through." };
+    : { error: resolve(msg("Choose a machine to send the custom sleep command through.")) };
 }
 
 /**
@@ -387,12 +399,16 @@ export function reducePower(
     case "tick": {
       const expired = state.deadline !== null && event.now >= state.deadline;
       if (expired && state.mode === "waking") {
-        return fellAsleep(state, event.now, "It didn't come back online. Try waking it again.");
+        return fellAsleep(
+          state,
+          event.now,
+          m(msg("It didn't come back online. Try waking it again.")),
+        );
       }
       // Still answering, so the reconnect loop keeps running and the machine shows as awake.
       if (expired && state.mode === "sleeping") {
         return {
-          state: { ...INITIAL_POWER_RUNTIME, error: "It didn't go to sleep." },
+          state: { ...INITIAL_POWER_RUNTIME, error: m(msg("It didn't go to sleep.")) },
           effect: null,
         };
       }
@@ -456,13 +472,13 @@ export function powerStatus(state: PowerRuntime, connection: PowerConnection): P
 }
 
 export const POWER_STATUS_LABELS: Record<PowerStatus, string> = {
-  awake: "Awake",
-  asleep: "Asleep",
-  waking: "Waking…",
-  sleeping: "Going to sleep…",
-  checking: "Checking…",
-  offline: "Offline",
-  blocked: "Can't connect",
+  awake: msg("Awake"),
+  asleep: msg("Asleep"),
+  waking: msg("Waking…"),
+  sleeping: msg("Going to sleep…"),
+  checking: msg("Checking…"),
+  offline: msg("Offline"),
+  blocked: msg("Can't connect"),
 };
 
 /** Threads whose agent is running on the environment, which sleeping would interrupt. */
@@ -478,7 +494,6 @@ export function countActiveThreads(
   ).length;
 }
 
-// eslint-disable-next-line no-control-regex -- ANSI escape sequences start with ESC.
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
 
 /**
