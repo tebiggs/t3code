@@ -20,6 +20,7 @@ import {
 } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
 import { deviceRuntime, deviceServer } from "../device-runtime/device-runtime";
+import { useDeviceRuntimeText } from "../device-runtime/native-text";
 import { reconcilePhoneSharing } from "./phone-sharing-commands";
 import { phoneServerPort } from "./phone-setup";
 
@@ -275,6 +276,7 @@ async function autoStartPhoneServer() {
  * launch once connections hydrate, after a drop, and whenever the app comes back.
  */
 export function usePhoneServerWorker() {
+  useDeviceRuntimeText();
   const settings = usePhoneServerSettings();
   const phone = useWorkspaceEnvironments().find(
     (environment) => environment.environmentId === settings?.environmentId,

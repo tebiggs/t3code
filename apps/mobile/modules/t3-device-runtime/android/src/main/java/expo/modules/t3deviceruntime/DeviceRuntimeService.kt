@@ -80,7 +80,7 @@ object DeviceServer {
   @Synchronized
   private fun launch(context: Context, port: Int, retry: Boolean) {
     if (running) return
-    RuntimeForeground.hold(context, Hold.Server, "The server is running on this phone.")
+    RuntimeForeground.hold(context, Hold.Server, localized("The server is running on this phone."))
     val log = logFile(context)
     val bridge = AndroidBridge.start(context)
     val started = try {
@@ -128,7 +128,7 @@ object DeviceServer {
     val started = guest ?: return
     started.terminate()
     if (!started.process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-      throw IOException("The server didn't stop within $STOP_TIMEOUT_SECONDS seconds.")
+      throw IOException(localized("The server didn't stop within {seconds} seconds.", "seconds" to STOP_TIMEOUT_SECONDS))
     }
   }
 }
@@ -154,7 +154,7 @@ class DeviceRuntimeService : Service() {
     }
     // A service started with startForegroundService must call startForeground, even when
     // its work has already finished.
-    val current = RuntimeForeground.current() ?: (Hold.Job to "Finishing…")
+    val current = RuntimeForeground.current() ?: (Hold.Job to localized("Finishing…"))
     startForeground(current)
     update()
     return START_NOT_STICKY
@@ -206,8 +206,8 @@ class DeviceRuntimeService : Service() {
   private fun notification(hold: Hold, text: String): Notification {
     val manager = getSystemService(NotificationManager::class.java)
     manager.createNotificationChannel(
-      NotificationChannel(CHANNEL_ID, "T3 Code on this phone", NotificationManager.IMPORTANCE_LOW).apply {
-        description = "Shown while T3 Code installs, signs in or runs its server on this phone."
+      NotificationChannel(CHANNEL_ID, localized("T3 Code on this phone"), NotificationManager.IMPORTANCE_LOW).apply {
+        description = localized("Shown while T3 Code installs, signs in or runs its server on this phone.")
       },
     )
     val open = packageManager.getLaunchIntentForPackage(packageName)?.let {
@@ -228,7 +228,7 @@ class DeviceRuntimeService : Service() {
         Intent(this, DeviceRuntimeService::class.java).setAction(ACTION_STOP_SERVER),
         PendingIntent.FLAG_IMMUTABLE,
       )
-      builder.addAction(0, "Stop server", stop)
+      builder.addAction(0, localized("Stop server"), stop)
     }
     return builder.build()
   }

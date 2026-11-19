@@ -102,9 +102,9 @@ internal object AccessApproval {
     val message = buildString {
       append(AgentAccess.commandName(command))
       if (details.isNotEmpty()) append("\n\n$details")
-      append("\n\nAn agent or another device using this phone's server asked for this.")
+      append("\n\n" + localized("An agent or another device using this phone's server asked for this."))
     }
-    return WaitingApproval("Allow ${category.label}?", message, CompletableFuture())
+    return WaitingApproval(localized("Allow {access}?", "access" to localized(category.label)), message, CompletableFuture())
   }
 
   fun prompt(id: String): Pair<String, String>? = pending[id]?.let { it.title to it.message }
@@ -133,8 +133,8 @@ class AccessApprovalActivity : Activity() {
     val shown = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
       .setTitle(title)
       .setMessage(message)
-      .setPositiveButton("Allow") { _, _ -> answer(true) }
-      .setNegativeButton("Don't allow") { _, _ -> answer(false) }
+      .setPositiveButton(localized("Allow")) { _, _ -> answer(true) }
+      .setNegativeButton(localized("Don't allow")) { _, _ -> answer(false) }
       .setOnCancelListener { answer(false) }
       .create()
     shown.setCanceledOnTouchOutside(false)
