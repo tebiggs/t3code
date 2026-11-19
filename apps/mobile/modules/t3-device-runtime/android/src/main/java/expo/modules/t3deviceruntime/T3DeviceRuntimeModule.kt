@@ -51,7 +51,10 @@ class T3DeviceRuntimeModule : Module() {
     Name("T3DeviceRuntime")
     Events("onJob", "onLogin")
 
-    Function("setText") { translations: Map<String, String> -> nativeTranslations = translations }
+    Function("setText") { translations: Map<String, String> ->
+      nativeTranslations = translations
+      RuntimeForeground.refresh()
+    }
 
     Function("getStatus") {
       val runtime = DeviceRuntime(requireContext()) {}
@@ -201,7 +204,7 @@ class T3DeviceRuntimeModule : Module() {
       }
       login = created
       // The browser takes the screen while the user signs in; Claude has to keep running.
-      RuntimeForeground.hold(context, Hold.Login, localized("Signing in to Claude…"))
+      RuntimeForeground.hold(context, Hold.Login) { localized("Signing in to Claude…") }
       try {
         created.start()
       } catch (error: Throwable) {
@@ -267,7 +270,7 @@ class T3DeviceRuntimeModule : Module() {
     }
     synchronized(jobLog) { jobLog.clear() }
     // Held from here, while T3 Code is on screen: Android won't start it from the background.
-    RuntimeForeground.hold(context, Hold.Job, localized("Starting…"))
+    RuntimeForeground.hold(context, Hold.Job) { localized("Starting…") }
     jobs.execute {
       var failure: String? = null
       try {
@@ -301,7 +304,11 @@ class T3DeviceRuntimeModule : Module() {
   private fun setJobState(kind: String, running: Boolean, step: JobStep?, index: Int, count: Int, error: String?) {
     if (running && step != null) {
       val context = appContext.reactContext
-      if (context != null) RuntimeForeground.hold(context, Hold.Job, localized("{step} (step {number} of {count})…", "step" to localized(step.title), "number" to index + 1, "count" to count))
+      if (context != null) {
+        RuntimeForeground.hold(context, Hold.Job) {
+          localized("{step} (step {number} of {count})…", "step" to localized(step.title), "number" to index + 1, "count" to count)
+        }
+      }
     }
     val state = mapOf(
       "kind" to kind,

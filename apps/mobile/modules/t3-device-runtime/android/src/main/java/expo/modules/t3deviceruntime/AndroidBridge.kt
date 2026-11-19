@@ -318,7 +318,9 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   private fun am(body: JSONObject): Any? {
     val intent = appIntent(context, body)
     return when (val mode = body.getString("mode")) {
-      "start" -> launchIntent(context, intent).let { startOrNotify(it, localized("Open an app from an agent"), describeIntent(it)) }
+      "start" -> launchIntent(context, intent).let {
+        startOrNotify(it, localized("Open an app from an agent"), describeIntent(it, localized("this intent")), describeIntent(it))
+      }
       "broadcast" -> {
         requireTarget(intent)
         context.sendBroadcast(intent)
@@ -474,6 +476,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
         AgentAccess.notificationAccessIntent(context),
         localized("Allow notification access"),
         localized("An agent on this phone wants to read its notifications. Turn on T3 Code here."),
+        "the notification access settings",
       )
       throw BridgeError(
         "Android hasn't given T3 Code notification access. The user can turn it on in the settings page " +
@@ -508,13 +511,14 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   }
 
   /** Android blocks activity starts from the background, but a notification's tap can start one. */
-  private fun startOrNotify(intent: Intent, title: String, text: String): Any? {
+  /** [subject] names the target in English for the agent's error; [text] is the notification body. */
+  private fun startOrNotify(intent: Intent, title: String, text: String, subject: String = text): Any? {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     if (onScreen()) {
       try {
         context.startActivity(intent)
       } catch (error: ActivityNotFoundException) {
-        throw BridgeError("No app on this phone opens $text")
+        throw BridgeError("No app on this phone opens $subject")
       }
       return null
     }
@@ -608,7 +612,10 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     )
     val blocked = manager.getNotificationChannel(channel)
       ?.takeIf { it.importance == NotificationManager.IMPORTANCE_NONE }
-    if (blocked != null) throw BridgeError("T3 Code's \"${blocked.name}\" notifications are turned off.")
+    if (blocked != null) {
+      val name = if (channel == REQUEST_CHANNEL) "Requests from agents" else "Agent notifications"
+      throw BridgeError("T3 Code's \"$name\" notifications are turned off.")
+    }
     val icon = context.resources.getIdentifier("notification_icon", "drawable", context.packageName)
       .takeIf { it != 0 } ?: context.applicationInfo.icon
     val notification = NotificationCompat.Builder(context, channel)

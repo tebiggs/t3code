@@ -57,6 +57,8 @@ const NATIVE_TEXT: ReadonlyArray<string> = [
   msg("Open an app from an agent"),
   msg("Open a link from an agent"),
   msg("Open from an agent"),
+  // The notification body for an `am start` that names no app, link or action.
+  msg("this intent"),
   msg("Agent notifications"),
   msg("Notifications that agents on this phone post."),
   msg("Requests from agents"),

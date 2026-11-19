@@ -37,10 +37,11 @@ enum class Hold { Job, Login, Server }
  * waits on the browser, or the server would stall as soon as the user switched apps.
  */
 object RuntimeForeground {
-  private val holds = sortedMapOf<Hold, String>()
+  private val holds = sortedMapOf<Hold, () -> String>()
   @Volatile internal var service: DeviceRuntimeService? = null
 
-  fun hold(context: Context, hold: Hold, text: String) {
+  /** [text] renders each time the notification is shown, in the app's language then. */
+  fun hold(context: Context, hold: Hold, text: () -> String) {
     val running = synchronized(this) {
       holds[hold] = text
       service
@@ -57,8 +58,12 @@ object RuntimeForeground {
     running?.refresh()
   }
 
+  fun refresh() {
+    service?.refresh()
+  }
+
   @Synchronized
-  internal fun current(): Pair<Hold, String>? = holds.entries.firstOrNull()?.toPair()
+  internal fun current(): Pair<Hold, String>? = holds.entries.firstOrNull()?.let { it.key to it.value() }
 }
 
 /** The T3 server inside the on-device runtime, kept alive by the foreground service. */
@@ -80,7 +85,7 @@ object DeviceServer {
   @Synchronized
   private fun launch(context: Context, port: Int, retry: Boolean) {
     if (running) return
-    RuntimeForeground.hold(context, Hold.Server, localized("The server is running on this phone."))
+    RuntimeForeground.hold(context, Hold.Server) { localized("The server is running on this phone.") }
     val log = logFile(context)
     val bridge = AndroidBridge.start(context)
     val started = try {
