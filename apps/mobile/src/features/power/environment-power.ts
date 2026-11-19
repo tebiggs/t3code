@@ -10,7 +10,7 @@ import type {
 } from "@t3tools/contracts";
 import { msg } from "gt-react-native";
 
-import { m } from "../../i18n/messages";
+import { m, type MessageResolver } from "../../i18n/messages";
 import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferences";
 
 /** How long a woken machine has to reconnect before it counts as asleep again. */
@@ -158,9 +158,14 @@ export type PowerTarget =
   | { readonly error: string };
 
 /** Custom commands run on the relay. The built-in wake does too; the built-in sleep runs on the machine itself. */
-export function wakeTarget(settings: EnvironmentPowerSettings | undefined): PowerTarget {
+export function wakeTarget(
+  settings: EnvironmentPowerSettings | undefined,
+  resolve: MessageResolver = m,
+): PowerTarget {
   if (!settings?.relayEnvironmentId) {
-    return { error: m(msg("Choose a machine on the same network to send the wake through.")) };
+    return {
+      error: resolve(msg("Choose a machine on the same network to send the wake through.")),
+    };
   }
   const custom = settings.wakeCommand.trim();
   if (custom.length > 0) {
@@ -171,22 +176,23 @@ export function wakeTarget(settings: EnvironmentPowerSettings | undefined): Powe
   }
   const macAddress = normalizeMacAddress(settings.macAddress ?? "");
   return macAddress === null
-    ? { error: m(msg("Add this machine's MAC address in Power settings to wake it.")) }
+    ? { error: resolve(msg("Add this machine's MAC address in Power settings to wake it.")) }
     : { environmentId: settings.relayEnvironmentId, command: { kind: "wake", macAddress } };
 }
 
 export function sleepTarget(
   environmentId: EnvironmentId,
   settings: EnvironmentPowerSettings | undefined,
+  resolve: MessageResolver = m,
 ): PowerTarget {
   if (settings === undefined) {
-    return { error: m(msg("Sleep and wake is turned off for this machine.")) };
+    return { error: resolve(msg("Sleep and wake is turned off for this machine.")) };
   }
   const custom = settings.sleepCommand.trim();
   if (custom.length === 0) return { environmentId, command: { kind: "sleep" } };
   return settings.relayEnvironmentId
     ? { environmentId: settings.relayEnvironmentId, command: { kind: "custom", command: custom } }
-    : { error: m(msg("Choose a machine to send the custom sleep command through.")) };
+    : { error: resolve(msg("Choose a machine to send the custom sleep command through.")) };
 }
 
 /**

@@ -160,10 +160,12 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
         setSharing(result.value);
         if (!result.value.shared) void reconcilePhoneSharing();
       } else {
-        setReadError(failureText(result, gt("Couldn't check whether this phone is shared.")));
+        setReadError(
+          failureText(result, mNow(msg("Couldn't check whether this phone is shared."))),
+        );
       }
     });
-  }, [connection, connected, gt]);
+  }, [connection, connected]);
   useFocusEffect(check);
 
   if (connection === null) return null;
@@ -353,7 +355,7 @@ function ConfiguredPhoneSharingSection(props: { readonly environmentId: Environm
                   ? gt("Checking…")
                   : gt("Couldn't check.")
                 : !sharing.shared && record?.phase === "listed"
-                  ? gt("Off. {detail}", { detail: PHONE_STILL_LISTED })
+                  ? gt("Off. {detail}", { detail: m(PHONE_STILL_LISTED) })
                   : sharingText(sharing, userId, m);
 
   return (

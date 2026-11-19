@@ -2593,6 +2593,8 @@
   "8c20e68d6d4fbd14": "Este teléfono ya está compartido.",
   "9c5f732629f00c64": "Cerraste la sesión de T3 Connect, así que este teléfono no se compartió.",
   "54ba04072cfd9a57": "Este teléfono ya no está compartido.",
+  "6e2421c6dc78de14": "T3 Connect todavía muestra este teléfono. Quítalo en Ajustes > T3 Connect con la sesión iniciada en la cuenta con la que se compartió.",
+  "6240462f1542d9f4": "El servidor de T3 Code de este teléfono es demasiado antiguo para «Solo ver». Actualiza T3 Code en este teléfono y vuelve a intentarlo.",
   "13506b22eca53298": "Abre los controles de suspensión y reactivación",
   "f1ae42c424660415": "Suspender y reactivar",
   "7a7619a979e6d401": "Reactivar envía un paquete Wake-on-LAN desde la máquina que elijas, que debe estar en la misma red y tener {python} (o PowerShell en Windows). La suspensión se ejecuta en esta máquina a través de su propia conexión. Los comandos personalizados sustituyen a cualquiera de los dos y se ejecutan en la máquina elegida.",

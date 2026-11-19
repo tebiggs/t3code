@@ -2593,6 +2593,8 @@
   "8c20e68d6d4fbd14": "Este telefone já está compartilhado.",
   "9c5f732629f00c64": "Você saiu do T3 Connect, então este telefone não foi compartilhado.",
   "54ba04072cfd9a57": "Este telefone não está mais compartilhado.",
+  "6e2421c6dc78de14": "O T3 Connect ainda lista este telefone. Remova-o em Configurações > T3 Connect, conectado à conta com que ele foi compartilhado.",
+  "6240462f1542d9f4": "O servidor do T3 Code deste telefone é antigo demais para \"Somente visualização\". Atualize o T3 Code neste telefone e tente novamente.",
   "13506b22eca53298": "Abre os controles de suspensão e despertar",
   "f1ae42c424660415": "Suspender e despertar",
   "7a7619a979e6d401": "Despertar envia um pacote Wake-on-LAN pela máquina que você escolher, que precisa estar na mesma rede e ter {python} (ou PowerShell no Windows). A suspensão roda nesta máquina pela própria conexão dela. Comandos personalizados substituem qualquer um dos dois e rodam na máquina escolhida.",

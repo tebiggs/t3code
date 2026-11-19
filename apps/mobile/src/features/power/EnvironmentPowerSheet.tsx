@@ -67,9 +67,9 @@ export function EnvironmentPowerSheet({
     settings === undefined
       ? null
       : status === "asleep"
-        ? blocker(wakeTarget(settings))
+        ? blocker(wakeTarget(settings, m))
         : status === "awake"
-          ? blocker(sleepTarget(environmentId, settings))
+          ? blocker(sleepTarget(environmentId, settings, m))
           : null;
   const canToggle =
     settings !== undefined &&

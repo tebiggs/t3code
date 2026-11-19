@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import { msg } from "gt-react-native";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
 
@@ -20,11 +21,14 @@ export class PhoneSharingError extends Schema.TaggedError<PhoneSharingError>()(
   },
 ) {}
 
-export const PHONE_STILL_LISTED =
-  "T3 Connect still lists this phone. Remove it under Settings > T3 Connect, signed in to the account it was shared with.";
+// Marked with msg(): resolve with m() where shown.
+export const PHONE_STILL_LISTED = msg(
+  "T3 Connect still lists this phone. Remove it under Settings > T3 Connect, signed in to the account it was shared with.",
+);
 
-export const VIEW_ONLY_NEEDS_UPDATE =
-  "This phone's T3 Code server is too old for View only. Update T3 Code on this phone, then try again.";
+export const VIEW_ONLY_NEEDS_UPDATE = msg(
+  "This phone's T3 Code server is too old for View only. Update T3 Code on this phone, then try again.",
+);
 
 /** What the phone's server holds. Any link or tunnel config counts: only Off clears them. */
 export type PhoneSharing = (

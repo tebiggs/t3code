@@ -95,9 +95,9 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
     }
     const owner = record.accountId;
     if (owner !== null) {
-      if (effects.signedInAccount() !== owner) return PHONE_STILL_LISTED;
+      if (effects.signedInAccount() !== owner) return m(PHONE_STILL_LISTED);
       if ((await effects.deregister(owner, record.environmentId)) !== null) {
-        return PHONE_STILL_LISTED;
+        return m(PHONE_STILL_LISTED);
       }
     }
     await effects.saveRecord(null);
@@ -147,7 +147,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         const sharing = await effects.readSharing(connection);
         if (sharing === null) return m(msg("Couldn't check whether this phone is already shared."));
         if (sharing.shared) return m(msg("This phone is already shared."));
-        if (sharing.modesUnsupported && mode === "view-only") return VIEW_ONLY_NEEDS_UPDATE;
+        if (sharing.modesUnsupported && mode === "view-only") return m(VIEW_ONLY_NEEDS_UPDATE);
         const notReady = await effects.ensureRelayClient(connection);
         if (notReady !== null) return notReady;
         // Before the link, so the first device to connect already gets this mode. A server too
@@ -173,7 +173,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
         const sharing = await effects.readSharing(connection);
         if (sharing === null) return m(msg("Couldn't check whether this phone is shared."));
         if (!sharing.shared) return m(msg("This phone isn't shared anymore."));
-        if (sharing.modesUnsupported) return VIEW_ONLY_NEEDS_UPDATE;
+        if (sharing.modesUnsupported) return m(VIEW_ONLY_NEEDS_UPDATE);
         return effects.setSharingMode(connection, mode);
       }),
 
@@ -220,7 +220,7 @@ export function createPhoneSharingController(effects: PhoneSharingEffects) {
           await effects.saveRecord({ ...record, phase: "listed" });
           await settle();
         }
-        return effects.loadRecord() === null ? null : PHONE_STILL_LISTED;
+        return effects.loadRecord() === null ? null : m(PHONE_STILL_LISTED);
       }),
 
     /** Before forgetting the connection, which is the only way to reach the server. */

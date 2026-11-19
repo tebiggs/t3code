@@ -1,5 +1,5 @@
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import { msg, T, useGT, useMessages } from "gt-react-native";
+import { msg, T, useGT, useLocale, useMessages } from "gt-react-native";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Linking, PermissionsAndroid, Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ListRow } from "../../components/ui/ListRow";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { m as mNow } from "../../i18n/messages";
 import { setPhoneServerSettings, usePhoneServerSettings } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { confirmPhoneServerReplacement } from "../phone/confirmPhoneServerReplacement";
@@ -74,6 +75,7 @@ export function DeviceRuntimeSetupScreen() {
   const navigation = useNavigation();
   const gt = useGT();
   const m = useMessages();
+  const locale = useLocale();
   const insets = useSafeAreaInsets();
   const { status, refresh } = useDeviceRuntimeStatus();
   const [inspection, setInspection] = useState<DeviceRuntimeInspection | null>(null);
@@ -95,9 +97,9 @@ export function DeviceRuntimeSetupScreen() {
     inspectDeviceRuntime()
       .then(setInspection)
       .catch((cause: unknown) =>
-        setError(errorText(cause, gt("Couldn't check the installation."))),
+        setError(errorText(cause, mNow(msg("Couldn't check the installation.")))),
       );
-  }, [native, gt]);
+  }, [native]);
 
   useFocusEffect(
     useCallback(() => {
@@ -244,7 +246,7 @@ export function DeviceRuntimeSetupScreen() {
           tone="primary"
           loading={busy === "connect"}
           onPress={() =>
-            confirmPhoneServerReplacement(DEVICE_SERVER_PORT, () => {
+            confirmPhoneServerReplacement(DEVICE_SERVER_PORT, locale, () => {
               void run("connect", () => connectPhoneServer(DEVICE_SERVER_PORT));
             })
           }

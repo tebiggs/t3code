@@ -2597,6 +2597,8 @@
   "8c20e68d6d4fbd14": "This phone is already shared.",
   "9c5f732629f00c64": "You signed out of T3 Connect, so this phone wasn't shared.",
   "54ba04072cfd9a57": "This phone isn't shared anymore.",
+  "6e2421c6dc78de14": "T3 Connect still lists this phone. Remove it under Settings > T3 Connect, signed in to the account it was shared with.",
+  "6240462f1542d9f4": "This phone's T3 Code server is too old for View only. Update T3 Code on this phone, then try again.",
   "13506b22eca53298": "Opens sleep and wake controls",
   "f1ae42c424660415": "Sleep and wake",
   "7a7619a979e6d401": "Wake sends a Wake-on-LAN packet from the machine you choose, which must be on the same network and have {python} (or PowerShell on Windows). Sleep runs on this machine through its own connection. Custom commands replace either one and run on the chosen machine.",

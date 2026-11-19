@@ -216,7 +216,7 @@ export function useEnvironmentPowerWorker() {
   }, [anyAsleep]);
 
   const ticking = states.some(needsTicks);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- interval timer held while a wake or sleep waits on its deadline
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- interval timer checks wake and sleep deadlines and the automatic outage grace period
   useEffect(() => {
     if (!ticking) return;
     const interval = setInterval(() => {
