@@ -3,11 +3,13 @@ import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { msg } from "gt-react-native";
 import { useEffect } from "react";
 import { AppState } from "react-native";
 
 import { environmentCatalog } from "../../connection/catalog";
 import { connectPairingUrl } from "../../connection/onboarding";
+import { m } from "../../i18n/messages";
 import type { PhoneServerSettings } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
@@ -18,6 +20,7 @@ import {
 } from "../../state/phone-server-settings";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
 import { deviceRuntime, deviceServer } from "../device-runtime/device-runtime";
+import { useDeviceRuntimeText } from "../device-runtime/native-text";
 import { reconcilePhoneSharing } from "./phone-sharing-commands";
 import { phoneServerPort } from "./phone-setup";
 
@@ -144,15 +147,19 @@ async function launchPhoneServer(port: number, stillWanted: () => boolean): Prom
   const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
   const running = await readPhoneServerEnvironmentId(port);
   if (running !== null) return running;
-  if (!stillWanted()) throw new Error("Starting T3 Code was cancelled.");
+  if (!stillWanted()) throw new Error(m(msg("Starting T3 Code was cancelled.")));
   deviceServer.launch(port);
   const started = await waitForServer(port, deadline);
   if (started === null) {
     const log = deviceServer.logTail();
     throw new Error(
       log.length > 0
-        ? `T3 Code didn't start on port ${port}:\n${log}`
-        : `T3 Code didn't start on port ${port}. Its log is under Show log in phone setup.`,
+        ? m(msg("T3 Code didn't start on port {port}:\n{log}", { port, log }))
+        : m(
+            msg("T3 Code didn't start on port {port}. Its log is under Show log in phone setup.", {
+              port,
+            }),
+          ),
     );
   }
   return started;
@@ -164,7 +171,8 @@ async function launchPhoneServer(port: number, stillWanted: () => boolean): Prom
  * the port, so another listener there can't be added by mistake.
  */
 export async function connectPhoneServer(port: number): Promise<EnvironmentId> {
-  if (updating) throw new Error("T3 Code is restarting after an update. Try again in a moment.");
+  if (updating)
+    throw new Error(m(msg("T3 Code is restarting after an update. Try again in a moment.")));
   const environmentId = await startPhoneServer(port);
   const pairingUrl = await deviceServer.pairingUrl();
   const connected = await runAtomCommand(
@@ -198,7 +206,11 @@ export async function startAndReconnectPhoneServer(
     const started = await startPhoneServer(settings.port, stillWanted);
     if (started !== settings.environmentId) {
       throw new Error(
-        "A different T3 Code server is answering on this phone. Open phone setup to connect it.",
+        m(
+          msg(
+            "A different T3 Code server is answering on this phone. Open phone setup to connect it.",
+          ),
+        ),
       );
     }
     reconnect(settings.environmentId);
@@ -207,7 +219,7 @@ export async function startAndReconnectPhoneServer(
   } catch (error) {
     appAtomRegistry.set(phoneServerRuntimeAtom, {
       starting: false,
-      error: errorMessage(error, "T3 Code couldn't start on this phone."),
+      error: errorMessage(error, m(msg("T3 Code couldn't start on this phone."))),
     });
     return false;
   }
@@ -228,7 +240,7 @@ export async function updatePhoneServer(settings: PhoneServerSettings): Promise<
     await stopPhoneServerWhenSettled();
     const started = await startPhoneServer(settings.port);
     if (started !== settings.environmentId) {
-      throw new Error("A different T3 Code server is answering on this phone.");
+      throw new Error(m(msg("A different T3 Code server is answering on this phone.")));
     }
     reconnect(settings.environmentId);
   } finally {
@@ -264,6 +276,7 @@ async function autoStartPhoneServer() {
  * launch once connections hydrate, after a drop, and whenever the app comes back.
  */
 export function usePhoneServerWorker() {
+  useDeviceRuntimeText();
   const settings = usePhoneServerSettings();
   const phone = useWorkspaceEnvironments().find(
     (environment) => environment.environmentId === settings?.environmentId,

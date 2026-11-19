@@ -2,8 +2,10 @@ import type { EnvironmentId, ForkPushDeviceRegistration } from "@t3tools/contrac
 import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
+import { msg } from "gt-react-native";
 import { AppState } from "react-native";
 
+import { m } from "../../i18n/messages";
 import { whenProtectedDataAvailable } from "../../lib/protectedData";
 import { loadOrCreateAgentAwarenessDeviceId, loadPreferences } from "../../persistence/imperative";
 import {
@@ -102,7 +104,11 @@ export function startForkPushRegistration(
     const token =
       observedToken ?? String((await Notifications.getDevicePushTokenAsync()).data ?? "");
     if (token.trim() === "") {
-      setState({ kind: "failed", hostEnvironmentId, error: "This phone has no FCM token yet." });
+      setState({
+        kind: "failed",
+        hostEnvironmentId,
+        error: m(msg("This phone has no FCM token yet.")),
+      });
       return;
     }
     const deviceId = await loadOrCreateAgentAwarenessDeviceId();
@@ -119,6 +125,7 @@ export function startForkPushRegistration(
       userId,
       token,
       packageName: Constants.expoConfig?.android?.package?.trim() || null,
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- stored on the push host as the device's name
       label: Constants.deviceName?.trim() || "Android device",
       preferences: {
         notificationsEnabled: true,

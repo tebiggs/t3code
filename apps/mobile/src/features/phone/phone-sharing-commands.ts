@@ -16,8 +16,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { AsyncResult, AtomRegistry } from "effect/reactivity";
+import { msg } from "gt-react-native";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
+import { m } from "../../i18n/messages";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
@@ -75,18 +77,23 @@ const ensureRelayClient = createRuntimeCommand(connectionAtomRuntime, {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const status = yield* registry
       .run(connection.environmentId, request(WS_METHODS.cloudGetRelayClientStatus, {}))
-      .pipe(Effect.mapError(failWith("Couldn't check for the T3 Connect relay client.")));
+      .pipe(Effect.mapError(failWith(m(msg("Couldn't check for the T3 Connect relay client.")))));
     if (status.status === "available") return;
     if (status.status === "unsupported") {
       return yield* new PhoneSharingError({
-        message: `T3 Connect has no relay client for ${status.platform}-${status.arch}.`,
+        message: m(
+          msg("T3 Connect has no relay client for {platform}-{arch}.", {
+            platform: status.platform,
+            arch: status.arch,
+          }),
+        ),
       });
     }
     const installed = yield* registry
       .runStream(connection.environmentId, runStream(WS_METHODS.cloudInstallRelayClient, {}))
       .pipe(
         Stream.runLast,
-        Effect.mapError(failWith("Couldn't install the T3 Connect relay client.")),
+        Effect.mapError(failWith(m(msg("Couldn't install the T3 Connect relay client.")))),
       );
     if (
       Option.isNone(installed) ||
@@ -94,7 +101,7 @@ const ensureRelayClient = createRuntimeCommand(connectionAtomRuntime, {
       installed.value.status.status !== "available"
     ) {
       return yield* new PhoneSharingError({
-        message: "The T3 Connect relay client didn't install.",
+        message: m(msg("The T3 Connect relay client didn't install.")),
       });
     }
   }, Effect.timeout(RELAY_CLIENT_TIMEOUT)),
@@ -193,7 +200,7 @@ const controller = createPhoneSharingController({
       await runAtomCommand(appAtomRegistry, ensureRelayClient, connection, {
         reportFailure: false,
       }),
-      "Couldn't set up the T3 Connect relay client.",
+      m(msg("Couldn't set up the T3 Connect relay client.")),
     ),
   // Fixed text, whatever went wrong: what matters is that old sign-ins may have survived.
   setSharingMode: async (connection, mode) =>
@@ -206,11 +213,11 @@ const controller = createPhoneSharingController({
       ),
     )
       ? null
-      : MODE_CHANGE_UNFINISHED,
+      : m(MODE_CHANGE_UNFINISHED),
   stopOnServer: async (connection) =>
     failureText(
       await runAtomCommand(appAtomRegistry, stopOnServer, connection, { reportFailure: false }),
-      "Couldn't stop sharing this phone.",
+      m(msg("Couldn't stop sharing this phone.")),
     ),
   deregister: async (accountId, environmentId) =>
     failureText(
@@ -220,7 +227,7 @@ const controller = createPhoneSharingController({
         { accountId, environmentId },
         { reportFailure: false },
       ),
-      "Couldn't remove this phone from T3 Connect.",
+      m(msg("Couldn't remove this phone from T3 Connect.")),
     ),
 });
 
@@ -249,7 +256,7 @@ export const sharePhone = (input: {
         },
         { reportFailure: false },
       ),
-      "Couldn't share this phone.",
+      m(msg("Couldn't share this phone.")),
     ),
   );
 

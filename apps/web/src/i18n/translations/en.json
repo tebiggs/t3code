@@ -3203,6 +3203,8 @@
   "d0e9c30191edf07e": "Replying to {titles}",
   "22182c7abff35fe3": "Replying to",
   "794050bb4d783744": "Cancel reply",
+  "570567bbea004eac": "View only",
+  "0ba1d941c89f1e3f": "This connection can't send messages or answer requests.",
   "e5030037416b712b": "Couldn't get the path of \"{name}\"",
   "793946590090bedc": "Type the folder path with @ instead.",
   "3e5d938882e3ed35": "Unable to add folder",

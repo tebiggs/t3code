@@ -1,7 +1,10 @@
 import { AuthAdministrativeClientScopes } from "@t3tools/contracts";
 import { requireOptionalNativeModule, type NativeModule } from "expo";
+import { msg } from "gt-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, Platform, type Permission } from "react-native";
+
+import { m } from "../../i18n/messages";
 
 /** Not Termux setup's old 3773, which may still be serving on phones that used it. */
 export const DEVICE_SERVER_PORT = 3774;
@@ -62,6 +65,8 @@ type DeviceRuntimeEvents = {
 };
 
 declare class T3DeviceRuntimeModule extends NativeModule<DeviceRuntimeEvents> {
+  /** Translations keyed by the English Kotlin shows, with `{name}` placeholders kept. */
+  setText(translations: Readonly<Record<string, string>>): void;
   getStatus(): DeviceRuntimeStatus;
   install(): Promise<void>;
   openStorageSettings(): void;
@@ -144,8 +149,8 @@ export const deviceServer = {
   /** Why the server can't start right now, or null when it can. */
   unavailable(): string | null {
     const status = deviceRuntime?.getStatus();
-    if (!status?.installed) return "T3 Code isn't installed on this phone anymore.";
-    if (status.job?.running) return "Setup or an update is still running.";
+    if (!status?.installed) return m(msg("T3 Code isn't installed on this phone anymore."));
+    if (status.job?.running) return m(msg("Setup or an update is still running."));
     return null;
   },
   /** Starts the server in the background; callers wait for its port to answer. */

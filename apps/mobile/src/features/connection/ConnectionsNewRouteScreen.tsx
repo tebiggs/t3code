@@ -422,20 +422,21 @@ function PhoneSection() {
   );
   const [supported] = useState(supportsDeviceRuntime);
   const rippleStyle = useResolveClassNames("bg-subtle-strong");
+  const gt = useGT();
   const description = !supported
-    ? "Needs a 64-bit phone"
+    ? gt("Needs a 64-bit phone")
     : phone
-      ? `Set up as ${phone.environmentLabel}`
-      : "Claude Code on this phone, no other computer needed";
+      ? gt("Set up as {name}", { name: phone.environmentLabel })
+      : gt("Claude Code on this phone, no other computer needed");
   return (
     <View collapsable={false} className="gap-2">
       <Text className="px-4 text-sm font-t3-medium text-foreground-muted">
-        Or run on this phone
+        <T>Or run on this phone</T>
       </Text>
       <View collapsable={false} className="overflow-hidden rounded-[24px] bg-grouped-card">
         <RowPressable
           accessibilityRole="button"
-          accessibilityLabel={`Run agents on this phone, ${description}`}
+          accessibilityLabel={gt("Run agents on this phone, {description}", { description })}
           accessibilityState={{ disabled: !supported }}
           disabled={!supported}
           android_ripple={{ color: rippleStyle.backgroundColor }}
@@ -460,7 +461,7 @@ function PhoneSection() {
                 className="min-w-0 flex-shrink text-base font-t3-bold leading-snug text-foreground"
                 numberOfLines={1}
               >
-                Run agents on this phone
+                <T>Run agents on this phone</T>
               </Text>
             </View>
             <Text className="text-xs text-foreground-muted">{description}</Text>

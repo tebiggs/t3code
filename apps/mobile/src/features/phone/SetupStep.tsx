@@ -1,3 +1,4 @@
+import { useGT } from "gt-react-native";
 import type { ReactNode } from "react";
 import { View } from "react-native";
 
@@ -13,10 +14,18 @@ export function StepRow(props: {
   readonly action?: ReactNode;
   readonly children: ReactNode;
 }) {
+  const gt = useGT();
+  const step = { number: props.number, title: props.title };
   return (
     <View
       accessible={props.children === null}
-      accessibilityLabel={`Step ${props.number}, ${props.title}, ${props.state === "done" ? "done" : props.state === "current" ? "current step" : "not started"}`}
+      accessibilityLabel={
+        props.state === "done"
+          ? gt("Step {number}, {title}, done", step)
+          : props.state === "current"
+            ? gt("Step {number}, {title}, current step", step)
+            : gt("Step {number}, {title}, not started", step)
+      }
       className="flex-row gap-3 px-4 py-3"
     >
       <View

@@ -13,9 +13,9 @@ private val NETWORK_ERROR = Regex("""getaddrinfo|EAI_AGAIN|ENOTFOUND|ECONNREFUSE
 internal fun failureMessage(output: String, code: Int): String {
   val reason = output.substringAfterLast(CODE_PROMPT, output).lines()
     .map { it.trim() }.lastOrNull { it.isNotEmpty() }
-    ?: return "Sign-in exited with status $code."
+    ?: return localized("Sign-in exited with status {code}.", "code" to code)
   return if (NETWORK_ERROR.containsMatchIn(reason)) {
-    "Couldn't reach Claude's servers ($reason). Check the connection, then sign in again."
+    localized("Couldn't reach Claude's servers ({reason}). Check the connection, then sign in again.", "reason" to reason)
   } else {
     reason
   }

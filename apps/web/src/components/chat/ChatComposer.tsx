@@ -2616,8 +2616,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           variant: "warning",
           group: "environment",
           icon: <EyeIcon />,
-          title: "View only",
-          description: "This connection can't send messages or answer requests.",
+          title: gt("View only"),
+          description: gt("This connection can't send messages or answer requests."),
         },
       ]
     : [];

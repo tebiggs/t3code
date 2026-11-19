@@ -3,10 +3,12 @@ import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtim
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Equal from "effect/Equal";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { msg } from "gt-react-native";
 import { useEffect } from "react";
 import { AppState } from "react-native";
 
 import { environmentCatalog } from "../../connection/catalog";
+import { m } from "../../i18n/messages";
 import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPowerSettingsAtom } from "../../state/environment-power-settings";
@@ -111,7 +113,7 @@ async function runOn(target: PowerTarget): Promise<string | null> {
   const cause = squashAtomCommandFailure(result);
   return cause instanceof Error && cause.message.length > 0
     ? cause.message
-    : "The command could not be run.";
+    : m(msg("The command could not be run."));
 }
 
 function settingsFor(environmentId: EnvironmentId) {
@@ -148,7 +150,7 @@ export async function sleepEnvironment(environmentId: EnvironmentId) {
   if (!isEnabledEnvironment(environmentId) || !Equal.equals(settingsFor(environmentId), settings)) {
     dispatch(environmentId, {
       type: "sleep-failed",
-      error: "Power settings changed while checking the machine, so nothing was sent.",
+      error: m(msg("Power settings changed while checking the machine, so nothing was sent.")),
     });
     return;
   }
@@ -165,6 +167,7 @@ export function useEnvironmentPowerWorker() {
   const environments = useWorkspaceEnvironments();
   const runtime = useAtomValue(environmentPowerRuntimeAtom);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- feeds connection changes to the power runtime and the reconnect loop
   useEffect(() => {
     const now = Date.now();
     for (const environment of environments) {
@@ -191,6 +194,7 @@ export function useEnvironmentPowerWorker() {
     }
   }, [environments, settings]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- AppState listener: rechecks asleep machines on return to the foreground
   useEffect(() => {
     let previous = AppState.currentState;
     const subscription = AppState.addEventListener("change", (next) => {
@@ -202,6 +206,7 @@ export function useEnvironmentPowerWorker() {
 
   const states = [...runtime.values()];
   const anyAsleep = states.some((state) => state.mode === "asleep");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- interval timer held while a machine is asleep
   useEffect(() => {
     if (!anyAsleep) return;
     const interval = setInterval(() => {
@@ -211,6 +216,7 @@ export function useEnvironmentPowerWorker() {
   }, [anyAsleep]);
 
   const ticking = states.some(needsTicks);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- interval timer checks wake and sleep deadlines and the automatic outage grace period
   useEffect(() => {
     if (!ticking) return;
     const interval = setInterval(() => {

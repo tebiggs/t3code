@@ -51,6 +51,10 @@
       "types": "./src/locales.ts",
       "default": "./src/locales.ts"
     },
+    "./list-format": {
+      "types": "./src/listFormat.ts",
+      "default": "./src/listFormat.ts"
+    },
     "./model-search": {
       "types": "./src/modelSearch.ts",
       "default": "./src/modelSearch.ts"
