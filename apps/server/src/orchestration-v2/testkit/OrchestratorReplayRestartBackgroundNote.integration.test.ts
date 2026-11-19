@@ -37,7 +37,7 @@ const FIRST_AFTER_RESTART = "Is the background subagent done yet?";
 const SECOND_AFTER_RESTART = "Thanks. Anything else?";
 const NOTE = [
   "Note: this background work stopped before it reported back, because the T3 server restarted or the agent session ended. It will not report back on its own. It may have finished or changed state first, so check its output or what it changes before you start it again, and never rerun a deploy or other job with side effects until you know it did not complete. Then resume what you still need and wait for its result:",
-  "- subagent: Background subagent test (id a2995bfced8019363)",
+  "- subagent: Background subagent test (id a2995bfced8019363; resume it with SendMessage to 'a2995bfced8019363')",
 ].join("\n");
 
 const readRestartTranscript = Effect.fn("readRestartTranscript")(function* (

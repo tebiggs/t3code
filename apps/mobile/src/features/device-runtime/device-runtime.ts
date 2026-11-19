@@ -1,3 +1,4 @@
+import { AuthAdministrativeClientScopes } from "@t3tools/contracts";
 import { requireOptionalNativeModule, type NativeModule } from "expo";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, Platform, type Permission } from "react-native";
@@ -75,7 +76,7 @@ declare class T3DeviceRuntimeModule extends NativeModule<DeviceRuntimeEvents> {
   startServer(port: number): void;
   stopServer(): Promise<void>;
   serverLog(lines: number): string;
-  pair(): Promise<string>;
+  pair(scopes: ReadonlyArray<string>): Promise<string>;
   startLogin(): void;
   submitLoginCode(code: string): void;
   cancelLogin(): void;
@@ -152,8 +153,8 @@ export const deviceServer = {
     requireDeviceRuntime().startServer(port);
   },
   stop: () => requireDeviceRuntime().stopServer(),
-  /** Mints a pairing token inside Ubuntu. */
-  pairingUrl: () => requireDeviceRuntime().pair(),
+  /** Mints a pairing token inside Ubuntu. Linking the phone to T3 Connect needs the admin scopes. */
+  pairingUrl: () => requireDeviceRuntime().pair(AuthAdministrativeClientScopes),
   /** Installs the newest server build and Claude Code. */
   update: () => requireDeviceRuntime().update(),
   logTail: () => requireDeviceRuntime().serverLog(15),

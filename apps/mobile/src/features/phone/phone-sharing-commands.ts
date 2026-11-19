@@ -5,6 +5,7 @@ import {
 } from "@t3tools/client-runtime/relay";
 import { request, runStream, subscribe } from "@t3tools/client-runtime/rpc";
 import {
+  createEnvironmentCommand,
   createRuntimeCommand,
   runAtomCommand,
   squashAtomCommandFailure,
@@ -99,13 +100,10 @@ const ensureRelayClient = createRuntimeCommand(connectionAtomRuntime, {
   }, Effect.timeout(RELAY_CLIENT_TIMEOUT)),
 });
 
-const linkServer = createRuntimeCommand(connectionAtomRuntime, {
+const linkServer = createEnvironmentCommand(connectionAtomRuntime, {
   label: "phone-server:link",
-  execute: (input: {
-    readonly connection: SavedRemoteConnection;
-    readonly clerkToken: string;
-    readonly liveActivitiesEnabled: boolean;
-  }) => linkEnvironmentToCloudWithPreference(input).pipe(Effect.timeout(LINK_TIMEOUT)),
+  execute: (input: { readonly clerkToken: string; readonly liveActivitiesEnabled: boolean }) =>
+    linkEnvironmentToCloudWithPreference(input).pipe(Effect.timeout(LINK_TIMEOUT)),
 });
 
 const stopOnServer = createRuntimeCommand(connectionAtomRuntime, {
@@ -239,7 +237,18 @@ export const sharePhone = (input: {
 }) =>
   controller.share(input.connection, input.accountId, input.mode, async () =>
     failureText(
-      await runAtomCommand(appAtomRegistry, linkServer, input, { reportFailure: false }),
+      await runAtomCommand(
+        appAtomRegistry,
+        linkServer,
+        {
+          environmentId: input.connection.environmentId,
+          input: {
+            clerkToken: input.clerkToken,
+            liveActivitiesEnabled: input.liveActivitiesEnabled,
+          },
+        },
+        { reportFailure: false },
+      ),
       "Couldn't share this phone.",
     ),
   );
