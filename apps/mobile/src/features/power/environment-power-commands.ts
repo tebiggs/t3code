@@ -89,7 +89,7 @@ const runInTerminal = Effect.fn("EnvironmentPower.runInTerminal")(function* (
   const resolved = resolvePowerCommand(command, os);
   if (resolved === null) {
     return yield* new PowerCommandError({
-      message: "T3 Code has no built-in command for this machine's operating system.",
+      message: m(msg("T3 Code has no built-in command for this machine's operating system.")),
     });
   }
   const threadId = command.kind === "sleep" ? SLEEP_TERMINAL_THREAD_ID : POWER_TERMINAL_THREAD_ID;
@@ -179,8 +179,10 @@ const runToSuccess = Effect.fn("EnvironmentPower.runToSuccess")(function* (comma
   const detail =
     result?.message ??
     lastOutputLine(output) ??
-    (result?.exitCode != null ? `Exited with code ${result.exitCode}.` : null);
-  return yield* new PowerCommandError({ message: detail ?? "The command did not finish." });
+    (result?.exitCode != null
+      ? m(msg("Exited with code {code}.", { code: result.exitCode }))
+      : null);
+  return yield* new PowerCommandError({ message: detail ?? m(msg("The command did not finish.")) });
 });
 
 export const runPowerCommand = createRuntimeCommand(connectionAtomRuntime, {
