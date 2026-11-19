@@ -64,6 +64,8 @@ type DeviceRuntimeEvents = {
 };
 
 declare class T3DeviceRuntimeModule extends NativeModule<DeviceRuntimeEvents> {
+  /** Translations keyed by the English Kotlin shows, with `{name}` placeholders kept. */
+  setText(translations: Readonly<Record<string, string>>): void;
   getStatus(): DeviceRuntimeStatus;
   install(): Promise<void>;
   openStorageSettings(): void;

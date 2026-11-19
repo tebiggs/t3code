@@ -296,7 +296,7 @@ class DeviceRuntime(private val context: Context, private val log: (String) -> U
   /** Starts a command in the guest with stderr merged into stdout. */
   fun start(guestCommand: List<String>, environment: Map<String, String> = emptyMap()): GuestProcess {
     checkCancelled()
-    if (!ubuntuInstalled) throw IOException("Ubuntu on this phone is missing or damaged. Install it again.")
+    if (!ubuntuInstalled) throw IOException(localized("Ubuntu on this phone is missing or damaged. Install it again."))
     writeGuestConfig()
     prootTmp.mkdirs()
     hardLinks.mkdirs()

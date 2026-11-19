@@ -39,7 +39,21 @@ internal fun approvalDetails(body: JSONObject): String {
   return details
 }
 
-private class WaitingApproval(val title: String, val message: String, val answer: CompletableFuture<Boolean>)
+private class WaitingApproval(
+  val category: AccessCategory,
+  val command: String,
+  val details: String,
+  val answer: CompletableFuture<Boolean>,
+) {
+  // Rendered when the dialog opens, so it's in the language the buttons are.
+  fun title() = localized("Allow {access}?", "access" to localized(category.label))
+
+  fun message() = buildString {
+    append(AgentAccess.commandName(command))
+    if (details.isNotEmpty()) append("\n\n$details")
+    append("\n\n" + localized("An agent or another device using this phone's server asked for this."))
+  }
+}
 
 /**
  * One prompt per request, so an answer can't also cover a command the user never saw. What the
@@ -77,7 +91,7 @@ internal object AccessApproval {
     dismiss: () -> Unit,
   ): Boolean {
     val id = UUID.randomUUID().toString()
-    val waiting = waitingFor(category, command, details)
+    val waiting = WaitingApproval(category, command, details, CompletableFuture())
     pending[id] = waiting
     try {
       show(
@@ -98,16 +112,7 @@ internal object AccessApproval {
     }
   }
 
-  private fun waitingFor(category: AccessCategory, command: String, details: String): WaitingApproval {
-    val message = buildString {
-      append(AgentAccess.commandName(command))
-      if (details.isNotEmpty()) append("\n\n$details")
-      append("\n\nAn agent or another device using this phone's server asked for this.")
-    }
-    return WaitingApproval("Allow ${category.label}?", message, CompletableFuture())
-  }
-
-  fun prompt(id: String): Pair<String, String>? = pending[id]?.let { it.title to it.message }
+  fun prompt(id: String): Pair<String, String>? = pending[id]?.let { it.title() to it.message() }
 
   fun answer(id: String, allowed: Boolean) {
     pending[id]?.answer?.complete(allowed)
@@ -133,8 +138,8 @@ class AccessApprovalActivity : Activity() {
     val shown = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
       .setTitle(title)
       .setMessage(message)
-      .setPositiveButton("Allow") { _, _ -> answer(true) }
-      .setNegativeButton("Don't allow") { _, _ -> answer(false) }
+      .setPositiveButton(localized("Allow")) { _, _ -> answer(true) }
+      .setNegativeButton(localized("Don't allow")) { _, _ -> answer(false) }
       .setOnCancelListener { answer(false) }
       .create()
     shown.setCanceledOnTouchOutside(false)

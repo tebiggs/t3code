@@ -58,8 +58,8 @@ internal fun launchIntent(context: Context, intent: Intent): Intent {
 }
 
 /** What a notification or error names the intent by. */
-internal fun describeIntent(intent: Intent): String =
-  intent.component?.flattenToShortString() ?: intent.`package` ?: intent.dataString ?: intent.action ?: "this intent"
+internal fun describeIntent(intent: Intent, fallback: String = "this intent"): String =
+  intent.component?.flattenToShortString() ?: intent.`package` ?: intent.dataString ?: intent.action ?: fallback
 
 /** A broadcast names its app, so one can't reach every app that listens for its action. */
 internal fun requireTarget(intent: Intent) {

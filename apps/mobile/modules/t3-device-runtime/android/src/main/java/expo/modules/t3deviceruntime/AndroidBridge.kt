@@ -280,7 +280,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     "share" -> {
       val text = body.getString("text")
       val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
-      startOrNotify(Intent.createChooser(send, null), "Share from an agent", text)
+      startOrNotify(Intent.createChooser(send, null), localized("Share from an agent"), text)
     }
     "vibrate" -> vibrate(body.optLong("duration", 1000))
     "battery-status" -> batteryStatus()
@@ -305,7 +305,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     "call-log" -> data.callLog(body)
     "telephony-call" -> {
       val number = body.getString("number")
-      startOrNotify(Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null)), "Call from an agent", number)
+      startOrNotify(Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null)), localized("Call from an agent"), number)
     }
     "telephony-deviceinfo" -> data.deviceInfo()
     "telephony-cellinfo" -> data.cellInfo()
@@ -318,7 +318,9 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   private fun am(body: JSONObject): Any? {
     val intent = appIntent(context, body)
     return when (val mode = body.getString("mode")) {
-      "start" -> launchIntent(context, intent).let { startOrNotify(it, "Open an app from an agent", describeIntent(it)) }
+      "start" -> launchIntent(context, intent).let {
+        startOrNotify(it, localized("Open an app from an agent"), describeIntent(it, localized("this intent")), describeIntent(it))
+      }
       "broadcast" -> {
         requireTarget(intent)
         context.sendBroadcast(intent)
@@ -333,7 +335,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   }
 
   private fun openUrl(url: String): Any? =
-    startOrNotify(Intent(Intent.ACTION_VIEW, webUri(url)), "Open a link from an agent", url)
+    startOrNotify(Intent(Intent.ACTION_VIEW, webUri(url)), localized("Open a link from an agent"), url)
 
   private fun webUri(url: String): Uri {
     val uri = Uri.parse(url)
@@ -353,7 +355,7 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
       else -> fileIntent(target, send, body.optString("contentType"))
     }
     val chosen = if (send || body.optBoolean("chooser")) Intent.createChooser(intent, null) else intent
-    return startOrNotify(chosen, if (send) "Share from an agent" else "Open from an agent", target)
+    return startOrNotify(chosen, if (send) localized("Share from an agent") else localized("Open from an agent"), target)
   }
 
   private fun fileIntent(path: String, send: Boolean, contentType: String): Intent {
@@ -448,7 +450,14 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
           context.startActivity(intent)
         } else {
           val tap = PendingIntent.getActivity(context, notificationId, intent, PendingIntent.FLAG_IMMUTABLE)
-          notify(REQUEST_CHANNEL, REQUEST_TAG, notificationId, "Allow $label?", "An agent wants to run ${AgentAccess.commandName(command)}. Tap to answer.", tap)
+          notify(
+            REQUEST_CHANNEL,
+            REQUEST_TAG,
+            notificationId,
+            localized("Allow {access}?", "access" to localized(label)),
+            localized("An agent wants to run {command}. Tap to answer.", "command" to AgentAccess.commandName(command)),
+            tap,
+          )
         }
       },
       dismiss = { notificationManager().cancel(REQUEST_TAG, notificationId) },
@@ -465,8 +474,9 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
       // Notification access is a system settings page, not a prompt.
       startOrNotify(
         AgentAccess.notificationAccessIntent(context),
-        "Allow notification access",
-        "An agent on this phone wants to read its notifications. Turn on T3 Code here.",
+        localized("Allow notification access"),
+        localized("An agent on this phone wants to read its notifications. Turn on T3 Code here."),
+        "the notification access settings",
       )
       throw BridgeError(
         "Android hasn't given T3 Code notification access. The user can turn it on in the settings page " +
@@ -477,7 +487,14 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     if (!onScreen()) {
       val id = requestIds.incrementAndGet()
       val tap = PendingIntent.getActivity(context, id, AccessPrompt.intent(context, category), PendingIntent.FLAG_IMMUTABLE)
-      notify(REQUEST_CHANNEL, REQUEST_TAG, id, "Allow $label?", "An agent on this phone wants $label. Tap to answer Android's prompt.", tap)
+      notify(
+        REQUEST_CHANNEL,
+        REQUEST_TAG,
+        id,
+        localized("Allow {access}?", "access" to localized(label)),
+        localized("An agent on this phone wants {access}. Tap to answer Android's prompt.", "access" to localized(label)),
+        tap,
+      )
       throw BridgeError(
         "Android hasn't given T3 Code $label, and can only ask while T3 Code is on screen. The user can tap " +
           "T3 Code's notification to allow it, then run this again.",
@@ -494,13 +511,14 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
   }
 
   /** Android blocks activity starts from the background, but a notification's tap can start one. */
-  private fun startOrNotify(intent: Intent, title: String, text: String): Any? {
+  /** [subject] names the target in English for the agent's error; [text] is the notification body. */
+  private fun startOrNotify(intent: Intent, title: String, text: String, subject: String = text): Any? {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     if (onScreen()) {
       try {
         context.startActivity(intent)
       } catch (error: ActivityNotFoundException) {
-        throw BridgeError("No app on this phone opens $text")
+        throw BridgeError("No app on this phone opens $subject")
       }
       return null
     }
@@ -583,18 +601,21 @@ class AndroidBridge private constructor(context: Context, private val rootfs: Fi
     val manager = notificationManager()
     if (!manager.areNotificationsEnabled()) throw BridgeError("T3 Code's notifications are turned off.")
     manager.createNotificationChannel(
-      NotificationChannel(NOTIFICATION_CHANNEL, "Agent notifications", NotificationManager.IMPORTANCE_DEFAULT).apply {
-        description = "Notifications that agents on this phone post."
+      NotificationChannel(NOTIFICATION_CHANNEL, localized("Agent notifications"), NotificationManager.IMPORTANCE_DEFAULT).apply {
+        description = localized("Notifications that agents on this phone post.")
       },
     )
     manager.createNotificationChannel(
-      NotificationChannel(REQUEST_CHANNEL, "Requests from agents", NotificationManager.IMPORTANCE_HIGH).apply {
-        description = "Links, shares and permissions that agents ask for while T3 Code isn't on screen."
+      NotificationChannel(REQUEST_CHANNEL, localized("Requests from agents"), NotificationManager.IMPORTANCE_HIGH).apply {
+        description = localized("Links, shares and permissions that agents ask for while T3 Code isn't on screen.")
       },
     )
     val blocked = manager.getNotificationChannel(channel)
       ?.takeIf { it.importance == NotificationManager.IMPORTANCE_NONE }
-    if (blocked != null) throw BridgeError("T3 Code's \"${blocked.name}\" notifications are turned off.")
+    if (blocked != null) {
+      val name = if (channel == REQUEST_CHANNEL) "Requests from agents" else "Agent notifications"
+      throw BridgeError("T3 Code's \"$name\" notifications are turned off.")
+    }
     val icon = context.resources.getIdentifier("notification_icon", "drawable", context.packageName)
       .takeIf { it != 0 } ?: context.applicationInfo.icon
     val notification = NotificationCompat.Builder(context, channel)

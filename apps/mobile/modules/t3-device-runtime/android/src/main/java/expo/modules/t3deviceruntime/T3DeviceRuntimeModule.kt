@@ -17,7 +17,7 @@ import java.util.concurrent.Executors
 
 private const val LOG_LIMIT = 2000
 
-// DeviceRuntimeSetupScreen translates titles by id, so a new or renamed id needs a title there.
+// DeviceRuntimeSetupScreen translates titles by id and native-text.ts by title, so both list each step.
 private data class JobStep(val id: String, val title: String)
 
 private val INSTALL_STEPS = listOf(
@@ -50,6 +50,11 @@ class T3DeviceRuntimeModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3DeviceRuntime")
     Events("onJob", "onLogin")
+
+    Function("setText") { translations: Map<String, String> ->
+      nativeTranslations = translations
+      RuntimeForeground.refresh()
+    }
 
     Function("getStatus") {
       val runtime = DeviceRuntime(requireContext()) {}
@@ -140,7 +145,7 @@ class T3DeviceRuntimeModule : Module() {
     AsyncFunction("update") { promise: Promise ->
       val context = requireContext()
       if (!installed(DeviceRuntime(context) {})) {
-        throw CodedException("ERR_DEVICE_RUNTIME_MISSING", "The on-device runtime isn't installed.", null)
+        throw CodedException("ERR_DEVICE_RUNTIME_MISSING", localized("The on-device runtime isn't installed."), null)
       }
       startJob(context, "update", UPDATE_STEPS, promise) { runtime, step, script ->
         if (step.id == "upgrade-claude-code") runtime.installClaudeKey()
@@ -184,7 +189,7 @@ class T3DeviceRuntimeModule : Module() {
           .capture(listOf("t3", "pair", "--label", "T3 Code app on this phone"))
         output.lines().map { it.trim() }.firstOrNull { it.startsWith("Pairing URL: ") }
           ?.removePrefix("Pairing URL: ")
-          ?: throw RuntimeJobFailed(output.trim().ifEmpty { "T3 Code didn't give a pairing link." })
+          ?: throw RuntimeJobFailed(output.trim().ifEmpty { localized("T3 Code didn't give a pairing link.") })
       }
     }
 
@@ -199,7 +204,7 @@ class T3DeviceRuntimeModule : Module() {
       }
       login = created
       // The browser takes the screen while the user signs in; Claude has to keep running.
-      RuntimeForeground.hold(context, Hold.Login, "Signing in to Claude…")
+      RuntimeForeground.hold(context, Hold.Login) { localized("Signing in to Claude…") }
       try {
         created.start()
       } catch (error: Throwable) {
@@ -220,7 +225,7 @@ class T3DeviceRuntimeModule : Module() {
     // Stops the server and deletes Ubuntu with everything in it, then turns the runtime off.
     AsyncFunction("remove") { promise: Promise ->
       val context = requireContext()
-      if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", "Wait for setup to finish first.", null)
+      if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", localized("Wait for setup to finish first."), null)
       inBackground(promise) {
         login?.cancel()
         DeviceServer.stop()
@@ -260,12 +265,12 @@ class T3DeviceRuntimeModule : Module() {
   ) {
     val runtime = DeviceRuntime(context, ::appendLog)
     synchronized(this) {
-      if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", "Setup or an update is already running.", null)
+      if (activeJob != null) throw CodedException("ERR_DEVICE_RUNTIME_BUSY", localized("Setup or an update is already running."), null)
       activeJob = runtime
     }
     synchronized(jobLog) { jobLog.clear() }
     // Held from here, while T3 Code is on screen: Android won't start it from the background.
-    RuntimeForeground.hold(context, Hold.Job, "Starting…")
+    RuntimeForeground.hold(context, Hold.Job) { localized("Starting…") }
     jobs.execute {
       var failure: String? = null
       try {
@@ -277,13 +282,14 @@ class T3DeviceRuntimeModule : Module() {
           val code = runStep(runtime, step, script)
           if (code != 0) {
             val tail = synchronized(jobLog) { jobLog.filterNot { it.startsWith("@@") }.takeLast(4) }
-            failure = "${step.title} failed (exit $code).\n${tail.joinToString("\n")}".trim()
+            val summary = localized("{step} failed (exit {code}).", "step" to localized(step.title), "code" to code)
+            failure = "$summary\n${tail.joinToString("\n")}".trim()
             break
           }
         }
         if (failure == null && kind == "install") installedMarker(runtime).writeText("")
       } catch (error: RuntimeCancelled) {
-        failure = "Cancelled."
+        failure = localized("Cancelled.")
       } catch (error: Throwable) {
         Log.e(TAG, "$kind failed", error)
         failure = error.message ?: error.javaClass.simpleName
@@ -298,7 +304,11 @@ class T3DeviceRuntimeModule : Module() {
   private fun setJobState(kind: String, running: Boolean, step: JobStep?, index: Int, count: Int, error: String?) {
     if (running && step != null) {
       val context = appContext.reactContext
-      if (context != null) RuntimeForeground.hold(context, Hold.Job, "${step.title} (step ${index + 1} of $count)…")
+      if (context != null) {
+        RuntimeForeground.hold(context, Hold.Job) {
+          localized("{step} (step {number} of {count})…", "step" to localized(step.title), "number" to index + 1, "count" to count)
+        }
+      }
     }
     val state = mapOf(
       "kind" to kind,
