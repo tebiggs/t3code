@@ -129,6 +129,8 @@ const appName = repoEnv.T3CODE_APP_NAME?.trim() || variant.appName;
 const androidPackage = repoEnv.T3CODE_ANDROID_PACKAGE?.trim() || variant.androidPackage;
 const androidAdaptiveBackgroundImage =
   repoEnv.T3CODE_ANDROID_ICON_BACKGROUND?.trim() || variant.assets.androidAdaptiveBackgroundImage;
+const androidSplashIcon =
+  repoEnv.T3CODE_ANDROID_SPLASH_ICON?.trim() || variant.assets.androidSplashIcon;
 if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(androidPackage)) {
   throw new Error(
     "T3CODE_ANDROID_PACKAGE must be an Android package name such as com.example.t3code.",
@@ -386,8 +388,8 @@ const config: ExpoConfig = {
           shortcut_icon: {
             foregroundImage: variant.assets.androidAdaptiveForeground,
             backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-            ...(variant.assets.androidAdaptiveBackgroundImage
-              ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
+            ...(androidAdaptiveBackgroundImage
+              ? { backgroundImage: androidAdaptiveBackgroundImage }
               : {}),
           },
         },
@@ -433,9 +435,9 @@ const config: ExpoConfig = {
         },
         android: {
           // Android 12+ masks the central two thirds of the 288dp canvas; adaptive layers avoid clipped corners.
-          image: variant.assets.androidSplashIcon,
+          image: androidSplashIcon,
           imageWidth: 288,
-          dark: { image: variant.assets.androidSplashIcon },
+          dark: { image: androidSplashIcon },
         },
       },
     ],
