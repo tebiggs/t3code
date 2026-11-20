@@ -373,6 +373,7 @@ jobs:
             echo "T3CODE_MOBILE_UPDATES_ENABLED=0"
             echo "T3CODE_MOBILE_VERSION=$VERSION"
             echo "T3CODE_ANDROID_ICON_BACKGROUND=./assets/android-icon-background-ember.png"
+            echo "T3CODE_ANDROID_SPLASH_ICON=./assets/android-splash-icon-ember.png"
             echo "T3CODE_ANDROID_PACKAGE=$ANDROID_PACKAGE"
             echo "T3CODE_APP_NAME=$APP_NAME"
           } >> .env
