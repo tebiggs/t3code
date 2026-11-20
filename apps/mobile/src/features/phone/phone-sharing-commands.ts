@@ -25,9 +25,9 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import {
   phoneServerSettingsAtom,
   phoneSharingRecordAtom,
-  setPhoneSharingRecord,
+  savePhoneSharingRecord,
 } from "../../state/phone-server-settings";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { savedRemoteConnectionAtom } from "../../state/use-remote-environment-registry";
 import { workspaceConnections } from "../../state/workspace";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
@@ -172,14 +172,10 @@ const controller = createPhoneSharingController({
       }).pipe(Effect.asVoid),
     ),
   loadRecord: () => appAtomRegistry.get(phoneSharingRecordAtom),
-  saveRecord: async (record) => {
-    setPhoneSharingRecord(record);
-    await Effect.runPromise(
-      AtomRegistry.getResult(appAtomRegistry, updateMobilePreferencesAtom, {
-        suspendOnWaiting: true,
-      }).pipe(Effect.timeout(SAVE_TIMEOUT)),
-    );
-  },
+  saveRecord: (record) =>
+    Effect.runPromise(
+      savePhoneSharingRecord(record).pipe(Effect.timeout(SAVE_TIMEOUT), Effect.asVoid),
+    ),
   // Preferences that fail to load read as empty, so a connection can identify the phone too.
   phoneEnvironmentId: () =>
     appAtomRegistry.get(phoneServerSettingsAtom)?.environmentId ??

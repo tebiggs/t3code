@@ -12,7 +12,7 @@ import { m } from "../../i18n/messages";
 import type { EnvironmentPowerSettings } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPowerSettingsAtom } from "../../state/environment-power-settings";
-import { updateMobilePreferencesAtom } from "../../state/preferences";
+import { saveMobilePreferences } from "../../state/preferences";
 import { useWorkspaceEnvironments, workspaceConnections } from "../../state/workspace";
 import type { WorkspaceEnvironment } from "../../state/workspaceModel";
 import {
@@ -51,7 +51,7 @@ export function setEnvironmentPowerSettings(
   environmentId: EnvironmentId,
   settings: EnvironmentPowerSettings | null,
 ) {
-  appAtomRegistry.set(updateMobilePreferencesAtom, {
+  void runAtomCommand(appAtomRegistry, saveMobilePreferences, {
     transform: (current) => {
       const { [environmentId]: _previous, ...rest } = current.environmentPower ?? {};
       return {

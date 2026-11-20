@@ -699,6 +699,9 @@ it.effect.each([
   { status: "completed" as const, followUp: "none", settles: false, holdsAwaitedJob: true },
   // Send now cancels the queued run; its message joins the run that asked to settle.
   { status: "completed" as const, followUp: "promoted-to-steer", settles: true },
+  // A delegated-completion wake cancelled unstarted because the turn already took the result.
+  { status: "completed" as const, followUp: "cancelled-delegated", settles: true },
+  { status: "completed" as const, followUp: "stopped-delegated", settles: false },
 ])(
   "settleAfterRun handles $status with $followUp follow-up",
   ({ status, followUp, settles, holdsAwaitedJob }) =>
@@ -719,6 +722,7 @@ it.effect.each([
         ordinal: 2,
         status: "running" as OrchestrationV2Run["status"],
         userMessageId: MessageId.make("follow-up"),
+        startedAt: followUp === "stopped-delegated" ? "2026-01-01T00:00:00.000Z" : null,
       };
       const dispatched: Array<string> = [];
       // The notification starts after the completed run was observed, before settlement commits.
@@ -758,7 +762,7 @@ it.effect.each([
                         runId: followUp === "promoted-to-steer" ? runId : followUpId,
                         role: "user" as const,
                         ...(followUp.endsWith("notification") ? { notification: {} } : {}),
-                        ...(followUp === "delegated" ? { delegatedCompletion: {} } : {}),
+                        ...(followUp.endsWith("delegated") ? { delegatedCompletion: {} } : {}),
                       },
                       {
                         id: MessageId.make("reply"),
@@ -829,7 +833,7 @@ it.effect.each([
             ? "failed"
             : followUp === "held-notification"
               ? "queued"
-              : followUp === "promoted-to-steer"
+              : followUp === "promoted-to-steer" || followUp.endsWith("ed-delegated")
                 ? "cancelled"
                 : "completed";
         yield* Queue.offer(events, {

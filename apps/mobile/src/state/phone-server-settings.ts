@@ -1,9 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import type { PhoneServerSettings, PhoneSharingRecord } from "../persistence/mobile-preferences";
 import { appAtomRegistry } from "./atom-registry";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "./preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "./preferences";
 
 export const phoneServerSettingsAtom = Atom.make((get): PhoneServerSettings | null => {
   const result = get(mobilePreferencesAtom);
@@ -11,7 +12,7 @@ export const phoneServerSettingsAtom = Atom.make((get): PhoneServerSettings | nu
 }).pipe(Atom.keepAlive, Atom.withLabel("mobile:phone-server:settings"));
 
 export function setPhoneServerSettings(settings: PhoneServerSettings | null) {
-  appAtomRegistry.set(updateMobilePreferencesAtom, { phoneServer: settings });
+  void runAtomCommand(appAtomRegistry, saveMobilePreferences, { phoneServer: settings });
 }
 
 export function usePhoneServerSettings(): PhoneServerSettings | null {
@@ -23,9 +24,8 @@ export const phoneSharingRecordAtom = Atom.make((get): PhoneSharingRecord | null
   return AsyncResult.isSuccess(result) ? (result.value.phoneSharing ?? null) : null;
 }).pipe(Atom.keepAlive, Atom.withLabel("mobile:phone-sharing:record"));
 
-export function setPhoneSharingRecord(record: PhoneSharingRecord | null) {
-  appAtomRegistry.set(updateMobilePreferencesAtom, { phoneSharing: record });
-}
+export const savePhoneSharingRecord = (record: PhoneSharingRecord | null) =>
+  saveMobilePreferences.run(appAtomRegistry, { phoneSharing: record });
 
 export function usePhoneSharingRecord(): PhoneSharingRecord | null {
   return useAtomValue(phoneSharingRecordAtom);
