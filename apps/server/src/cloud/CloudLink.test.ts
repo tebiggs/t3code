@@ -367,6 +367,37 @@ it.effect.each([
   ),
 );
 
+it.effect("names a mint's replay markers by a digest of the proof's jti and nonce", () =>
+  withService({}, ({ link, stored }) =>
+    Effect.gen(function* () {
+      const before = new Set(stored.keys());
+      const proof = yield* signRelayJwt({
+        privateKey: mintKeys.privateKey,
+        typ: RELAY_MINT_REQUEST_TYP,
+        payload: {
+          iss: "https://relay.test",
+          aud: "t3-env:environment-1",
+          sub: "user-1",
+          // Longer than a file name can be, and not one: the marker is named by a digest.
+          jti: "../mint-jti-1".padEnd(300, "x"),
+          iat: 0,
+          exp: 60,
+          environmentId: "environment-1",
+          clientProofKeyThumbprint: "thumbprint",
+          cnf: { jkt: "thumbprint" },
+          nonce: "mint-nonce-1",
+          scope: ["environment:connect"],
+        },
+      }).pipe(Effect.provide(NodePlatformCrypto.layerSignature));
+      yield* link.mintCredential({ proof });
+      const markers = [...stored.keys()].filter((name) => !before.has(name)).toSorted();
+      assert.lengthOf(markers, 2);
+      assert.match(markers[0]!, /^cloud-mint-jti-[0-9a-f]{64}$/);
+      assert.match(markers[1]!, /^cloud-mint-nonce-[0-9a-f]{64}$/);
+    }),
+  ),
+);
+
 it.effect("an unreadable mode refuses the mint instead of granting full access", () =>
   withService({ failSecretRead: CLOUD_SHARING_MODE }, ({ link, connectCredentialRequests }) =>
     Effect.gen(function* () {
