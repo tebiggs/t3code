@@ -1024,8 +1024,8 @@ export const layerWithOptions = (
 
       // Dead processes cannot report task endings; stale rosters keep threads Waiting.
       // Work the agent waited on is recorded on its run, so the agent hears about it on its
-      // next turn and status reads show the run interrupted. A crash or idle release, which
-      // nobody asked for, also wakes the agent to check what that work left behind.
+      // next turn and status reads show the run interrupted. An idle release, which nobody
+      // asked for, also wakes the agent; after a crash, writeReleasedWorkNote's continuation does.
       const writeReleasedRosterEvents = Effect.fn(
         "ProviderSessionManager.writeReleasedRosterEvents",
       )(function* (
@@ -1099,7 +1099,7 @@ export const layerWithOptions = (
           if (
             noteRun !== undefined &&
             !parked &&
-            (reason === "runtime_error" || reason === "idle_timeout") &&
+            reason === "idle_timeout" &&
             latestRun?.id === noteRun.id &&
             (noteRun.status === "completed" || noteRun.status === "waiting")
           ) {

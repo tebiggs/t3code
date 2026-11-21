@@ -3701,7 +3701,8 @@ it.effect.each(["detach", "stream failure", "provider stop", "early close"] as c
 );
 
 it.effect.each([
-  { release: "crash", wakes: true },
+  { release: "idle", wakes: true },
+  { release: "crash", wakes: false },
   { release: "settle", wakes: false },
 ] as const)(
   "ProviderSessionManagerV2 records a waited-on job its session took down: $release",
@@ -3709,12 +3710,12 @@ it.effect.each([
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const offered: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
-      const woken = yield* Deferred.make<void>();
       const effect = Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
         const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
         const now = yield* DateTime.now;
         const threadId = yield* idAllocator.allocate.thread({
           fixtureName: `provider-session-manager-lost-job-${release}`,
@@ -3776,9 +3777,27 @@ it.effect.each([
           modelSelection,
           runtimePolicy,
         });
+        const deploy = {
+          kind: "shell",
+          label: "Wait for deploy (id deploy)",
+          id: "deploy",
+          awaited: true,
+        } as const;
         if (release === "crash") {
+          const afterSequence = yield* eventSink.latestSequence({ threadId });
           yield* runtime.events.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped);
-          yield* Deferred.await(woken);
+          // The provider-exit note lands after the roster note, so any wake from it has run.
+          yield* eventSink.stream({ threadId, afterSequence }).pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "run.background-work-cancelled" &&
+                event.payload.restartCancelledBackgroundWork.length === 2,
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+          );
+        } else if (release === "idle") {
+          yield* manager.release({ providerSessionId, reason: "idle_timeout" });
         } else {
           yield* manager.detach({ providerSessionId, threadId, detail: "Thread settled." });
         }
@@ -3790,15 +3809,24 @@ it.effect.each([
             ?.pendingBackgroundTasks,
           [],
         );
-        // Only the job the agent waited on is reported; the dev server was expected to stop.
+        // The provider-exit note also lists the dev server, but only awaited work wakes the agent.
         assert.deepStrictEqual(
           projection.runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork,
-          [{ kind: "shell", label: "Wait for deploy (id deploy)", id: "deploy", awaited: true }],
+          release === "crash"
+            ? [deploy, { kind: "shell", label: "vp run dev (id dev-server)", id: "dev-server" }]
+            : [deploy],
         );
-        // A crash wakes the agent to check on the deploy; a settle the user asked for does not.
+        // An idle release wakes the agent here; a crash wakes it once, through the provider-exit
+        // continuation; a settle the user asked for wakes nothing.
         assert.deepStrictEqual(
           offered.map((request) => [request.threadId, request.delivery]),
           wakes ? [[threadId, "message_text"]] : [],
+        );
+        assert.deepStrictEqual(
+          Option.getOrUndefined(yield* outbox.get(`effect:restart-continuation:${runId}`))?.request,
+          release === "crash"
+            ? { type: "provider-runtime.continue", sourceRunId: runId, cause: "provider_exit" }
+            : undefined,
         );
       });
 
@@ -3810,10 +3838,7 @@ it.effect.each([
             failEventStream: release === "crash",
             capabilities: ExclusiveCapabilities,
             continuationRequests: {
-              offer: (request) =>
-                Effect.sync(() => void offered.push(request)).pipe(
-                  Effect.tap(() => Deferred.succeed(woken, undefined)),
-                ),
+              offer: (request) => Effect.sync(() => void offered.push(request)),
               take: Effect.never,
             },
           }),
