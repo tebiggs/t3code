@@ -17,7 +17,8 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
-import { Linking, Platform, View } from "react-native";
+import { Platform, View } from "react-native";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { m } from "../../i18n/messages";
 
@@ -319,7 +320,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       label={gt("Get help from {organization}", {
                         organization: managedPolicy.organization,
                       })}
-                      onPress={() => void Linking.openURL(supportUrl).catch(() => undefined)}
+                      onPress={() => void tryOpenExternalUrl(supportUrl)}
                     />
                   ) : null}
                   {updatesDenial ? null : (

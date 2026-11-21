@@ -38,7 +38,12 @@ const peerHarness = () => {
         ? Effect.fail(
             new PeerLinkError({ reason: "expired", message: "The link to Host expired." }),
           )
-        : Effect.succeed({ link: link(current.status), url: HOST_URL, token: "link-token" }),
+        : Effect.succeed({
+            link: link(current.status),
+            url: HOST_URL,
+            token: "link-token",
+            capabilities: { repositoryIdentity: false },
+          }),
   });
   const http = Layer.succeed(
     HttpClient.HttpClient,
