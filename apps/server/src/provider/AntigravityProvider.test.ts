@@ -807,6 +807,53 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
     }),
   );
 
+  it.effect("a session start rejected by an auth-required clear does not restore quota", () =>
+    Effect.gen(function* () {
+      const limits: ServerProviderUsageLimits = {
+        checkedAt: "2026-10-09T12:00:00.000Z",
+        windows: [{ id: "gemini-5h", kind: "session", label: "Gemini · 5-hour", usedPercent: 10 }],
+      };
+      const usage = yield* Ref.make(limits);
+      const harness = yield* makeHarness({ probeUsage: Ref.get(usage) });
+      const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
+      yield* harness.initialize;
+      expect((yield* published)?.usageLimits).toEqual(limits);
+      // Hold the session start at its capability check, clear the account, then let it finish.
+      const atGate = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      yield* Ref.set(
+        harness.safety,
+        Deferred.succeed(atGate, undefined).pipe(
+          Effect.andThen(Deferred.await(gate)),
+          Effect.as(true),
+        ),
+      );
+      const sessionStart = yield* harness.provider.onSessionStarted(started).pipe(Effect.forkChild);
+      yield* Deferred.await(atGate);
+      yield* harness.provider.onAuthRequired;
+      expect((yield* harness.provider.snapshot.getSnapshot).usageLimits).toBeUndefined();
+      // The second health check is the one the post-clear background read triggers.
+      const checks = yield* Ref.make(0);
+      const readApplied = yield* Deferred.make<void>();
+      yield* Ref.set(
+        harness.probe,
+        Ref.updateAndGet(checks, (count) => count + 1).pipe(
+          Effect.tap((count) =>
+            count === 2 ? Deferred.succeed(readApplied, undefined) : Effect.void,
+          ),
+          Effect.as(initializeResult),
+        ),
+      );
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(sessionStart);
+      yield* harness.provider.snapshot.refresh;
+      yield* Deferred.await(readApplied);
+      const snapshot = yield* harness.provider.snapshot.getSnapshot;
+      expect(snapshot.usageLimits).toBeUndefined();
+      expect(snapshot.auth.status).toBe("unauthenticated");
+    }),
+  );
+
   it.effect("reports ready while session starts restart a pending quota read", () =>
     Effect.gen(function* () {
       const reads = yield* Ref.make(0);

@@ -264,16 +264,21 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       usageRead,
       options.probeUsage.pipe(
         Effect.flatMap((probed) =>
-          SubscriptionRef.update(metadata, (state) => ({
-            ...state,
-            draft: {
-              ...state.draft,
-              usageLimits: resolveUsageLimitsAfterProbe({
-                published: state.draft.usageLimits,
-                probed,
-              }),
-            },
-          })),
+          SubscriptionRef.update(metadata, (state) =>
+            // A cleared account must not get quota back from a read that outlived the clear.
+            state.draft.auth.status === "unauthenticated"
+              ? state
+              : {
+                  ...state,
+                  draft: {
+                    ...state.draft,
+                    usageLimits: resolveUsageLimitsAfterProbe({
+                      published: state.draft.usageLimits,
+                      probed,
+                    }),
+                  },
+                },
+          ),
         ),
         // Enrichment cannot change published limits; a health check publishes them.
         Effect.andThen(
@@ -446,7 +451,8 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       } satisfies AntigravityProviderState;
     });
     // Starting a session renews the CLI sign-in, so re-read quota even when a reading exists.
-    yield* refreshUsage({ restart: true });
+    const accepted = yield* SubscriptionRef.get(metadata);
+    if (accepted.draft.auth.status === "authenticated") yield* refreshUsage({ restart: true });
   });
 
   const onConfigOptionsUpdated = Effect.fn("AntigravityProvider.onConfigOptionsUpdated")(function* (
