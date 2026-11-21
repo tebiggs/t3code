@@ -74,6 +74,7 @@ import { useEnvironmentPowerWorker } from "./features/power/environment-power-st
 import { PhoneSetupRouteScreen } from "./features/phone/PhoneSetupRouteScreen";
 import { AgentAccessRouteScreen } from "./features/device-runtime/AgentAccessRouteScreen";
 import { usePhoneServerWorker } from "./features/phone/phone-server";
+import { LinkedThreadSheet } from "./features/threads/LinkedThreadSheet";
 import { ThreadGuestShareSheet } from "./features/threads/ThreadGuestShareSheet";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
@@ -92,6 +93,7 @@ import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute
 import {
   NewTaskBranchPickerRouteScreen,
   NewTaskEnvironmentPickerRouteScreen,
+  NewTaskRepositoriesPickerRouteScreen,
 } from "./features/threads/NewTaskContextPickerScreens";
 import {
   ExistingThreadSettingsRouteScreen,
@@ -210,6 +212,7 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   NewTaskProject: msg("Choose project"),
   NewTaskEnvironment: msg("Environment"),
   NewTaskBranch: msg("Branch"),
+  NewTaskRepositories: msg("Repositories"),
   AddProject: msg("Add project"),
   ThreadFiles: msg("Files"),
   SettingsLegal: msg("Legal"),
@@ -686,6 +689,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: NewTaskBranchPickerRouteScreen,
       options: pageRoute(),
     }),
+    NewTaskRepositories: createNativeStackScreen({
+      linking: "new/draft/repositories",
+      screen: NewTaskRepositoriesPickerRouteScreen,
+      options: pageRoute(),
+    }),
     AddProject: createNativeStackScreen({
       linking: "new/add-project",
       screen: AddProjectSourceRoute,
@@ -815,6 +823,15 @@ const RootStackConfig = createWorkspaceStackNavigator({
     EnvironmentPower: createNativeStackScreen({
       screen: EnvironmentPowerSheet,
       options: sheetRoute({ detent: 0.5, header: "none" }),
+    }),
+    LinkedThread: createNativeStackScreen({
+      screen: LinkedThreadSheet,
+      options: sheetRoute({ detent: 0.9, android: "fullScreen" }),
+    }),
+    // Maximized from the inspector, like ThreadInspectorFullscreen.
+    LinkedThreadFullscreen: createNativeStackScreen({
+      screen: LinkedThreadSheet,
+      options: modalRoute({ header: "glass", itemStyle: "editor", duoMinimize: "onScrollUp" }),
     }),
     ThreadGuestShare: createNativeStackScreen({
       screen: ThreadGuestShareSheet,

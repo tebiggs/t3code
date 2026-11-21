@@ -133,11 +133,17 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
 
 const MAX_NOTE_ENTRIES = 10;
 
+/** Why background work stopped: a T3 server restart, or the provider process exiting under a live server. */
+export type BackgroundWorkLossCause = "server_restart" | "provider_exit";
+
 /** Bounds entries and labels to protect the context budget. */
-export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): string {
+export function restartCancelledBackgroundWorkNote(
+  work: ReadonlyArray<Work>,
+  cause: BackgroundWorkLossCause = "server_restart",
+): string {
   const omitted = work.length - MAX_NOTE_ENTRIES;
   return [
-    "Note: this background work stopped before it reported back, because the T3 server restarted or the agent session ended. It will not report back on its own. It may have finished or changed state first, so check its output or what it changes before you start it again, and never rerun a deploy or other job with side effects until you know it did not complete. Then resume what you still need and wait for its result:",
+    `Note: this background work stopped before it reported back, because ${cause === "provider_exit" ? "the agent runtime process exited" : "the T3 server restarted or the agent session ended"}. It will not report back on its own. It may have finished or changed state first, so check its output or what it changes before you start it again, and never rerun a deploy or other job with side effects until you know it did not complete. Then resume what you still need and wait for its result:`,
     ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
   ].join("\n");
@@ -189,19 +195,12 @@ export function runOutcome(
     : run.status;
 }
 
-/** The run whose turn left this provider thread's background work running. */
-export function latestStartedRunOnProviderThread<
-  Run extends Pick<
-    OrchestrationV2Run,
-    | "providerThreadId"
-    | "status"
-    | "startedAt"
-    | "restartContinuationOfRunId"
-    | "ordinal"
-    | "completedAt"
-  >,
->(runs: ReadonlyArray<Run>, providerThreadId: OrchestrationV2Run["providerThreadId"]) {
-  return runs.reduce<Run | undefined>(
+/** The run whose continuation carries a provider thread's lost background work. */
+export function latestStartedRun(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  providerThreadId: OrchestrationV2Run["providerThreadId"],
+): OrchestrationV2Run | undefined {
+  return runs.reduce<OrchestrationV2Run | undefined>(
     (latest, run) =>
       run.providerThreadId === providerThreadId &&
       run.status !== "queued" &&
