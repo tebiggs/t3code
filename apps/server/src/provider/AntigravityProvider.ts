@@ -255,7 +255,10 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   const usageRead = yield* FiberHandle.make();
   const republish = yield* Deferred.make<Effect.Effect<ServerProvider>>();
   const scope = yield* Effect.scope;
-  const refreshUsage = Effect.fn("AntigravityProvider.refreshUsage")(function* () {
+  // A restart interrupts a read that started before the CLI sign-in was renewed.
+  const refreshUsage = Effect.fn("AntigravityProvider.refreshUsage")(function* (refreshOptions?: {
+    readonly restart?: boolean;
+  }) {
     if (!options.probeUsage || (yield* PublishingUsage)) return;
     yield* FiberHandle.run(
       usageRead,
@@ -283,7 +286,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         ),
       ),
       // Store the fiber before it runs, so a sign-out during the read can interrupt it.
-      { onlyIfMissing: true, startImmediately: false },
+      { onlyIfMissing: refreshOptions?.restart !== true, startImmediately: false },
     );
   });
   const resetUsage = Effect.gen(function* () {
@@ -443,7 +446,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       } satisfies AntigravityProviderState;
     });
     // Starting a session renews the CLI sign-in, so re-read quota even when a reading exists.
-    yield* refreshUsage();
+    yield* refreshUsage({ restart: true });
   });
 
   const onConfigOptionsUpdated = Effect.fn("AntigravityProvider.onConfigOptionsUpdated")(function* (

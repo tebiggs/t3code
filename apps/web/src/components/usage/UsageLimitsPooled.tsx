@@ -27,6 +27,7 @@ import {
 } from "react";
 
 import { ensureLocalApi } from "../../localApi";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
@@ -637,12 +638,23 @@ function PoolWindowCard({
   );
 }
 
+// The page freezes `now` between refreshes, so the age ticks on its own minute clock.
+function PoolCheckedAt({ pool }: { readonly pool: LimitPool }) {
+  const nowMinute = useNowMinute();
+  const m = useMessages();
+  const checked = poolCheckedLabel(pool, Date.parse(`${nowMinute}:00Z`), m);
+  return checked ? (
+    <span className="ml-auto text-xs font-normal tabular-nums text-muted-foreground">
+      {checked}
+    </span>
+  ) : null;
+}
+
 function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
   const color = barColor(pool.driver);
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
   const m = useMessages();
-  const checked = poolCheckedLabel(pool, now, m);
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -654,11 +666,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           iconClassName="size-4 text-foreground/80"
         />
         {label}
-        {checked ? (
-          <span className="ml-auto text-xs font-normal tabular-nums text-muted-foreground">
-            {checked}
-          </span>
-        ) : null}
+        <PoolCheckedAt pool={pool} />
       </h2>
       {windows.map((window) => {
         const details =

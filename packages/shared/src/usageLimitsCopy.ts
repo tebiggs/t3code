@@ -137,8 +137,11 @@ export function poolCheckedLabel(
   now: number,
   resolve: MFunctionType = mFallback,
 ): string | null {
-  const oldest = Math.min(...pool.accounts.map((account) => Date.parse(account.limits.checkedAt)));
-  if (!Number.isFinite(oldest)) return null;
+  const readable = pool.accounts
+    .map((account) => Date.parse(account.limits.checkedAt))
+    .filter(Number.isFinite);
+  if (readable.length === 0) return null;
+  const oldest = Math.min(...readable);
   const age = now - oldest;
   if (age < MINUTE) return resolve(msg("checked just now", { $context: "usage limits" }));
   return resolve(

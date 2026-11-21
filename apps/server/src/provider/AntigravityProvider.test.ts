@@ -807,26 +807,33 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
     }),
   );
 
-  it.effect("reports ready and starts sessions while one shared quota read is pending", () =>
+  it.effect("reports ready while session starts restart a pending quota read", () =>
     Effect.gen(function* () {
       const reads = yield* Ref.make(0);
-      const readStarted = yield* Deferred.make<void>();
+      const readStarted = [
+        yield* Deferred.make<void>(),
+        yield* Deferred.make<void>(),
+        yield* Deferred.make<void>(),
+      ];
       const readResult = yield* Deferred.make<ServerProviderUsageLimits>();
       const harness = yield* makeHarness({
-        probeUsage: Ref.update(reads, (count) => count + 1).pipe(
-          Effect.andThen(Deferred.succeed(readStarted, undefined)),
+        probeUsage: Ref.updateAndGet(reads, (count) => count + 1).pipe(
+          Effect.tap((count) => Deferred.succeed(readStarted[count - 1]!, undefined)),
           Effect.andThen(Deferred.await(readResult)),
         ),
       });
       const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
       yield* harness.initialize;
-      yield* Deferred.await(readStarted);
+      yield* Deferred.await(readStarted[0]!);
       yield* harness.provider.onSessionStarted(started, "/workspace");
+      yield* Deferred.await(readStarted[1]!);
       yield* harness.provider.onSessionStarted(started, "/other");
+      yield* Deferred.await(readStarted[2]!);
       const ready = yield* harness.provider.snapshot.getSnapshot;
       expect(ready).toMatchObject({ status: "ready", auth: { status: "authenticated" } });
       expect(ready.usageLimits).toBeUndefined();
-      expect(yield* Ref.get(reads)).toBe(1);
+      // Each session start replaces the read that predates its renewed sign-in.
+      expect(yield* Ref.get(reads)).toBe(3);
       const limits = {
         checkedAt: "2026-10-09T12:00:00.000Z",
         windows: [{ id: "gemini-5h", kind: "session", label: "Gemini · 5-hour", usedPercent: 10 }],

@@ -316,6 +316,14 @@ describe("pools", () => {
     expect(poolCheckedLabel(stale, now)).toBe("checked 1h 0m ago");
     const fresh = poolsFor([account("a@example.com", "2026-09-03T11:59:30.000Z")])[0]!;
     expect(poolCheckedLabel(fresh, now)).toBe("checked just now");
+    const withUnreadable = (pool: typeof stale, at: string) => ({
+      ...pool,
+      accounts: pool.accounts.map((entry, index) =>
+        index === 0 ? { ...entry, limits: { ...entry.limits, checkedAt: at } } : entry,
+      ),
+    });
+    // One malformed wire timestamp must not hide the readable readings' age.
+    expect(poolCheckedLabel(withUnreadable(stale, "not-a-date"), now)).toBe("checked 1h 0m ago");
     const unreadable = {
       ...fresh,
       accounts: fresh.accounts.map((entry) => ({
