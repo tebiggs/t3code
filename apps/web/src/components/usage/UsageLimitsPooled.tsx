@@ -43,6 +43,7 @@ import {
   collectLimitNotices,
   cursorUsageWindowDetails,
   formatResetsIn,
+  poolCheckedLabel,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
 
@@ -641,6 +642,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
   const m = useMessages();
+  const checked = poolCheckedLabel(pool, now, m);
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -652,6 +654,11 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           iconClassName="size-4 text-foreground/80"
         />
         {label}
+        {checked ? (
+          <span className="ml-auto text-xs font-normal tabular-nums text-muted-foreground">
+            {checked}
+          </span>
+        ) : null}
       </h2>
       {windows.map((window) => {
         const details =

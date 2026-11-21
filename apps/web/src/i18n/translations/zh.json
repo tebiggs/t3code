@@ -1259,6 +1259,8 @@
   "4897e228d3185c96": "没有报告限额。",
   "e27d2cb964df5dd5": "{source}：未报告任何账户。",
   "1b503134018285f4": "{days} 天 {hours} 小时",
+  "1b316942cffcbb5f": "刚刚检查",
+  "57b04d7ee40cfb03": "{duration}前检查",
   "164c674cf062933a": "{label} · 剩余 {count} 个 · {expires} 后过期",
   "9c82c39589c23938": "{label} · 剩余 {count} 次",
   "ea4eaa756c937d3a": "使用",

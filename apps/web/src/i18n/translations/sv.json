@@ -1259,6 +1259,8 @@
   "4897e228d3185c96": "Inga gränser rapporterades.",
   "e27d2cb964df5dd5": "{source}: inga konton rapporterades.",
   "1b503134018285f4": "{days} d {hours} h",
+  "1b316942cffcbb5f": "kontrollerat nyss",
+  "57b04d7ee40cfb03": "kontrollerat för {duration} sedan",
   "164c674cf062933a": "{label} · {count} kvar · går ut om {expires}",
   "9c82c39589c23938": "{label} · {count} kvar",
   "ea4eaa756c937d3a": "Använd",

@@ -442,7 +442,8 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         },
       } satisfies AntigravityProviderState;
     });
-    if (!before.draft.usageLimits || before.draft.usageLimits.unavailable) yield* refreshUsage();
+    // Starting a session renews the CLI sign-in, so re-read quota even when a reading exists.
+    yield* refreshUsage();
   });
 
   const onConfigOptionsUpdated = Effect.fn("AntigravityProvider.onConfigOptionsUpdated")(function* (

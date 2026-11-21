@@ -1259,6 +1259,8 @@
   "4897e228d3185c96": "Aucune limite signalée.",
   "e27d2cb964df5dd5": "{source} : aucun compte signalé.",
   "1b503134018285f4": "{days} j {hours} h",
+  "1b316942cffcbb5f": "vérifié à l'instant",
+  "57b04d7ee40cfb03": "vérifié il y a {duration}",
   "164c674cf062933a": "{label} · {count} restants · expire dans {expires}",
   "9c82c39589c23938": "{label} · {count} restants",
   "ea4eaa756c937d3a": "Utiliser",

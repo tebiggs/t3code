@@ -131,6 +131,24 @@ export function formatDuration(ms: number, resolve: MFunctionType = mFallback): 
   return resolve(msg("{minutes}m", { minutes }));
 }
 
+/** How old a pool's stalest reading is, or null when no reading carries a usable time. @public */
+export function poolCheckedLabel(
+  pool: LimitPool,
+  now: number,
+  resolve: MFunctionType = mFallback,
+): string | null {
+  const oldest = Math.min(...pool.accounts.map((account) => Date.parse(account.limits.checkedAt)));
+  if (!Number.isFinite(oldest)) return null;
+  const age = now - oldest;
+  if (age < MINUTE) return resolve(msg("checked just now", { $context: "usage limits" }));
+  return resolve(
+    msg("checked {duration} ago", {
+      duration: formatDuration(age, resolve),
+      $context: "usage limits",
+    }),
+  );
+}
+
 /** @public */
 export function resetCreditChoices(
   credits: ServerProviderResetCredits,

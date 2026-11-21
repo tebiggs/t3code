@@ -1259,6 +1259,8 @@
   "4897e228d3185c96": "No se informaron límites.",
   "e27d2cb964df5dd5": "{source}: no se informaron cuentas.",
   "1b503134018285f4": "{days} d {hours} h",
+  "1b316942cffcbb5f": "comprobado ahora mismo",
+  "57b04d7ee40cfb03": "comprobado hace {duration}",
   "164c674cf062933a": "{label} · quedan {count} · caduca en {expires}",
   "9c82c39589c23938": "{label} · quedan {count}",
   "ea4eaa756c937d3a": "Usar",

@@ -735,6 +735,17 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
         const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
         yield* harness.initialize;
         expect((yield* published)?.usageLimits).toEqual(limits);
+        // A new session renews the CLI sign-in, so its start re-reads quota.
+        const renewed: ServerProviderUsageLimits = {
+          checkedAt: "2026-10-09T12:00:30.000Z",
+          windows: [{ ...limits.windows[0]!, usedPercent: 50 }],
+        };
+        yield* Ref.set(usage, renewed);
+        const republishedAfterSession = yield* harness.nextPublish(
+          (snapshot) => snapshot.usageLimits?.checkedAt === renewed.checkedAt,
+        );
+        yield* harness.provider.onSessionStarted(started);
+        expect((yield* republishedAfterSession)?.usageLimits).toEqual(renewed);
         // The second health check is the one the failed background read triggers.
         const checks = yield* Ref.make(0);
         const failedReadApplied = yield* Deferred.make<void>();
@@ -754,7 +765,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
         });
         yield* harness.provider.snapshot.refresh;
         yield* Deferred.await(failedReadApplied);
-        expect((yield* harness.provider.snapshot.getSnapshot).usageLimits).toEqual(limits);
+        expect((yield* harness.provider.snapshot.getSnapshot).usageLimits).toEqual(renewed);
         yield* harness.provider.onSignedOut;
         expect((yield* harness.provider.snapshot.getSnapshot).usageLimits).toBeUndefined();
         yield* Ref.set(usage, {

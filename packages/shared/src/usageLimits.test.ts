@@ -26,7 +26,7 @@ import {
   usesChatGptSharing,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
-import { collectLimitNotices } from "./usageLimitsCopy.ts";
+import { collectLimitNotices, poolCheckedLabel } from "./usageLimitsCopy.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
 
@@ -292,6 +292,38 @@ describe("pools", () => {
       ],
     });
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(55);
+  });
+
+  it("labels a pool with the age of its stalest reading", () => {
+    const account = (email: string, at: string) =>
+      provider({
+        driver: claude,
+        instanceId: ProviderInstanceId.make("claude"),
+        auth: { status: "authenticated", email },
+        usageLimits: { checkedAt: at, windows: [{ ...window, usedPercent: 40 }] },
+      });
+    const poolsFor = (providers: readonly ServerProvider[]) =>
+      collectLimitPools(
+        collectLimitAccounts(
+          new Map([[EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers } }]]),
+        ),
+        now,
+      );
+    const stale = poolsFor([
+      account("a@example.com", "2026-09-03T11:30:00.000Z"),
+      account("b@example.com", checkedAt),
+    ])[0]!;
+    expect(poolCheckedLabel(stale, now)).toBe("checked 1h 0m ago");
+    const fresh = poolsFor([account("a@example.com", "2026-09-03T11:59:30.000Z")])[0]!;
+    expect(poolCheckedLabel(fresh, now)).toBe("checked just now");
+    const unreadable = {
+      ...fresh,
+      accounts: fresh.accounts.map((entry) => ({
+        ...entry,
+        limits: { ...entry.limits, checkedAt: "not-a-date" },
+      })),
+    };
+    expect(poolCheckedLabel(unreadable, now)).toBeNull();
   });
 
   it("uses the freshest reported plan even when the newest quota has no plan", () => {

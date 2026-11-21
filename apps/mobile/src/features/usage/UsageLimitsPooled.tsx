@@ -16,6 +16,7 @@ import {
   collectExternalUsageLinks,
   collectLimitNotices,
   cursorUsageWindowDetails,
+  poolCheckedLabel,
 } from "@t3tools/shared/usageLimitsCopy";
 import { msg, T, useGT, useMessages, Var } from "gt-react-native";
 import { Fragment, type ReactNode, useId, useState } from "react";
@@ -501,6 +502,7 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool) => {
         const windows = displayLimitWindows(pool);
+        const checked = poolCheckedLabel(pool, now, m);
         return (
           <Fragment key={pool.driver}>
             <View className="gap-3">
@@ -509,6 +511,11 @@ export function UsageLimitsSection({
                 <Text className="text-base font-t3-medium text-foreground">
                   {providerClients.get(pool.driver)?.label ?? pool.driver}
                 </Text>
+                {checked ? (
+                  <Text className="ml-auto text-xs tabular-nums text-foreground-tertiary">
+                    {checked}
+                  </Text>
+                ) : null}
               </View>
               {windows.map((window) => {
                 const details =
