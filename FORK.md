@@ -32,8 +32,9 @@ adds the feature, and remove it in the PR that drops the feature.
   `apps/server/src/cloud/npmRelease.ts`.
 - #14 Background work an agent waits on keeps its thread working until the result reaches the
   agent; settling cannot detach that work, wake dispatches retry, and work lost with a provider
-  session or Claude process is reported. After a provider crash, upstream's provider-exit
-  continuation (pingdotgg/t3code#40170) wakes the agent instead: `ClaudeAdapterV2.ts`
+  session or Claude process is reported. After a provider crash or a Claude process exit,
+  upstream's provider-exit continuation (pingdotgg/t3code#40170, pingdotgg/t3code#30214) wakes the
+  agent instead: `ClaudeAdapterV2.ts`
   (`deliveringBackgroundTasksByNativeThread`, `finalizeActiveTurnAfterQueryExit`),
   `Orchestrator.ts` (`automaticSettlementBlocker`), `ThreadManagementService.ts`
   (`settleAfterRun`), `ProviderSessionManager.ts`, `ProviderContinuationService.ts`,
