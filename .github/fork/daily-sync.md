@@ -31,9 +31,25 @@ Merge with a merge commit, pinned to the commit the checks passed on:
 gh pr merge <number> --repo tebiggs/t3code --merge --match-head-commit <sha>
 ```
 
-While checks are still running, call `watch_pull_request` and end the turn. Merge
-when it wakes you, then call `unwatch_pull_request`. If something blocks the PR,
-leave it open and report what.
+Before waiting on checks, make sure GitHub runs Actions on the fork. This starts
+nothing:
+
+```sh
+gh workflow run fork-release.yml --repo tebiggs/t3code --ref no-such-ref
+```
+
+`No ref found` means Actions runs. `Actions has been disabled for this
+repository` means GitHub has paused Actions on the fork, and only a maintainer
+can lift that, from the banner on https://github.com/tebiggs/t3code/actions.
+Report it, leave the PR open and carry on.
+
+If Actions runs and you haven't done step 4 in this run, do it now, before
+waiting, so a check that never finishes can't hold up the day's build. A merge
+after that gets built in the next run.
+
+While checks are still running, call `watch_pull_request` and end the turn. When
+it wakes you, merge, call `unwatch_pull_request`, and carry on from the step you
+were in. If something blocks the PR, leave it open, report what, and carry on.
 
 `dedup/*` PRs always wait for review, because they remove a fork feature.
 
@@ -109,13 +125,36 @@ works differently, open a PR on `dedup/<feature-slug>`. The PR should:
 Skip the PR if one is already open for that feature. If the overlap is only
 partial, don't open a PR; mention it in the report instead.
 
-## 4. Report
+## 4. Start the release build
+
+The release workflow builds `main` only when started. This task starts it once
+per run: here, or before its first wait on a PR's checks. Skip this step if you
+already did it in this run. Otherwise check whether `main`'s newest commit
+already has a run:
+
+```sh
+git fetch --quiet origin main
+gh run list --repo tebiggs/t3code --workflow fork-release.yml --branch main \
+  --commit "$(git rev-parse origin/main)" --limit 1 --json databaseId
+```
+
+If that prints `[]`, start one:
+
+```sh
+gh workflow run fork-release.yml --repo tebiggs/t3code --ref main
+```
+
+If it fails with `Actions has been disabled for this repository`, report it as
+"Merging this task's PRs" says.
+
+## 5. Report
 
 Write a few sentences:
 
 - what merged, or that main was already current
 - every PR you opened, with its link
 - any failed build and what you did about it
+- the release build you started
 - any partial overlaps
 
 Leave out steps that found nothing.

@@ -3,19 +3,23 @@
 This is a fork of T3 Code. `main` is upstream's newest nightly plus the
 features listed below.
 
-- **Releases.** Every push to `main` builds the Windows x64 desktop app, the
-  Linux x64 and arm64 servers and the Android APK. The build runs in
-  `.github/workflows/fork-release.yml`, which can also be run by hand on
-  `main` from the Actions tab or with `gh workflow run fork-release.yml`.
+- **Releases.** `.github/workflows/fork-release.yml` builds the Windows x64
+  desktop app, the Linux x64 and arm64 servers and the Android APK. The daily
+  sync starts it on `main` once a day, when `main` has a commit no build has
+  run on yet. To release sooner, run it on `main` from the Actions tab or with
+  `gh workflow run fork-release.yml --ref main`.
   When typecheck and the tests covering the fork's changes pass, it publishes
   everything as a prerelease here.
-  The fork's apps update from these releases. Pull requests get the same
-  checks and builds but publish nothing.
+  The fork's apps update from these releases. Pull requests get only the
+  typecheck, those tests and the JS bundle, to keep the fork's Actions usage
+  down: GitHub pauses Actions on forks that use too much. A run on any other
+  branch builds everything without publishing, for example to try an APK.
 - **Upstream sync.** A T3 scheduled task follows `.github/fork/daily-sync.md`
   once a day:
   - It merges upstream's newest nightly tag into `main`.
   - It opens a `sync-conflict/*` PR when the merge conflicts, and merges it
     once nothing blocks it.
+  - It starts the day's release build.
   - It opens a `dedup/*` PR when upstream ships something that replaces a
     fork feature. Those wait for review.
 - **Merge sync-conflict PRs with a merge commit, never squash.** Squashing
