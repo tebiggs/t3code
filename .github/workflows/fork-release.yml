@@ -1,19 +1,17 @@
 name: Fork release
 
 # Fork-only (tebiggs/t3code). Builds what the fork ships: the Windows x64
-# desktop app, the Linux x64 and arm64 server archives and the Android APK. A push to
-# main, or a manual run on main, publishes them as a nightly-channel
-# prerelease, which the fork's updaters read. Pull requests and manual runs on
-# other branches run the same checks and builds without publishing. Upstream
-# merges reach main through .github/fork/sync.sh, run by the daily sync task.
-# The workflow token cannot move main itself, because GitHub refuses that
-# token any ref update that changes workflow files, and upstream merges often
-# do.
+# desktop app, the Linux x64 and arm64 server archives and the Android APK. A
+# manual run on main publishes them as a nightly-channel prerelease, which the
+# fork's updaters read; the daily sync task starts one each day. Manual runs on
+# other branches build everything without publishing. Pull requests only get
+# the typecheck, the fork's tests and the JS bundle, because GitHub pauses
+# Actions on a fork whose usage grows too large. Upstream merges reach main
+# through .github/fork/sync.sh, run by the daily sync task. The workflow token
+# cannot move main itself, because GitHub refuses that token any ref update
+# that changes workflow files, and upstream merges often do.
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
 
@@ -228,6 +226,7 @@ jobs:
   linux:
     name: Linux x64
     needs: [prepare, bundle]
+    if: github.event_name != 'pull_request'
     permissions:
       actions: read
       contents: read
@@ -255,6 +254,7 @@ jobs:
   linux_arm64:
     name: Linux arm64
     needs: [prepare, bundle]
+    if: github.event_name != 'pull_request'
     permissions:
       actions: read
       contents: read
@@ -280,6 +280,7 @@ jobs:
   windows:
     name: Windows x64
     needs: [prepare, bundle]
+    if: github.event_name != 'pull_request'
     permissions:
       actions: read
       contents: read
@@ -309,6 +310,7 @@ jobs:
   android:
     name: Android APK
     needs: prepare
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -423,12 +425,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Pull requests stop after assembling the assets, so a renamed build output
-  # fails there rather than on main. A pull request's github.ref is
-  # refs/pull/<n>/merge, so the main checks below skip it.
+  # Manual runs on other branches stop after assembling the assets, so a renamed
+  # build output fails there rather than on main.
   publish:
     name: Release assets
     needs: [prepare, checks, linux, linux_arm64, windows, android]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
