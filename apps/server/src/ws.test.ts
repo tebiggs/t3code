@@ -2822,7 +2822,12 @@ const makeAcpRegistryClient = Effect.fn("test.makeAcpRegistryClient")(function* 
     readonly managedPolicy?: ManagedPolicySummary;
   },
 ) {
-  const scopes = [AuthOrchestrationReadScope, AuthProvidersManageScope];
+  // The fork lists ACP sessions only with operate access (see RpcAuthorization).
+  const scopes = [
+    AuthOrchestrationReadScope,
+    AuthOrchestrationOperateScope,
+    AuthProvidersManageScope,
+  ];
   const instance = {
     driverKind: acpDriver,
     snapshot: { getSnapshot: Effect.succeed({ nativeSessions: options.nativeSessions }) },
