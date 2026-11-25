@@ -229,7 +229,7 @@ describe("resolveRemoteOpenState", () => {
       expect(state.host).toEqual({ kind: "connection", host: "192.168.1.50", username: "dev" });
       expect(
         buildRemoteOpenUrl({ editor: "vscode", ...state.host, absolutePath: "/work/project" }),
-      ).toBe("vscode://vscode-remote/ssh-remote+dev%40192.168.1.50/work/project");
+      ).toBe("vscode://vscode-remote/ssh-remote+dev%40192.168.1.50/work/project?windowId=_blank");
     });
 
     it.each([
