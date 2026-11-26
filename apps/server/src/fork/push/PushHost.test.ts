@@ -108,6 +108,11 @@ describe("PushHost", () => {
       assert.strictEqual(alerted.packageName, "com.example.t3code");
       assert.strictEqual(alerted.data.device_id, "device-1");
       assert.strictEqual(alerted.data.user_id, "t3-fork:env-host");
+      // SHA-256 of "t3-fork:env-host:device-1", which Android checks before showing anything.
+      assert.strictEqual(
+        alerted.data.user_hash,
+        "a084d537fc73a9d97d45751362e11bb3626d00a43b6e8d2f42a281388d792e00",
+      );
       assert.strictEqual(alerted.data.alert_path, "/threads/env-desktop/thread-1");
       assert.match(alerted.data.alert_id ?? "", /^[0-9a-f]{64}$/);
     }).pipe(Effect.provide(hostLayer(fcm, PushHostStore.layerMemory())));

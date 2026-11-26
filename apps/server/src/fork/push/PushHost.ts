@@ -24,6 +24,7 @@ import {
 } from "../../../../../infra/relay/src/agentActivity/agentActivityPayloads.ts";
 import {
   androidActivityData,
+  androidRecipientData,
   fitFcmData,
 } from "../../../../../infra/relay/src/agentActivity/fcmPayloads.ts";
 import { androidAlertForAggregate, androidAlertForState } from "./androidAlerts.ts";
@@ -108,6 +109,10 @@ const describeError = (error: unknown) =>
   typeof error === "object" && error !== null && "message" in error
     ? String(error.message)
     : String(error);
+
+// The app version is unknown here, so this also sends `user_id` for builds before the hash.
+const recipientData = (device: PushHostStore.PushDevice) =>
+  androidRecipientData(device.userId, device.deviceId, null);
 
 const make = Effect.gen(function* () {
   const fcm = yield* PushHostFcm;
@@ -232,8 +237,7 @@ const make = Effect.gen(function* () {
     if (!displayed && !alert && !previousAggregate && jobState !== null) return;
     const data: Record<string, string> = {
       t3_kind: "agent_activity",
-      device_id: device.deviceId,
-      user_id: device.userId,
+      ...recipientData(device),
       updated_at: String(nowMs),
       ...androidActivityData(displayed),
       ...alert,
@@ -439,8 +443,7 @@ const make = Effect.gen(function* () {
         alert: true,
         data: {
           t3_kind: "agent_activity",
-          device_id: device.deviceId,
-          user_id: device.userId,
+          ...recipientData(device),
           updated_at: String(now.epochMilliseconds),
           // The card the device already shows, so the test does not disturb it.
           ...androidActivityData(device.lastAggregate),
