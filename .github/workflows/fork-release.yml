@@ -210,6 +210,15 @@ jobs:
           T3CODE_TELEMETRY_CHANNEL: dev
         run: vp run build:desktop
 
+      # Upload skips hidden paths; release-desktop.yml restores this file.
+      - name: Stage web asset manifest
+        shell: bash
+        run: |
+          manifest=apps/server/dist/client/.vite/manifest.json
+          if [[ -f "$manifest" ]]; then
+            cp "$manifest" apps/server/dist/client/vite-manifest.release.json
+          fi
+
       - name: Upload JS bundle
         uses: actions/upload-artifact@v7
         with:
