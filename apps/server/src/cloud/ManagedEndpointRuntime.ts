@@ -117,8 +117,7 @@ const CONNECTOR_READINESS_INTERVAL = Duration.seconds(30);
 const CONNECTOR_READINESS_REQUEST_TIMEOUT = Duration.seconds(5);
 const CONNECTOR_NOT_READY_CHECKS_BEFORE_RESTART = 6;
 const CONNECTOR_NOT_READY_CHECKS_MAX = 60;
-// cloudflared drains open requests for 30 seconds after SIGTERM, and one that never exits would
-// hold every later stop, unlink included.
+// cloudflared stuck on a dead HTTP/2 socket can ignore SIGTERM for minutes.
 const RELAY_CLIENT_FORCE_KILL_AFTER = Duration.seconds(5);
 const RELAY_CLIENT_METRICS_LINE = /\bStarting metrics server on (127\.0\.0\.1:\d+)\/metrics\b/u;
 const RELAY_CLIENT_PROTOCOL = /\bprotocol=(\w+)/u;
@@ -923,7 +922,7 @@ export const make = Effect.gen(function* () {
       { pid, tunnelId: active.config.tunnelId, tunnelName: active.config.tunnelName },
     );
     // The supervisor starts the replacement with its usual crash-loop backoff.
-    return yield* active.child.kill().pipe(
+    return yield* active.child.kill({ forceKillAfter: RELAY_CLIENT_FORCE_KILL_AFTER }).pipe(
       Effect.as(true),
       Effect.orElseSucceed(() => false),
     );
