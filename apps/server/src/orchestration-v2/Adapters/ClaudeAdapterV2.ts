@@ -5355,6 +5355,17 @@ function gatewayCooldownResetAt(
 const CLAUDE_UNSUPPORTED_VERSION_ERROR =
   /^API Error: 400 Claude Code (\d+\.\d+\.\d+) does not support this model; version (\d+\.\d+\.\d+) or newer is required\./;
 
+// Claude Code restores a resumed session's model ledger from this version on; earlier ones
+// restart it at zero per process (the claude_idle_resume recording, 2.1.111).
+const CLAUDE_RESUME_RESTORES_MODEL_LEDGER_VERSION = "2.1.280";
+
+function claudeResumeRestoresModelLedger(version: string | undefined): boolean {
+  return (
+    version !== undefined &&
+    compareSemverVersions(version, CLAUDE_RESUME_RESTORES_MODEL_LEDGER_VERSION) >= 0
+  );
+}
+
 /** The version a gateway sent in place of the session's own, when the session itself meets the requirement. */
 function claudeRewrittenVersion(
   message: SDKResultMessage,
@@ -5802,7 +5813,7 @@ interface ClaudeLiveQueryContext {
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
   // Subagents this process still ran when a replacement took over; only its exit can end them.
   handedOffSubagents: ReadonlySet<ActiveClaudeSubagent>;
-  // The SDK's per-process model ledger at the last result; a new process starts at zero.
+  // The SDK's model ledger at the last result; only a fresh session starts at zero.
   modelLedger: ClaudeModelLedger | undefined;
   // Per process, not per session: a relative temp dir follows the cwd this CLI
   // was launched in, and a later turn's cwd can differ.
@@ -6254,6 +6265,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   let modelCatalog = yield* loadModelCatalog;
   // Results report the window Claude Code compacts against; outside the catalog it is the only source.
   const reportedContextWindows = new Map<string, number>();
+  // A resumed session's result totals include its earlier turns; this anchor outlives idle release.
+  const modelLedgers = new Map<string, ClaudeModelLedger>();
   const claudeContextWindow = (modelSelection: ModelSelection): number | null =>
     resolveClaudeCatalogContextWindowTokens(modelCatalog, modelSelection) ??
     reportedContextWindows.get(
@@ -7058,10 +7071,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           return Queue.offer(events, event).pipe(Effect.asVoid);
         };
 
+        // `launch` describes the next turn, so an open turn (one being stopped too) never shows it.
+        const nextTurnLaunches = () => {
+          const live = Ref.getUnsafe(queryContext);
+          return Ref.getUnsafe(activeTurn) === null && (live === null || live.stopping);
+        };
         let reportedStartupPhase: string | undefined;
         const reportStartupPhase = Effect.fn("ClaudeAdapterV2.reportStartupPhase")(function* (
-          phase: string | undefined,
+          requested: string | undefined,
         ) {
+          const phase = requested ?? (nextTurnLaunches() ? "launch" : undefined);
           if (phase === reportedStartupPhase) return;
           reportedStartupPhase = phase;
           yield* emitProviderEvent({
@@ -7074,9 +7093,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             },
           });
         });
+        // Keeps a step a replacement CLI's open is reporting.
+        const reportCliGone = Effect.suspend(() =>
+          reportedStartupPhase === undefined ? reportStartupPhase(undefined) : Effect.void,
+        );
         // Only a process's first API request is startup; a reused process is already connected.
         const requestedQueries = new WeakSet<ClaudeAgentSdkQuerySession>();
-        let connectingTurn: ActiveClaudeTurnContext | undefined;
 
         const persistAttachmentBudget = Effect.fnUntraced(function* (nativeThreadId: string) {
           const providerThread = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
@@ -10326,8 +10348,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? { ...requested, status: "failed" as const, failure: retryBudgetFailure }
               : requested;
           input.context.steersClosed = true;
-          if (connectingTurn === input.context) {
-            connectingTurn = undefined;
+          if ((yield* Ref.get(activeTurn))?.providerTurnId === input.context.providerTurnId) {
             yield* reportStartupPhase(undefined);
           }
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
@@ -10707,6 +10728,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* Ref.update(activeTurn, (current) =>
             current?.providerTurnId === input.context.providerTurnId ? null : current,
           );
+          yield* reportCliGone;
           yield* clearUnansweredRequestWatch(input.context);
           if (input.status === "completed") {
             settledTurnByNativeThread.set(input.context.nativeThreadId, input.context);
@@ -10808,6 +10830,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           closedQuery: ClaudeLiveQueryContext,
           cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
         ) {
+          yield* reportCliGone;
           const current = yield* Ref.get(activeTurn);
           // A replacement query can reuse the native thread id; only this query's turn is ours.
           const context = closedQuery.lastTurn;
@@ -11831,7 +11854,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 !requestedQueries.has(input.query)
               ) {
                 requestedQueries.add(input.query);
-                connectingTurn = context;
                 yield* reportStartupPhase("connecting");
               }
               const since = yield* DateTime.now;
@@ -11861,10 +11883,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ) {
               context.unansweredRequestSince = undefined;
               yield* clearUnansweredRequestWatch(context);
-              if (connectingTurn === context) {
-                connectingTurn = undefined;
-                yield* reportStartupPhase(undefined);
-              }
+              if (reportedStartupPhase === "connecting") yield* reportStartupPhase(undefined);
             }
           }
           const focusedPlugin = claudeFocusRequestedPanePlugin(message);
@@ -14383,7 +14402,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
           // Read right before opening so an update during startup counts too.
-          const openQueryRuntime = readProgram.pipe(
+          const openQueryRuntime = reportStartupPhase("launch").pipe(
+            Effect.andThen(readProgram),
             Effect.flatMap((program) =>
               queryRunner
                 .open({
@@ -14462,7 +14482,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (subagent) => subagent.task.status === "running",
               ),
             ),
-            modelLedger: new Map(),
+            modelLedger: shouldResume ? modelLedgers.get(nativeThreadId) : new Map(),
             taskOutputRoot: claudeTaskOutputRoot(
               adapterOptions.environment,
               path,
@@ -14506,6 +14526,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     context.receivedInit = true;
                     context.capabilities = new Set(message.capabilities ?? []);
                     context.claudeCodeVersion = message.claude_code_version;
+                    if (
+                      shouldResume &&
+                      !claudeResumeRestoresModelLedger(message.claude_code_version)
+                    ) {
+                      context.modelLedger = new Map();
+                    }
                   }
                   if (message.type === "system" && message.subtype === "init") {
                     for (const server of message.mcp_servers ?? []) {
@@ -14547,6 +14573,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       growth === undefined && context.modelLedger !== undefined
                         ? undefined
                         : ledger;
+                    // A stopping process's late result must not replace its successor's anchor.
+                    if (!context.stopping) {
+                      const sessionId =
+                        clearedNativeSessions.get(context.nativeThreadId) ?? context.nativeThreadId;
+                      if (context.modelLedger === undefined) modelLedgers.delete(sessionId);
+                      else modelLedgers.set(sessionId, context.modelLedger);
+                    }
                     for (const [model, window] of claudeReportedContextWindows(
                       message.modelUsage,
                     )) {
@@ -15071,6 +15104,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           (effect, turnInput) =>
             effect.pipe(
               Effect.scoped,
+              Effect.onError(() =>
+                Ref.get(activeTurn).pipe(
+                  Effect.flatMap((turn) =>
+                    turn === null ? reportStartupPhase(undefined) : Effect.void,
+                  ),
+                ),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -15494,7 +15534,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           instanceId: adapterOptions.instanceId,
           driver: CLAUDE_PROVIDER,
           providerSessionId: input.providerSessionId,
-          providerSession: session,
+          get providerSession() {
+            const phase = reportedStartupPhase ?? (nextTurnLaunches() ? "launch" : undefined);
+            return phase === undefined ? session : { ...session, startupPhase: phase };
+          },
           getModelContextWindow: (selection) => claudeContextWindow(selection) ?? undefined,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           backgroundTasksEndWithProcess: true,
